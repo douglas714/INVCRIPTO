@@ -1,44 +1,33 @@
 export async function handler(event) {
-  if (event.httpMethod !== 'POST') {
-    return { statusCode: 405, headers: { 'content-type': 'application/json' }, body: JSON.stringify({ error: 'Method not allowed' }) };
-  }
-
-  const supabaseUrl = process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL;
-  const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
-
-  if (!supabaseUrl || !serviceRoleKey) {
-    return { statusCode: 500, headers: { 'content-type': 'application/json' }, body: JSON.stringify({ error: 'Supabase service role not configured' }) };
-  }
+  if (event.httpMethod !== 'POST') return { statusCode: 405, body: 'Method not allowed' };
+  const url = process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL;
+  const key = process.env.SUPABASE_SERVICE_ROLE_KEY;
+  if (!url || !key) return { statusCode: 500, body: JSON.stringify({ error: 'Supabase service role not configured' }) };
 
   let payload = {};
-  try {
-    payload = JSON.parse(event.body || '{}');
-  } catch (_) {
-    return { statusCode: 400, headers: { 'content-type': 'application/json' }, body: JSON.stringify({ error: 'Invalid JSON body' }) };
+  try { payload = JSON.parse(event.body || '{}'); } catch (_) {}
+  const user_id = payload.user_id;
+  const amount_inv = Number(payload.amount_inv || payload.amount_env || 0);
+  const description = payload.description || 'Crédito manual admin';
+  if (!user_id || !Number.isFinite(amount_inv) || amount_inv <= 0) {
+    return { statusCode: 400, body: JSON.stringify({ error: 'user_id e amount_inv são obrigatórios' }) };
   }
 
-  const rpcBody = {
-    p_user_id: payload.user_id,
-    p_amount: payload.amount_inv,
-    p_type: 'admin_adjustment',
-    p_description: payload.description || 'Crédito manual admin'
-  };
-
-  const response = await fetch(`${supabaseUrl.replace(/\/$/, '')}/rest/v1/rpc/credit_inv`, {
+  const rpc = await fetch(`${url}/rest/v1/rpc/credit_inv`, {
     method: 'POST',
     headers: {
-      apikey: serviceRoleKey,
-      Authorization: `Bearer ${serviceRoleKey}`,
-      'Content-Type': 'application/json'
+      apikey: key,
+      Authorization: `Bearer ${key}`,
+      'content-type': 'application/json'
     },
-    body: JSON.stringify(rpcBody)
+    body: JSON.stringify({
+      p_user_id: user_id,
+      p_amount: amount_inv,
+      p_type: 'admin_adjustment',
+      p_description: description
+    })
   });
-
-  const text = await response.text();
-
-  if (!response.ok) {
-    return { statusCode: response.status, headers: { 'content-type': 'application/json' }, body: text || JSON.stringify({ error: 'Supabase RPC error' }) };
-  }
-
-  return { statusCode: 200, headers: { 'content-type': 'application/json' }, body: JSON.stringify({ ok: true }) };
+  const text = await rpc.text();
+  if (!rpc.ok) return { statusCode: rpc.status, body: text || JSON.stringify({ error: 'Falha ao creditar ENV' }) };
+  return { statusCode: 200, body: JSON.stringify({ ok: true }) };
 }

@@ -4,8 +4,4 @@
 
 [functions]
   directory = "netlify/functions"
-
-[[redirects]]
-  from = "/*"
-  to = "/index.html"
-  status = 200
+  node_bundler = "esbuild"

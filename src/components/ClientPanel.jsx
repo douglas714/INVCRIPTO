@@ -26,19 +26,50 @@ export default function ClientPanel({user}){
     let closed=false;
     let ws=null;
     let reloadTimer=null;
-    const normalize=(k)=>({
-      time:Math.floor(Number(k[0])/1000),
-      open:Number(k[1]),
-      high:Number(k[2]),
-      low:Number(k[3]),
-      close:Number(k[4]),
-      volume:Number(k[5])
-    });
+    let reconnectTimer=null;
+    const intervalSeconds=(tf)=>({ '1m':60, '3m':180, '5m':300, '15m':900, '30m':1800, '1h':3600, '2h':7200, '4h':14400, '6h':21600, '8h':28800, '12h':43200, '1d':86400 }[tf] || 900);
+    const normalize=(k)=>{
+      const arr=Array.isArray(k) ? k : [k.time || k.openTime || k.t, k.open || k.o, k.high || k.h, k.low || k.l, k.close || k.c, k.volume || k.v];
+      const candle={
+        time: Math.floor(Number(arr[0]) > 100000000000 ? Number(arr[0])/1000 : Number(arr[0])),
+        open: Number(arr[1]),
+        high: Number(arr[2]),
+        low: Number(arr[3]),
+        close: Number(arr[4]),
+        volume: Number(arr[5] || 0)
+      };
+      return candle;
+    };
+    const validCandle=(c)=>{
+      if(!c || ![c.time,c.open,c.high,c.low,c.close].every(Number.isFinite)) return false;
+      if(c.high < c.low || c.high <= 0 || c.low <= 0 || c.close <= 0) return false;
+      // Proteção contra mistura de símbolos/timeframes: descarta candle fora de escala.
+      const ref = c.close || c.open;
+      if(c.low < ref * 0.55 || c.high > ref * 1.55) return false;
+      return true;
+    };
+    const sanitizeCandles=(list)=>{
+      const normalized=(list || []).map(normalize).filter(validCandle).sort((a,b)=>a.time-b.time);
+      if(normalized.length < 5) return normalized;
+      const closes=normalized.map(c=>c.close).sort((a,b)=>a-b);
+      const median=closes[Math.floor(closes.length/2)] || normalized.at(-1)?.close || 0;
+      return normalized.filter(c=>c.close > median*0.65 && c.close < median*1.35 && c.low > median*0.55 && c.high < median*1.45);
+    };
+    const makeLiveCandle=(price)=>{
+      const sec=intervalSeconds(timeframe);
+      const nowSec=Math.floor(Date.now()/1000);
+      const t=Math.floor(nowSec/sec)*sec;
+      return {time:t, open:price, high:price, low:price, close:price, volume:0};
+    };
     const upsertLiveCandle=(next)=>{
+      if(!validCandle(next)) return;
       setCandles(prev=>{
         if(!prev.length) return [next];
         const copy=[...prev];
         const last=copy[copy.length-1];
+        // Se o preço veio de outro par/escala, não misturar com candles antigos.
+        const ratio = next.close / Math.max(1e-9, last.close || next.close);
+        if(ratio > 1.35 || ratio < 0.65) return [next];
         if(last.time===next.time){
           copy[copy.length-1]={...last,...next, high:Math.max(last.high,next.high), low:Math.min(last.low,next.low)};
         }else if(next.time>last.time){
@@ -57,8 +88,9 @@ export default function ClientPanel({user}){
           const r=await fetch(`https://api.binance.com/api/v3/klines?symbol=${symbol}&interval=${timeframe}&limit=500`, {cache:'no-store'});
           data=await r.json();
         }
-        if(!closed && Array.isArray(data)){
-          setCandles(data.map(normalize).filter(c=>Number.isFinite(c.close)));
+        const clean=sanitizeCandles(data);
+        if(!closed && clean.length){
+          setCandles(clean);
         }
       } catch(e){
         if(!closed) console.warn('Falha ao buscar candles Binance', e);
@@ -72,6 +104,7 @@ export default function ClientPanel({user}){
           if(closed) return;
           const payload=JSON.parse(event.data||'{}');
           const data=payload.data||payload;
+          if(data.s && String(data.s).toUpperCase() !== symbol) return;
           if(data.e==='kline' && data.k){
             const k=data.k;
             upsertLiveCandle({
@@ -79,28 +112,39 @@ export default function ClientPanel({user}){
               open:Number(k.o), high:Number(k.h), low:Number(k.l), close:Number(k.c), volume:Number(k.v)
             });
           }
-          if((data.e==='trade' || data.e==='24hrTicker') && data.p){
-            const livePrice=Number(data.p);
-            if(Number.isFinite(livePrice)){
+          if(data.e==='trade' || data.e==='24hrTicker'){
+            const livePrice=Number(data.p || data.c || data.a || data.b);
+            if(Number.isFinite(livePrice) && livePrice>0){
               setCandles(prev=>{
-                if(!prev.length) return prev;
+                const liveCandle=makeLiveCandle(livePrice);
+                if(!prev.length) return [liveCandle];
                 const copy=[...prev];
                 const last={...copy[copy.length-1]};
-                last.close=livePrice;
-                last.high=Math.max(last.high,livePrice);
-                last.low=Math.min(last.low,livePrice);
-                copy[copy.length-1]=last;
+                const ratio = livePrice / Math.max(1e-9, last.close || livePrice);
+                // evita misturar BTC com ETH/BNB/SOL quando troca de moeda e o WS antigo ainda responde
+                if(ratio > 1.35 || ratio < 0.65) return [liveCandle];
+                if(liveCandle.time > last.time){
+                  copy.push(liveCandle);
+                  if(copy.length>520) copy.shift();
+                }else{
+                  last.close=livePrice;
+                  last.high=Math.max(last.high,livePrice);
+                  last.low=Math.min(last.low,livePrice);
+                  copy[copy.length-1]=last;
+                }
                 return copy;
               });
             }
           }
         };
         ws.onerror=()=>console.warn('WebSocket Binance com instabilidade; snapshot REST seguirá como fallback.');
+        ws.onclose=()=>{ if(!closed) reconnectTimer=setTimeout(connectStream,2500); };
       } catch(e){ console.warn('Falha ao iniciar WebSocket Binance', e); }
     }
+    setCandles([]);
     loadSnapshot().then(connectStream);
     reloadTimer=setInterval(loadSnapshot,60000);
-    return()=>{closed=true; if(ws) ws.close(); if(reloadTimer) clearInterval(reloadTimer);};
+    return()=>{closed=true; if(ws) ws.close(); if(reloadTimer) clearInterval(reloadTimer); if(reconnectTimer) clearTimeout(reconnectTimer);};
   },[symbol,timeframe]);
   useEffect(()=>{ if(state.active && candles.length){ const t=setInterval(()=>setState(s=>runPaperDecision({...s,symbol},candles)),9000); return()=>clearInterval(t) }},[state.active,candles,symbol]);
 
@@ -118,7 +162,7 @@ export default function ClientPanel({user}){
       <div className="live-badge"><span className="live-dot"/> {state.active?'LIVE · Bot Active':'PAUSADO'}</div>
     </div>
 
-    <KpiStrip state={state} lastPrice={lastPrice} symbol={symbol}/>
+    <KpiStrip state={state} lastPrice={lastPrice} symbol={symbol} openInv={()=>setActiveTab('inv')}/>
 
     <div className="tabbar premium-tabs">{tabs.map(([k,l])=><button key={k} className={activeTab===k?'active':''} onClick={()=>setActiveTab(k)}>{l}</button>)}</div>
 
@@ -126,21 +170,24 @@ export default function ClientPanel({user}){
     {activeTab==='analysis' && <LiveAnalysis symbol={symbol} setSymbol={setSymbol} timeframe={timeframe} setTimeframe={setTimeframe} candles={candles} state={state} analysis={analysis}/>}    
     {activeTab==='scanner' && <Scanner radar={radar} symbol={symbol} setSymbol={setSymbol} operateRecommended={operateRecommended}/>}    
     {activeTab==='orders' && <Orders orders={state.orders}/>}    
-    {activeTab==='inv' && <INV state={state}/>}    
+    {activeTab==='inv' && <INV state={state} setState={setState}/>}    
     {activeTab==='settings' && <BinanceSettings/>}
   </div>
 }
 
-function KpiStrip({state,lastPrice,symbol}){
+function KpiStrip({state,lastPrice,symbol,openInv}){
   const winRate = state.orders.length ? Math.round((state.orders.filter(o=>Number(o.profitBrl||0)>0).length / Math.max(1,state.orders.filter(o=>o.side==='SELL').length))*100) : 78;
+  const envBalance = state.envBalance ?? state.invBalance ?? 0;
   return <div className="kpi-strip">
     <MiniKpi icon={<Wallet/>} label="Saldo Paper" value={usd(state.balanceUsd ?? state.balanceBrl ?? 0)} delta="Simulação USDT"/>
     <MiniKpi icon={<TrendingUp/>} label="Lucro total" value={usd(state.realizedProfitUsd ?? state.realizedProfitBrl ?? 0)} delta={`${num(state.feesEnv ?? state.feesInv ?? 0,2)} ENV taxa`}/>
+    <EnvKpi value={`${num(envBalance,2)} ENV`} delta="1 ENV = US$ 1,00" onAdd={openInv}/>
     <MiniKpi icon={<Gauge/>} label="Win Rate" value={`${winRate||0}%`} delta="estimado"/>
     <MiniKpi icon={<BarChart3/>} label="Par ativo" value={symbol.replace('USDT','/USDT')} delta={lastPrice?`$ ${lastPrice.toFixed(2)}`:'carregando'}/>
     <div className="kpi-live"><img src="/favicon.png"/><strong>{state.active?'ROBÔ ATIVO':'AGUARDANDO'}</strong><span>{state.active?'Último sync agora':'Clique em iniciar'}</span></div>
   </div>
 }
+function EnvKpi({value,delta,onAdd}){return <div className="mini-kpi env-card"><div className="kpi-icon"><CreditCard/></div><span>Saldo ENV</span><strong>{value}</strong><small>{delta}</small><button type="button" className="env-add-btn" onClick={onAdd}>Adicionar saldo</button></div>}
 function MiniKpi({icon,label,value,delta}){return <div className="mini-kpi"><div className="kpi-icon">{icon}</div><span>{label}</span><strong>{value}</strong><small>{delta}</small></div>}
 
 function Dashboard({state,setState,symbol,setSymbol,timeframe,setTimeframe,candles,analysis,radar,recommended,operateRecommended,operateSelected,selectionMode,setSelectionMode}){
@@ -175,10 +222,15 @@ function TradingChart({candles,analysis,timeframe,symbol}){
   const normalizedOffset = Math.min(offset, maxOffset);
   const endIndex = Math.max(0, all.length - normalizedOffset);
   const startIndex = Math.max(0, endIndex - visibleCount);
-  const safeCandles = all.slice(startIndex,endIndex);
+  const rawVisible = all.slice(startIndex,endIndex);
+  const visibleMedian = rawVisible.length ? rawVisible.map(c=>c.close).sort((a,b)=>a-b)[Math.floor(rawVisible.length/2)] : 0;
+  const safeCandles = visibleMedian ? rawVisible.filter(c=>c.close > visibleMedian*0.65 && c.close < visibleMedian*1.35 && c.low > visibleMedian*0.55 && c.high < visibleMedian*1.45) : rawVisible;
   const sr = safeCandles.length ? supportResistance(safeCandles,48) : null;
-  const max = safeCandles.length ? Math.max(...safeCandles.map(c=>c.high)) : 1;
-  const min = safeCandles.length ? Math.min(...safeCandles.map(c=>c.low)) : 0;
+  const rawMax = safeCandles.length ? Math.max(...safeCandles.map(c=>c.high)) : 1;
+  const rawMin = safeCandles.length ? Math.min(...safeCandles.map(c=>c.low)) : 0;
+  const pad = Math.max((rawMax-rawMin)*0.12, rawMax*0.0015, 1);
+  const max = rawMax + pad;
+  const min = Math.max(0, rawMin - pad);
   const range = Math.max(1, max-min);
   const width = 1200;
   const height = 430;
@@ -321,7 +373,35 @@ function Scanner({radar,symbol,setSymbol,operateRecommended}){
 }
 
 function Orders({orders}){return <div className="panel panel-glow"><h3><History size={18}/> Histórico de operações</h3><div className="table-wrap"><table><thead><tr><th>Hora</th><th>Side</th><th>Ativo</th><th>Preço</th><th>Valor</th><th>Lucro</th><th>Taxa ENV</th></tr></thead><tbody>{orders.map(o=><tr key={o.id}><td>{new Date(o.at).toLocaleString('pt-BR')}</td><td>{o.side}</td><td>{o.symbol}</td><td>{o.price.toFixed(2)}</td><td>{usd(o.valueUsd ?? o.valueBrl ?? 0)}</td><td>{o.profitUsd?usd(o.profitUsd):'-'}</td><td>{o.feeEnv?num(o.feeEnv,2):'-'}</td></tr>)}</tbody></table></div></div>}
-function INV({state}){const envBalance=state.envBalance ?? state.invBalance ?? 0;return <div className="panel panel-glow"><h3><CreditCard size={18}/> Créditos ENV</h3><p>Saldo atual: <b>{num(envBalance,2)} ENV</b></p><p>1 ENV = US$ 1,00. O robô opera em USDT e desconta 10% apenas do lucro realizado em dólar.</p><p>No pagamento via Pix/cartão, o valor em reais será convertido pela cotação do dólar/USDT do momento para liberar ENV.</p><div className="alert">Quando o ENV zerar, o robô bloqueia novas entradas, encerra a cesta conforme segurança e solicita recarga.</div></div>}
+function INV({state,setState}){
+  const envBalance=state.envBalance ?? state.invBalance ?? 0;
+  const [amount,setAmount]=useState(10);
+  const [message,setMessage]=useState('');
+  const addDemoCredit=()=>{
+    const value=Math.max(1,Number(amount)||0);
+    setState?.(s=>({...s, envBalance:Number(s.envBalance ?? s.invBalance ?? 0)+value}));
+    setMessage(`Recarga teste adicionada: ${value.toFixed(2)} ENV. Quando o Pix estiver ativo, esse botão será ligado ao pagamento.`);
+  };
+  return <div className="env-page panel panel-glow">
+    <h3><CreditCard size={18}/> Créditos ENV</h3>
+    <div className="env-balance-card">
+      <div>
+        <span>Saldo disponível</span>
+        <strong>{num(envBalance,2)} ENV</strong>
+        <small>1 ENV = US$ 1,00 · taxa de 10% somente sobre lucro realizado em USDT</small>
+      </div>
+      <button className="btn primary gold-btn" onClick={addDemoCredit}>Adicionar saldo</button>
+    </div>
+    <div className="env-recharge-grid">
+      {[10,25,50,100].map(v=><button key={v} className={amount===v?'active':''} onClick={()=>setAmount(v)}>{v} ENV<br/><small>US$ {v.toFixed(2)}</small></button>)}
+    </div>
+    <label>Valor da recarga ENV</label>
+    <input type="number" min="1" step="1" value={amount} onChange={e=>setAmount(e.target.value)} />
+    <p>O robô opera em USDT. No pagamento via Pix/cartão, o valor em reais será convertido pela cotação do dólar/USDT do momento para liberar ENV.</p>
+    <div className="alert">Quando o ENV zerar, o robô bloqueia novas entradas, encerra a cesta conforme segurança e solicita recarga.</div>
+    {message && <div className="success-box">{message}</div>}
+  </div>
+}
 function BinanceSettings(){return <div className="panel panel-glow"><h3><KeyRound size={18}/> Configurações Binance</h3><p className="muted">Ao conectar a API, o backend deve consultar o saldo USDT disponível. O robô opera somente pares contra USDT.</p><label>API Key</label><input placeholder="Cole a API Key"/><label>Secret Key</label><input type="password" placeholder="Cole a Secret Key"/><button className="btn primary gold-btn">Testar conexão e puxar saldo USDT</button><div className="alert">Permissões recomendadas: leitura + spot trading. Saque deve estar desativado. Valor BRL fica apenas para recarga, convertido pela cotação do dólar/USDT.</div></div>}
 
 function buildRadar(analysis, currentSymbol){

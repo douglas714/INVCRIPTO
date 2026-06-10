@@ -86,48 +86,27 @@ function AuthScreen({setDemoUser,tab,setTab}){
     setDemoUser(u);
   }
 
-  function friendlyAuthError(message=''){
-    const m = String(message || '').toLowerCase();
-    if(m.includes('email not confirmed')) return 'Email não confirmado. Confirme o e-mail recebido ou desative a confirmação de e-mail no Supabase durante os testes.';
-    if(m.includes('invalid login credentials')) return 'E-mail ou senha inválidos. Confira os dados ou faça um novo cadastro.';
-    if(m.includes('user already registered') || m.includes('already registered')) return 'Este e-mail já possui cadastro. Use login ou recupere a senha.';
-    if(m.includes('duplicate') || m.includes('cpf')) return 'CPF já cadastrado. Use outro CPF ou acesse a conta existente.';
-    return message || 'Erro de autenticação.';
-  }
-
-  async function resendConfirmation(){
-    setMsg('');
-    if(!hasSupabase){ setMsg('Supabase não configurado.'); return; }
-    if(!email){ setMsg('Informe o e-mail para reenviar a confirmação.'); return; }
-    const { error } = await supabase.auth.resend({ type:'signup', email, options:{ emailRedirectTo: import.meta.env.VITE_APP_URL || window.location.origin } });
-    if(error) setMsg(friendlyAuthError(error.message));
-    else setMsg('Confirmação reenviada. Verifique sua caixa de entrada e spam.');
-  }
-
   async function submit(e){
     e.preventDefault();
     setMsg('');
     if(!hasSupabase){ await demoLogin(); return; }
     if(tab==='login'){
       const {error}=await supabase.auth.signInWithPassword({email,password});
-      if(error) setMsg(friendlyAuthError(error.message));
+      if(error) setMsg(error.message);
     } else {
-      if(!name.trim()){ setMsg('Nome obrigatório.'); return; }
       if(!isValidCpf(cpf)){ setMsg('CPF inválido.'); return; }
       if(phone.replace(/\D/g,'').length < 10){ setMsg('Telefone obrigatório. Informe DDD + número.'); return; }
       const cpfHash = await sha256(onlyDigits(cpf));
-      const metadata = { full_name:name.trim(), phone:phone.trim(), cpf_hash:cpfHash, cpf_masked:maskCpf(cpf) };
-      const {data,error}=await supabase.auth.signUp({
-        email,
-        password,
-        options:{ data: metadata, emailRedirectTo: import.meta.env.VITE_APP_URL || window.location.origin }
-      });
-      if(error){ setMsg(friendlyAuthError(error.message)); return; }
-      if(data.user && !data.session){
-        setMsg('Cadastro criado. Confirme seu e-mail para conseguir fazer login. Durante testes você pode desativar “Confirm email” no Supabase Auth.');
-      } else {
-        setMsg('Cadastro criado e login realizado.');
+      const {data,error}=await supabase.auth.signUp({email,password});
+      if(error){ setMsg(error.message); return; }
+      const uid=data.user?.id;
+      if(uid){
+        await supabase.from('profiles').insert({id:uid,email,full_name:name,phone,role:'client',status:'active'});
+        const doc=await supabase.from('user_documents').insert({user_id:uid,cpf_hash:cpfHash,cpf_masked:maskCpf(cpf)});
+        if(doc.error){ setMsg('CPF já cadastrado ou erro no documento.'); return; }
+        await supabase.rpc('credit_inv',{p_user_id:uid,p_amount:10,p_type:'initial_bonus',p_description:'Bônus inicial de cadastro'});
       }
+      setMsg('Cadastro criado. Verifique seu e-mail se a confirmação estiver ativa.');
     }
   }
 
@@ -145,7 +124,6 @@ function AuthScreen({setDemoUser,tab,setTab}){
         <label>Senha</label><input type="password" value={password} onChange={e=>setPassword(e.target.value)} placeholder="mínimo 6 caracteres" required/>
         <button className="btn primary auth-submit"><UserRound size={16}/>{tab==='login'?'Entrar':'Cadastrar'}</button>
         {msg && <p className="msg">{msg}</p>}
-        {tab==='login' && hasSupabase && String(msg).toLowerCase().includes('email') && <button className="btn ghost full-width" type="button" onClick={resendConfirmation}>Reenviar confirmação de e-mail</button>}
       </form>
     </div>
   </div>

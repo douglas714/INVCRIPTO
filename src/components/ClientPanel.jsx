@@ -12,6 +12,7 @@ const radarSeed = {
 export default function ClientPanel({user}){
   const [activeTab,setActiveTab]=useState('dashboard');
   const [symbol,setSymbol]=useState('BTCUSDT');
+  const [timeframe,setTimeframe]=useState('15m');
   const [candles,setCandles]=useState([]);
   const [state,setState]=useState(()=>JSON.parse(localStorage.getItem('df_paper_state')||'null') || initialPaperState(Number(import.meta.env.VITE_DEFAULT_PAPER_BALANCE_USD||1000)));
   const [selectionMode,setSelectionMode]=useState('recommended');
@@ -25,18 +26,18 @@ export default function ClientPanel({user}){
     let closed=false;
     async function load(){
       try{
-        const res=await fetch(`/.netlify/functions/binance-klines?symbol=${symbol}&interval=1m&limit=260`).catch(()=>null);
+        const res=await fetch(`/.netlify/functions/binance-klines?symbol=${symbol}&interval=${timeframe}&limit=320`).catch(()=>null);
         let data=[];
         if(res?.ok) data=await res.json();
         if(!data.length){
-          const r=await fetch(`https://api.binance.com/api/v3/klines?symbol=${symbol}&interval=1m&limit=260`);
+          const r=await fetch(`https://api.binance.com/api/v3/klines?symbol=${symbol}&interval=${timeframe}&limit=320`);
           data=await r.json();
         }
         if(!closed) setCandles(data.map(k=>({time:Math.floor(k[0]/1000),open:+k[1],high:+k[2],low:+k[3],close:+k[4],volume:+k[5]})));
       } catch(e){ if(!closed) setCandles([]); }
     }
     load(); const t=setInterval(load,12000); return()=>{closed=true;clearInterval(t)};
-  },[symbol]);
+  },[symbol,timeframe]);
   useEffect(()=>{ if(state.active && candles.length){ const t=setInterval(()=>setState(s=>runPaperDecision({...s,symbol},candles)),9000); return()=>clearInterval(t) }},[state.active,candles,symbol]);
 
   function operateRecommended(){ setSymbol(recommended.symbol); setSelectionMode('recommended'); setState(s=>({...s,active:true,symbol:recommended.symbol})); }
@@ -57,8 +58,8 @@ export default function ClientPanel({user}){
 
     <div className="tabbar premium-tabs">{tabs.map(([k,l])=><button key={k} className={activeTab===k?'active':''} onClick={()=>setActiveTab(k)}>{l}</button>)}</div>
 
-    {activeTab==='dashboard' && <Dashboard state={state} setState={setState} symbol={symbol} setSymbol={setSymbol} candles={candles} analysis={analysis} radar={radar} recommended={recommended} operateRecommended={operateRecommended} operateSelected={operateSelected} selectionMode={selectionMode} setSelectionMode={setSelectionMode}/>}    
-    {activeTab==='analysis' && <LiveAnalysis symbol={symbol} setSymbol={setSymbol} candles={candles} state={state} analysis={analysis}/>}    
+    {activeTab==='dashboard' && <Dashboard state={state} setState={setState} symbol={symbol} setSymbol={setSymbol} timeframe={timeframe} setTimeframe={setTimeframe} candles={candles} analysis={analysis} radar={radar} recommended={recommended} operateRecommended={operateRecommended} operateSelected={operateSelected} selectionMode={selectionMode} setSelectionMode={setSelectionMode}/>}    
+    {activeTab==='analysis' && <LiveAnalysis symbol={symbol} setSymbol={setSymbol} timeframe={timeframe} setTimeframe={setTimeframe} candles={candles} state={state} analysis={analysis}/>}    
     {activeTab==='scanner' && <Scanner radar={radar} symbol={symbol} setSymbol={setSymbol} operateRecommended={operateRecommended}/>}    
     {activeTab==='orders' && <Orders orders={state.orders}/>}    
     {activeTab==='inv' && <INV state={state}/>}    
@@ -78,11 +79,11 @@ function KpiStrip({state,lastPrice,symbol}){
 }
 function MiniKpi({icon,label,value,delta}){return <div className="mini-kpi"><div className="kpi-icon">{icon}</div><span>{label}</span><strong>{value}</strong><small>{delta}</small></div>}
 
-function Dashboard({state,setState,symbol,setSymbol,candles,analysis,radar,recommended,operateRecommended,operateSelected,selectionMode,setSelectionMode}){
+function Dashboard({state,setState,symbol,setSymbol,timeframe,setTimeframe,candles,analysis,radar,recommended,operateRecommended,operateSelected,selectionMode,setSelectionMode}){
   return <div className="terminal-layout">
     <div className="chart-zone panel-glow">
-      <ChartHeader symbol={symbol} setSymbol={setSymbol} analysis={analysis}/>
-      <TradingChart candles={candles} analysis={analysis}/>
+      <ChartHeader symbol={symbol} setSymbol={setSymbol} timeframe={timeframe} setTimeframe={setTimeframe} analysis={analysis}/>
+      <TradingChart candles={candles} analysis={analysis} timeframe={timeframe} symbol={symbol}/>
     </div>
     <TradingControl state={state} setState={setState} symbol={symbol} setSymbol={setSymbol} recommended={recommended} operateRecommended={operateRecommended} operateSelected={operateSelected} selectionMode={selectionMode} setSelectionMode={setSelectionMode}/>
     <RecommendedCard recommended={recommended} symbol={symbol} analysis={analysis} setSymbol={setSymbol} operateRecommended={operateRecommended}/>
@@ -92,17 +93,25 @@ function Dashboard({state,setState,symbol,setSymbol,candles,analysis,radar,recom
   </div>
 }
 
-function ChartHeader({symbol,setSymbol,analysis}){
+function ChartHeader({symbol,setSymbol,timeframe,setTimeframe,analysis}){
   const price=analysis?.price;
   return <div className="chart-head-pro">
     <div className="symbol-select"><span className="coin-badge">₿</span><select value={symbol} onChange={e=>setSymbol(e.target.value)}>{allowedSymbols.map(s=><option key={s}>{s}</option>)}</select><strong>{price?price.toFixed(2):'...'}</strong><small>{analysis?.regime||'Carregando'}</small></div>
-    <div className="timeframes"><button>1m</button><button>5m</button><button className="active">15m</button><button>1h</button><button>4h</button><button>1D</button></div>
+    <div className="timeframes">{['1m','5m','15m','1h','4h','1d'].map(tf=><button key={tf} className={timeframe===tf?'active':''} onClick={()=>setTimeframe(tf)}>{tf==='1d'?'1D':tf}</button>)}</div>
     <div className="chart-actions"><span><SlidersHorizontal size={15}/> Indicadores</span><span><Settings size={15}/> Template</span></div>
   </div>
 }
 
-function TradingChart({candles,analysis}){
-  const safeCandles = (candles || []).slice(-90);
+function TradingChart({candles,analysis,timeframe,symbol}){
+  const [visibleCount,setVisibleCount]=useState(90);
+  const [offset,setOffset]=useState(0);
+  const dragRef=useRef(null);
+  const all = candles || [];
+  const maxOffset = Math.max(0, all.length - visibleCount);
+  const normalizedOffset = Math.min(offset, maxOffset);
+  const endIndex = Math.max(0, all.length - normalizedOffset);
+  const startIndex = Math.max(0, endIndex - visibleCount);
+  const safeCandles = all.slice(startIndex,endIndex);
   const sr = safeCandles.length ? supportResistance(safeCandles,48) : null;
   const max = safeCandles.length ? Math.max(...safeCandles.map(c=>c.high)) : 1;
   const min = safeCandles.length ? Math.min(...safeCandles.map(c=>c.low)) : 0;
@@ -111,7 +120,40 @@ function TradingChart({candles,analysis}){
   const height = 430;
   const chartH = 330;
   const y = (price)=> 35 + ((max - price) / range) * chartH;
-  const candleW = Math.max(5, Math.floor(width / Math.max(1,safeCandles.length)) - 3);
+  const candleW = Math.max(4, Math.floor(width / Math.max(1,safeCandles.length)) - 3);
+  const maxVolume = safeCandles.reduce((a,b)=>Math.max(a,b.volume||0),1)||1;
+
+  useEffect(()=>{ setOffset(0); setVisibleCount(90); },[symbol,timeframe]);
+  useEffect(()=>{ if(offset>maxOffset) setOffset(maxOffset); },[offset,maxOffset]);
+
+  const clampOffset=(next)=>Math.max(0,Math.min(maxOffset,next));
+  const zoom=(direction)=>{
+    setVisibleCount(v=>{
+      const next=direction==='in'?Math.max(28,v-14):Math.min(Math.max(120,all.length||120),v+18);
+      return next;
+    });
+  };
+  const resetLive=()=>{setOffset(0);setVisibleCount(90)};
+  const pan=(amount)=>setOffset(o=>clampOffset(o+amount));
+
+  function onWheel(e){
+    e.preventDefault();
+    if(e.deltaY<0) zoom('in'); else zoom('out');
+  }
+  function onPointerDown(e){
+    dragRef.current={x:e.clientX,offset:normalizedOffset};
+    e.currentTarget.setPointerCapture?.(e.pointerId);
+  }
+  function onPointerMove(e){
+    if(!dragRef.current) return;
+    const dx=e.clientX-dragRef.current.x;
+    const delta=Math.round(-dx/9);
+    setOffset(clampOffset(dragRef.current.offset+delta));
+  }
+  function onPointerUp(e){
+    dragRef.current=null;
+    e.currentTarget.releasePointerCapture?.(e.pointerId);
+  }
 
   if(!safeCandles.length){
     return <div className="chart-shell"><div className="chart-tool-rail"><span>⌁</span><span>╱</span><span>⌬</span><span>AI</span><span>T</span><span>◎</span></div><div className="chartbox-pro chartbox-svg"><div className="chart-fallback"><b>Carregando gráfico real</b><span>Buscando candles da Binance...</span></div></div></div>
@@ -119,8 +161,8 @@ function TradingChart({candles,analysis}){
 
   return <div className="chart-shell">
     <div className="chart-tool-rail"><span>⌁</span><span>╱</span><span>⌬</span><span>AI</span><span>T</span><span>◎</span></div>
-    <div className="chartbox-pro chartbox-svg">
-      <svg viewBox={`0 0 ${width} ${height}`} preserveAspectRatio="none" className="native-chart" role="img" aria-label="Gráfico INVCRIPTO">
+    <div className="chartbox-pro chartbox-svg interactive-chart" onWheel={onWheel} onPointerDown={onPointerDown} onPointerMove={onPointerMove} onPointerUp={onPointerUp} onPointerCancel={onPointerUp} onDoubleClick={resetLive} title="Arraste para movimentar. Use o scroll para dar zoom. Clique duas vezes para voltar ao ao vivo.">
+      <svg viewBox={`0 0 ${width} ${height}`} preserveAspectRatio="none" className="native-chart" role="img" aria-label="Gráfico INVCRIPTO interativo">
         <defs>
           <linearGradient id="chartGlow" x1="0" x2="0" y1="0" y2="1">
             <stop offset="0%" stopColor="rgba(22,201,87,.25)" />
@@ -138,16 +180,25 @@ function TradingChart({candles,analysis}){
           const top=y(Math.max(c.open,c.close));
           const bottom=y(Math.min(c.open,c.close));
           const body=Math.max(2,bottom-top);
+          const volH=(Math.min(1,(c.volume||0)/maxVolume)*45);
           return <g key={i}>
             <line x1={x} x2={x} y1={y(c.high)} y2={y(c.low)} className={up?'wick up':'wick down'}/>
             <rect x={x-candleW/2} y={top} width={candleW} height={body} rx="2" className={up?'candle up':'candle down'}/>
-            <rect x={x-candleW/2} y={395-(Math.min(1,c.volume/(safeCandles.reduce((a,b)=>Math.max(a,b.volume),1)||1))*45)} width={candleW} height={(Math.min(1,c.volume/(safeCandles.reduce((a,b)=>Math.max(a,b.volume),1)||1))*45)} className={up?'volume up':'volume down'}/>
+            <rect x={x-candleW/2} y={395-volH} width={candleW} height={volH} className={up?'volume up':'volume down'}/>
           </g>
         })}
-        {sr?.resistance && <text x={width-150} y={y(sr.resistance)-8} className="chart-label resistance">RESISTÊNCIA {sr.resistance.toFixed(2)}</text>}
-        {sr?.support && <text x={width-145} y={y(sr.support)+18} className="chart-label support">SUPORTE {sr.support.toFixed(2)}</text>}
-        <text x="20" y="24" className="chart-label muted">Gráfico nativo INVCRIPTO · candles visíveis · USDT</text>
+        {sr?.resistance && <text x={width-170} y={y(sr.resistance)-8} className="chart-label resistance">RESISTÊNCIA {sr.resistance.toFixed(2)}</text>}
+        {sr?.support && <text x={width-155} y={y(sr.support)+18} className="chart-label support">SUPORTE {sr.support.toFixed(2)}</text>}
+        <text x="20" y="24" className="chart-label muted">INVCRIPTO · {symbol} · {timeframe.toUpperCase()} · arraste/scroll</text>
       </svg>
+      <div className="chart-controls-overlay">
+        <button onClick={(e)=>{e.stopPropagation();pan(18)}} title="Voltar no histórico">‹</button>
+        <button onClick={(e)=>{e.stopPropagation();zoom('in')}} title="Aproximar">＋</button>
+        <button onClick={(e)=>{e.stopPropagation();zoom('out')}} title="Afastar">－</button>
+        <button onClick={(e)=>{e.stopPropagation();resetLive()}} title="Voltar ao candle atual">LIVE</button>
+        <button onClick={(e)=>{e.stopPropagation();pan(-18)}} title="Avançar">›</button>
+      </div>
+      <div className="chart-help">Arraste para mover · Scroll para zoom · Duplo clique para voltar ao vivo · {safeCandles.length} candles</div>
     </div>
   </div>
 }
@@ -189,9 +240,9 @@ function MarketAI({analysis,radar}){
 function SystemPerformance({state}){return <div className="info-card panel-glow"><h3>System Performance</h3><Metric label="Bot status" value={state.active?'Running':'Paused'} pct={state.active?88:35}/><Metric label="API latency" value="112ms" pct={42}/><Metric label="ENV" value={`${num(state.envBalance ?? state.invBalance ?? 0,2)}`} pct={Math.min(100,(state.envBalance ?? state.invBalance ?? 0)*10)}/><Metric label="Uptime" value="online" pct={91}/></div>}
 function Metric({label,value,pct}){return <p className="metric"><span>{label}</span><i><b style={{width:`${pct}%`}}/></i><strong>{value}</strong></p>}
 
-function LiveAnalysis({symbol,setSymbol,candles,state,analysis}){
+function LiveAnalysis({symbol,setSymbol,timeframe,setTimeframe,candles,state,analysis}){
   return <div className="analysis-layout premium-analysis">
-    <div className="chart-card panel-glow"><ChartHeader symbol={symbol} setSymbol={setSymbol} analysis={analysis}/><TradingChart candles={candles} analysis={analysis}/></div>
+    <div className="chart-card panel-glow"><ChartHeader symbol={symbol} setSymbol={setSymbol} timeframe={timeframe} setTimeframe={setTimeframe} analysis={analysis}/><TradingChart candles={candles} analysis={analysis} timeframe={timeframe} symbol={symbol}/></div>
     <div className="panel decision-panel panel-glow"><h3><Activity size={18}/> Motor de análise</h3>
       <div className="status-pill">{state.active?'🟢 ROBÔ ATIVO':'⚪ PAUSADO'}</div>
       <p><b>Regime:</b> {analysis?.regime||'Carregando'}</p><p><b>Ação:</b> {analysis?.action||'WAIT'}</p><p><b>Score:</b> {analysis?.score||0}</p><p><b>Motivo:</b> {analysis?.reason||'Aguardando candle'}</p>

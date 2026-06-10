@@ -1,5 +1,5 @@
 [build]
-  command = "npm install --no-audit --no-fund && npm run build"
+  command = "echo Static deploy - using precompiled dist"
   publish = "dist"
 
 [build.environment]

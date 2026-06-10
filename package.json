@@ -1,9 +1,10 @@
 {
   "scripts": {
     "dev": "vite --host 0.0.0.0",
-    "build": "vite build",
+    "build": "echo \"Static deploy: build skipped, dist already compiled\"",
     "preview": "vite preview",
-    "lint": "echo \"lint placeholder\""
+    "lint": "echo \"lint placeholder\"",
+    "netlify-build": "echo \"Static deploy: build skipped, dist already compiled\""
   },
   "dependencies": {
     "@supabase/supabase-js": "2.45.4",
@@ -15,7 +16,7 @@
   },
   "devDependencies": {},
   "name": "invcripto-ia",
-  "version": "1.0.5",
+  "version": "1.0.8-static-netlify-fix",
   "private": true,
   "engines": {
     "node": "20.x",

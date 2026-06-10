@@ -1,8 +1,7 @@
 [build]
+  command = "echo Deploy estatico INVCRIPTO IA - sem npm install"
   publish = "dist"
-  command = ""
 
-[[redirects]]
-  from = "/*"
-  to = "/index.html"
-  status = 200
+[functions]
+  directory = "netlify/functions"
+  node_bundler = "esbuild"

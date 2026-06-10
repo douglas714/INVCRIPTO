@@ -1,212 +1,152 @@
 <!doctype html>
 <html lang="pt-BR">
-<head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <meta name="theme-color" content="#07130f" />
-  <title>INVCRIPTO IA</title>
-  <link rel="icon" href="/assets/favicon.svg" type="image/svg+xml" />
-  <link rel="preconnect" href="https://api.binance.com" />
-  <link rel="preconnect" href="https://stream.binance.com" />
-  <link rel="stylesheet" href="/assets/styles.css" />
-  <script src="/assets/config.js" defer></script>
-  <script src="/assets/app.js" defer></script>
-</head>
-<body>
-  <noscript><div style="padding:24px;color:#f7f3e4;background:#07130f;font-family:system-ui">Ative o JavaScript para usar o INVCRIPTO IA.</div></noscript>
-  <div class="ambient ambient-one"></div>
-  <div class="ambient ambient-two"></div>
-
-  <main id="app" class="app-shell">
-    <section id="authView" class="auth-view">
-      <div class="auth-card glass-card">
-        <img class="brand-logo" src="/assets/logo.svg" alt="INVCRIPTO IA" />
-        <p class="eyebrow">Robô cripto premium · Binance Spot · Paper Trade</p>
-        <h1>Entre para acessar seu painel</h1>
-        <p class="muted">O cadastro exige CPF e telefone. Cada CPF pode ter apenas uma conta.</p>
-
-        <div class="tabs" role="tablist" aria-label="Acesso">
-          <button id="loginTab" class="tab active" type="button">Login</button>
-          <button id="signupTab" class="tab" type="button">Cadastro</button>
-        </div>
-
-        <form id="loginForm" class="auth-form">
-          <label>E-mail<input id="loginEmail" type="email" autocomplete="email" required placeholder="seu@email.com" /></label>
-          <label>Senha<input id="loginPassword" type="password" autocomplete="current-password" required placeholder="••••••••" /></label>
-          <button class="btn btn-primary" type="submit">Entrar</button>
-          <button id="demoButton" class="btn btn-ghost" type="button">Entrar em modo demonstração</button>
-        </form>
-
-        <form id="signupForm" class="auth-form hidden">
-          <label>Nome completo<input id="signupName" type="text" autocomplete="name" required placeholder="Nome completo" /></label>
-          <label>E-mail<input id="signupEmail" type="email" autocomplete="email" required placeholder="seu@email.com" /></label>
-          <label>CPF<input id="signupCpf" type="text" inputmode="numeric" autocomplete="off" maxlength="14" required placeholder="000.000.000-00" /></label>
-          <label>Telefone<input id="signupPhone" type="tel" autocomplete="tel" required placeholder="(00) 00000-0000" /></label>
-          <label>Senha<input id="signupPassword" type="password" autocomplete="new-password" minlength="6" required placeholder="Mínimo 6 caracteres" /></label>
-          <button class="btn btn-primary" type="submit">Criar conta</button>
-        </form>
-
-        <div id="authMessage" class="message hidden"></div>
-      </div>
-    </section>
-
-    <section id="dashboardView" class="dashboard-view hidden">
-      <header class="topbar glass-card">
-        <div class="brand-line">
-          <img src="/assets/logo.svg" alt="INVCRIPTO IA" />
+  <head>
+    <meta charset="UTF-8"/>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+    <title>INVCRIPTO IA — Crypto Trading Bot</title>
+    <meta name="theme-color" content="#061B12"/>
+    <link rel="icon" type="image/png" href="/favicon.png"/>
+    <link rel="shortcut icon" href="/favicon.ico"/>
+    <link rel="stylesheet" crossorigin href="/assets/index-Be8zCuhI.css">
+    <link rel="stylesheet" crossorigin href="/assets/static-complete-fix.css">
+    <script src="/assets/config.js"></script>
+    <script defer src="/assets/invcripto-static-app.js"></script>
+  </head>
+  <body>
+    <div id="root" class="app-shell premium-theme">
+      <header class="topbar premium-topbar">
+        <div class="brand premium-brand">
+          <img src="/favicon.png" class="brand-mark" alt="INVCRIPTO" onerror="this.style.display='none'"/>
           <div>
-            <p class="eyebrow">INVCRIPTO IA</p>
-            <h2>Dashboard Binance Spot</h2>
+            <strong>INVCRIPTO IA</strong>
+            <span>Crypto Trading Robot · Paper Trade · Binance Spot</span>
           </div>
         </div>
-        <div class="topbar-actions">
-          <span id="connectionBadge" class="status-pill warn">Conectando Binance...</span>
-          <span id="paperBadge" class="status-pill">Paper Trade</span>
-          <button id="adminButton" class="btn btn-small btn-ghost hidden" type="button">Admin</button>
-          <button id="logoutButton" class="btn btn-small" type="button">Sair</button>
-        </div>
+        <button id="logoutBtn" class="btn ghost hidden" type="button">Sair</button>
       </header>
 
-      <section class="hero-grid">
-        <article class="glass-card metric-card env-card">
-          <div class="metric-head">
-            <span>Saldo ENV</span>
-            <span class="coin-badge">1 ENV = US$ 1,00</span>
+      <section id="authPage" class="auth-page">
+        <div class="auth-card premium-auth">
+          <div class="auth-hero">
+            <img src="/invcripto-logo.png" alt="INVCRIPTO IA" onerror="this.src='/favicon.png'"/>
+            <h1 id="authTitle">Entrar no INVCRIPTO IA</h1>
+            <p id="authModeLabel">Login com Supabase Auth ou modo demonstração local.</p>
           </div>
-          <strong id="envBalance">10.00 ENV</strong>
-          <small id="envStatus">Robô ativo · cobrança de 10% sobre lucro realizado</small>
-          <button id="addEnvButton" class="btn btn-primary full" type="button">Adicionar saldo</button>
-        </article>
-
-        <article class="glass-card metric-card">
-          <div class="metric-head"><span>Saldo Binance</span><span>USDT</span></div>
-          <strong id="usdtBalance">--</strong>
-          <small>Será puxado ao conectar API Binance Spot.</small>
-          <button id="connectBinanceButton" class="btn btn-ghost full" type="button">Conectar API Binance</button>
-        </article>
-
-        <article class="glass-card metric-card">
-          <div class="metric-head"><span>Lucro realizado</span><span>Paper</span></div>
-          <strong id="realizedProfit">US$ 0.00</strong>
-          <small>Taxa ENV somente sobre lucro confirmado.</small>
-        </article>
-
-        <article class="glass-card metric-card">
-          <div class="metric-head"><span>Radar IA</span><span id="radarSummaryTag">Aguardando</span></div>
-          <strong id="radarScore">--</strong>
-          <small id="radarSummary">Analise uma moeda para recomendação.</small>
-        </article>
+          <div class="tabs">
+            <button id="loginTab" class="active" type="button">Login</button>
+            <button id="registerTab" type="button">Cadastro</button>
+          </div>
+          <form id="authForm">
+            <div id="registerFields" class="hidden">
+              <label>Nome</label>
+              <input id="nameInput" placeholder="Nome completo" autocomplete="name"/>
+              <label>CPF</label>
+              <input id="cpfInput" placeholder="000.000.000-00" autocomplete="off"/>
+              <label>Telefone</label>
+              <input id="phoneInput" placeholder="(00) 00000-0000" autocomplete="tel"/>
+            </div>
+            <label>E-mail</label>
+            <input id="emailInput" type="email" placeholder="email@dominio.com" autocomplete="email" required/>
+            <label>Senha</label>
+            <input id="passwordInput" type="password" placeholder="mínimo 6 caracteres" autocomplete="current-password" required/>
+            <button class="btn primary auth-submit" type="submit" id="submitBtn">Entrar</button>
+            <button class="btn ghost full-width auth-demo" type="button" id="demoBtn">Entrar em modo demonstração</button>
+            <button class="btn ghost full-width hidden" type="button" id="resendBtn">Reenviar confirmação de e-mail</button>
+            <p id="authMsg" class="msg hidden"></p>
+          </form>
+        </div>
       </section>
 
-      <section class="workspace-grid">
-        <section class="glass-card chart-card">
-          <div class="chart-toolbar">
-            <div>
-              <p class="eyebrow">Gráfico nativo Binance Spot</p>
-              <h3 id="chartTitle">BTCUSDT</h3>
-              <p id="priceLine" class="muted">Carregando candles reais...</p>
-            </div>
-            <div class="control-stack">
-              <label class="select-label">Moeda
-                <select id="symbolSelect">
-                  <option value="BTCUSDT">BTC/USDT</option>
-                  <option value="ETHUSDT">ETH/USDT</option>
-                  <option value="BNBUSDT">BNB/USDT</option>
-                  <option value="SOLUSDT">SOL/USDT</option>
-                  <option value="XRPUSDT">XRP/USDT</option>
-                  <option value="ADAUSDT">ADA/USDT</option>
-                  <option value="LINKUSDT">LINK/USDT</option>
-                  <option value="AVAXUSDT">AVAX/USDT</option>
-                  <option value="DOGEUSDT">DOGE/USDT</option>
-                  <option value="TONUSDT">TON/USDT</option>
-                </select>
-              </label>
-              <div id="timeframeButtons" class="timeframe-buttons" aria-label="Timeframes">
-                <button data-interval="1m" class="active" type="button">1m</button>
-                <button data-interval="5m" type="button">5m</button>
-                <button data-interval="15m" type="button">15m</button>
-                <button data-interval="1h" type="button">1h</button>
-                <button data-interval="4h" type="button">4h</button>
-                <button data-interval="1d" type="button">1d</button>
+      <main id="appMain" class="main premium-main hidden">
+        <aside class="sidebar premium-sidebar">
+          <div class="sidebar-logo-card"><img src="/invcripto-logo.png" alt="INVCRIPTO IA" onerror="this.src='/favicon.png'"/></div>
+          <button class="side-link active" data-view="client" type="button">🤖 Painel Cliente</button>
+          <button class="side-link" data-view="admin" type="button">🛡️ Admin</button>
+          <div class="sidebar-status"><span class="live-dot"></span>Sistema online<small>Layout premium restaurado</small></div>
+        </aside>
+
+        <section class="content premium-content">
+          <div id="clientView" class="robot-dashboard">
+            <div class="hero-row">
+              <div class="brand-title">
+                <img src="/favicon.png" alt="INVCRIPTO" onerror="this.style.display='none'"/>
+                <div><h1>INVCRIPTO IA</h1><p>Gráfico real Binance Spot · Paper Trade · créditos ENV em USDT</p></div>
               </div>
+              <div class="live-badge"><span class="live-dot"></span><span id="botStatusHero">PAUSADO</span></div>
             </div>
+
+            <div class="kpi-strip">
+              <div class="mini-kpi"><div class="kpi-icon">💵</div><span>Saldo USDT Paper</span><strong id="paperBalance">US$ 1,000.00</strong><small>Operação em dólar/USDT</small></div>
+              <div class="mini-kpi env-card"><div class="kpi-icon">💳</div><span>Saldo ENV</span><strong id="envBalanceKpi">10.00 ENV</strong><small>1 ENV = US$ 1,00</small><button type="button" class="env-add-btn" data-tab="inv">Adicionar saldo</button></div>
+              <div class="mini-kpi"><div class="kpi-icon">📈</div><span>Preço Binance</span><strong id="lastPriceKpi">--</strong><small id="lastPriceSymbol">BTCUSDT</small></div>
+              <div class="mini-kpi"><div class="kpi-icon">⚡</div><span>Lucro realizado</span><strong id="profitKpi">US$ 0.00</strong><small>Taxa 10% sobre lucro</small></div>
+              <div class="kpi-live"><img src="/favicon.png" alt="INV" onerror="this.style.display='none'"/><strong>Paper Trade</strong><span id="connectionStatus">Conectando Binance...</span></div>
+            </div>
+
+            <div class="tabbar premium-tabs">
+              <button class="app-tab active" data-tab="dashboard" type="button">Dashboard</button>
+              <button class="app-tab" data-tab="analysis" type="button">Análise ao vivo</button>
+              <button class="app-tab" data-tab="scanner" type="button">Radar IA</button>
+              <button class="app-tab" data-tab="orders" type="button">Operações</button>
+              <button class="app-tab" data-tab="inv" type="button">Créditos ENV</button>
+              <button class="app-tab" data-tab="settings" type="button">API Binance</button>
+            </div>
+
+            <section id="tab-dashboard" class="app-section terminal-layout">
+              <div class="chart-zone panel-glow">
+                <div class="chart-head-pro">
+                  <div class="symbol-select"><span class="coin-badge">₿</span><select id="symbolSelect"></select><strong id="chartPrice">...</strong><small id="chartRegime">Carregando</small></div>
+                  <div class="timeframes" id="timeframeButtons"></div>
+                  <div class="chart-actions"><span>⚙ Indicadores</span><span>✦ Template</span></div>
+                </div>
+                <div class="chart-shell">
+                  <div class="chart-tool-rail"><span>⌁</span><span>╱</span><span>⌬</span><span>AI</span><span>T</span><span>◎</span></div>
+                  <div class="chartbox-pro chartbox-svg interactive-chart" id="chartBox" title="Arraste para movimentar. Use o scroll para zoom. Clique duas vezes para voltar ao vivo.">
+                    <canvas id="tradeChart" class="native-chart-canvas"></canvas>
+                    <div id="chartLoading" class="chart-loading"><b>Carregando gráfico real</b><span>Buscando candles da Binance Spot...</span></div>
+                    <div class="chart-controls-overlay"><button id="panLeft" type="button">‹</button><button id="zoomIn" type="button">＋</button><button id="zoomOut" type="button">－</button><button id="liveBtn" type="button">LIVE</button><button id="panRight" type="button">›</button></div>
+                    <div class="chart-help" id="chartHelp">Arraste para mover · Scroll para zoom · Duplo clique para voltar ao vivo</div>
+                  </div>
+                </div>
+              </div>
+
+              <div class="trade-control panel-glow">
+                <h3><span></span> Trading Control</h3>
+                <label>Modo de escolha</label><select id="modeSelect"><option value="recommended">Operar recomendado pela IA</option><option value="manual_assisted">Manual assistido</option><option value="auto_ai">IA escolhe automático</option></select>
+                <label>Moeda selecionada</label><select id="symbolSelectControl"></select>
+                <label>Recomendação IA</label><div class="recommend-line"><strong id="recommendedPair">BTC/USDT</strong><span id="recommendedScore">0/100</span></div>
+                <div class="mode-buttons"><button class="active" type="button">Spot</button><button type="button">Paper</button></div>
+                <div class="switch-row"><span>Auto Trading</span><button id="activeSwitch" class="switch" type="button"></button></div>
+                <button id="operateRecommended" class="btn primary gold-btn" type="button">▶ Operar recomendado</button>
+                <button id="operateSelected" class="btn ghost full" type="button">🛡 Operar moeda selecionada</button>
+                <button id="stopBot" class="btn danger full" type="button">⏹ Parar robô</button>
+                <small class="sync"><span class="live-dot"></span><span id="lastSync">Sincronizando...</span></small>
+              </div>
+
+              <div class="info-card panel-glow"><h3>Recommended Pair</h3><div class="pair-row"><span class="coin-badge">₿</span><strong id="recommendedPair2">BTC/USDT</strong><span class="badge ok">IA</span></div><p>Confiança: <b id="confidenceText">0%</b></p><div class="progress"><i id="confidenceBar" style="width:0%"></i></div><p><span>Hold Recovery:</span><b id="holdText">94/100</b></p><p><span>Entrada:</span><b id="entryText">aguardando</b></p><p><span>Alvo:</span><b id="targetText">aguardando</b></p><button class="btn ghost small" id="followAi" type="button">Seguir IA</button></div>
+              <div class="info-card panel-glow"><h3>Recent Trades</h3><div id="recentTrades"></div></div>
+              <div class="ai-card panel-glow"><h3>AI Market Analysis</h3><div class="ai-orb">🧠<span>AI</span></div><p>Sentimento atual</p><strong id="sentimentText">NEUTRO</strong><small id="analysisReason">Robô aguardando confirmação de entrada.</small><div class="progress"><i id="aiScoreBar" style="width:0%"></i></div><b id="aiScoreText">0%</b></div>
+              <div class="info-card panel-glow"><h3>System Performance</h3><p class="metric"><span>Bot status</span><i><b id="botMetric" style="width:35%"></b></i><strong id="botMetricText">Paused</strong></p><p class="metric"><span>API latency</span><i><b style="width:42%"></b></i><strong id="latencyText">--</strong></p><p class="metric"><span>ENV</span><i><b id="envMetric" style="width:100%"></b></i><strong id="envMetricText">10.00</strong></p><p class="metric"><span>Uptime</span><i><b style="width:91%"></b></i><strong>online</strong></p></div>
+            </section>
+
+            <section id="tab-analysis" class="app-section analysis-layout premium-analysis hidden">
+              <div class="chart-card panel-glow"><h3>Gráfico e suporte/resistência ao vivo</h3><div class="chart-shell compact-chart-clone"><div class="chartbox-pro chartbox-svg"><canvas id="analysisChart" class="native-chart-canvas"></canvas></div></div></div>
+              <div class="panel decision-panel panel-glow"><h3>⚡ Motor de análise</h3><div class="status-pill" id="analysisBotStatus">⚪ PAUSADO</div><p><b>Regime:</b> <span id="analysisRegime">Carregando</span></p><p><b>Ação:</b> <span id="analysisAction">WAIT</span></p><p><b>Score:</b> <span id="analysisScore">0</span></p><p><b>Motivo:</b> <span id="analysisReasonPanel">Aguardando candle</span></p><p><b>Suporte:</b> <span id="supportText">--</span></p><p><b>Resistência:</b> <span id="resistanceText">--</span></p><h4>Cesta atual</h4><p class="muted" id="positionText">Sem posição aberta.</p></div>
+            </section>
+
+            <section id="tab-scanner" class="app-section panel panel-glow hidden"><h3>✨ Radar IA — Top moedas Binance</h3><p class="muted">O cliente pode selecionar a moeda, mas a IA recomenda a melhor oportunidade com score de entrada, volume, risco e recuperação de hold.</p><div class="scanner-grid" id="scannerGrid"></div><button class="btn primary gold-btn" id="operateBestScanner" type="button">Operar melhor recomendação</button></section>
+            <section id="tab-orders" class="app-section panel panel-glow hidden"><h3>🧾 Histórico de operações</h3><div class="table-wrap"><table><thead><tr><th>Hora</th><th>Side</th><th>Ativo</th><th>Preço</th><th>Valor</th><th>Lucro</th><th>Taxa ENV</th></tr></thead><tbody id="ordersBody"></tbody></table></div></section>
+            <section id="tab-inv" class="app-section env-page panel panel-glow hidden"><h3>💳 Créditos ENV</h3><div class="env-balance-card"><div><span>Saldo disponível</span><strong id="envBalanceBig">10.00 ENV</strong><small>1 ENV = US$ 1,00 · taxa de 10% somente sobre lucro realizado em USDT</small></div><button id="addEnvBtn" class="btn primary gold-btn" type="button">Adicionar saldo</button></div><div class="env-recharge-grid" id="envPackages"></div><label>Valor da recarga ENV</label><input id="envAmount" type="number" min="1" step="1" value="10"/><p>O robô opera em USDT. No pagamento via Pix/cartão, o valor em reais será convertido pela cotação do dólar/USDT do momento para liberar ENV.</p><div class="alert">Quando o ENV zerar, o robô bloqueia novas entradas, encerra a cesta conforme segurança e solicita recarga.</div><div id="envMsg" class="success-box hidden"></div></section>
+            <section id="tab-settings" class="app-section panel panel-glow hidden"><h3>🔑 Configurações Binance</h3><p class="muted">Ao conectar a API, o backend deve consultar o saldo USDT disponível. O robô opera somente pares contra USDT.</p><label>API Key</label><input id="apiKeyInput" placeholder="Cole a API Key"/><label>Secret Key</label><input id="apiSecretInput" type="password" placeholder="Cole a Secret Key"/><button class="btn primary gold-btn" id="testBinanceApi" type="button">Testar conexão e puxar saldo USDT</button><div class="alert">Permissões recomendadas: leitura + spot trading. Saque deve estar desativado. Valor BRL fica apenas para recarga, convertido pela cotação do dólar/USDT.</div><p id="binanceApiMsg" class="msg hidden"></p></section>
           </div>
-          <div id="chartContainer" class="chart-container" aria-label="Gráfico de candles"></div>
-          <div class="chart-footer">
-            <span id="supportValue">Suporte: --</span>
-            <span id="resistanceValue">Resistência: --</span>
-            <span>Arraste para navegar · scroll/pinch para zoom</span>
+
+          <div id="adminView" class="hidden">
+            <div class="page-title"><h1>Painel administrador</h1><p>Controle de cadastros, saldos ENV e status dos usuários.</p></div>
+            <div class="grid"><div class="card"><span>Usuários</span><strong id="adminUsersCount">1</strong><small>cadastros locais/demo</small></div><div class="card"><span>ENV em carteira</span><strong id="adminEnvTotal">10.00</strong><small>saldo total</small></div><div class="card"><span>Status</span><strong>Online</strong><small>admin demo</small></div><div class="card"><span>Moeda base</span><strong>USDT</strong><small>não BRL</small></div></div>
+            <div class="panel panel-glow"><h3>Cadastros</h3><div class="table-wrap"><table><thead><tr><th>Nome</th><th>E-mail</th><th>Telefone</th><th>CPF</th><th>ENV</th><th>Status</th><th>Ação</th></tr></thead><tbody id="adminUsersBody"></tbody></table></div></div>
           </div>
         </section>
-
-        <aside class="side-panel">
-          <section class="glass-card radar-card">
-            <div class="section-title">
-              <div>
-                <p class="eyebrow">Radar IA</p>
-                <h3>Score e recomendação</h3>
-              </div>
-              <button id="recommendButton" class="btn btn-small btn-primary" type="button">Recomendar moeda</button>
-            </div>
-            <div class="radar-meter"><span id="meterFill"></span></div>
-            <dl class="radar-list">
-              <div><dt>Tendência</dt><dd id="trendValue">--</dd></div>
-              <div><dt>Volume</dt><dd id="volumeValue">--</dd></div>
-              <div><dt>Risco</dt><dd id="riskValue">--</dd></div>
-              <div><dt>Suporte</dt><dd id="radarSupport">--</dd></div>
-              <div><dt>Resistência</dt><dd id="radarResistance">--</dd></div>
-              <div><dt>Recomendação</dt><dd id="recommendationValue">--</dd></div>
-            </dl>
-          </section>
-
-          <section class="glass-card robot-card">
-            <div class="section-title">
-              <div>
-                <p class="eyebrow">Robô</p>
-                <h3>Operação segura</h3>
-              </div>
-              <span id="robotState" class="status-pill">Pausado</span>
-            </div>
-            <p class="muted">Paper Trade ativo. Binance Spot real fica preparado para próxima etapa.</p>
-            <div class="robot-actions">
-              <button id="startRobotButton" class="btn btn-primary" type="button">Iniciar robô</button>
-              <button id="pauseRobotButton" class="btn btn-ghost" type="button">Pausar</button>
-            </div>
-            <div id="robotNotice" class="notice">O robô recomenda a moeda, mas o cliente decide se aceita.</div>
-          </section>
-        </aside>
-      </section>
-    </section>
-  </main>
-
-  <dialog id="envModal" class="modal glass-card">
-    <form method="dialog">
-      <button class="modal-close" value="cancel" aria-label="Fechar">×</button>
-      <h3>Adicionar saldo ENV</h3>
-      <p class="muted">Futuro Pix será pago em real e convertido pela cotação USDT/BRL do momento do pagamento.</p>
-      <label>Quantidade de ENV
-        <input id="envAmount" type="number" min="10" step="1" value="10" />
-      </label>
-      <div class="conversion-box">
-        <span>Valor em USDT</span><strong id="envUsdPreview">US$ 10.00</strong>
-        <small id="envBrlPreview">Estimativa BRL: calculada na integração Pix.</small>
-      </div>
-      <menu class="modal-actions">
-        <button class="btn" value="cancel">Cancelar</button>
-        <button id="confirmAddEnv" class="btn btn-primary" value="default" type="button">Solicitar recarga</button>
-      </menu>
-    </form>
-  </dialog>
-
-  <dialog id="adminModal" class="modal glass-card admin-modal">
-    <form method="dialog">
-      <button class="modal-close" value="cancel" aria-label="Fechar">×</button>
-      <h3>Painel administrador</h3>
-      <p class="muted">Visualizar cadastros, adicionar ENV manualmente e bloquear/desbloquear usuários.</p>
-      <div id="adminUsers" class="admin-users">Carregando usuários...</div>
-    </form>
-  </dialog>
-
-  <div id="toast" class="toast hidden"></div>
-</body>
+      </main>
+    </div>
+  </body>
 </html>

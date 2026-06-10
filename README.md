@@ -1,50 +1,46 @@
-# INV CRIPTO IA
+# INVCRIPTO IA
 
-Plataforma web para robô Binance Spot BTC/ETH com login Supabase, CPF único, telefone obrigatório, carteira INV, painel cliente, painel administrador e modo Paper Trade com gráfico real.
+Plataforma web para robô de cripto com layout premium verde/dourado, painel cliente, painel administrador, Supabase Auth, créditos INV, modo Paper Trade e scanner IA.
 
-## Configuração rápida
+## Novidades desta versão
 
-1. Crie/abra o projeto Supabase `pxczyddzqagzijsipche`.
-2. No Supabase SQL Editor, execute:
-   - `supabase/schema.sql`
-3. Cadastre seu usuário pelo site.
-4. No Supabase SQL Editor, execute:
-   - `supabase/02_promover_admin.sql`
-5. Configure o Netlify usando `NETLIFY_ENV_VARIAVEIS.txt`.
-6. Suba para GitHub e conecte no Netlify.
+- Logo INVCRIPTO aplicada no painel.
+- Favicon configurado em PNG/ICO.
+- Layout premium baseado na paleta verde escuro + dourado.
+- Dashboard com gráfico real, suporte/resistência, trading control e cards de análise.
+- Radar IA com moedas fortes: BTC, ETH, BNB, SOL, XRP, ADA, AVAX, DOGE, LINK, DOT, LTC e TRX.
+- Cliente pode seguir a recomendação da IA ou escolher manualmente a moeda.
+- Mantém Supabase, CPF/telefone obrigatório, admin com bloqueio de usuário e créditos INV.
 
-## Build Netlify
+## Instalação
 
 ```bash
 npm install
-npm run build
+npm run dev
 ```
 
-Publish directory:
+## Build Netlify
 
 ```text
-dist
+Build command: npm run build
+Publish directory: dist
 ```
 
-## Cadastro obrigatório
+## Supabase
 
-O cadastro exige:
+Execute no Supabase SQL Editor:
 
-- Nome completo
-- CPF único
-- Telefone obrigatório
-- E-mail
-- Senha
+```text
+supabase/schema.sql
+```
 
-## Painel admin
+Depois cadastre seu usuário e rode:
 
-O painel admin permite:
+```text
+supabase/02_promover_admin.sql
+```
 
-- Ver clientes
-- Ver CPF mascarado
-- Ver telefone
-- Adicionar INV manualmente
-- Bloquear usuário
-- Desbloquear usuário
+## Variáveis de ambiente
 
-Ao bloquear um usuário, os robôs dele são pausados automaticamente.
+Use `.env.example` apenas como modelo. Não suba chaves reais para o GitHub.
+Cadastre as chaves reais no Netlify em `Site settings > Environment variables`.

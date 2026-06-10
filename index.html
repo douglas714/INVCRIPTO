@@ -26,5 +26,17 @@
     });
   </script>
   <script type="module" crossorigin src="/assets/index-CImsDBWP.js"></script>
+
+  <script>
+    setTimeout(function(){
+      var root=document.getElementById('root');
+      if(root && root.textContent && root.textContent.includes('Carregando painel seguro')){
+        var note=document.createElement('div');
+        note.style.cssText='position:fixed;left:16px;bottom:16px;background:#061B12;color:#f5d77b;border:1px solid #d8b24a;padding:10px 12px;border-radius:10px;font:12px Arial;z-index:9999';
+        note.textContent='App ainda carregando. Se ficar preso, abra DevTools > Console.';
+        document.body.appendChild(note);
+      }
+    },8000);
+  </script>
 </body>
 </html>

@@ -1,10 +1,9 @@
 [build]
-  command = "echo Deploy estatico INVCRIPTO IA - usando dist precompilado"
+  command = "echo Deploy estatico INVCRIPTO IA - dist pronto"
   publish = "dist"
 
 [functions]
   directory = "netlify/functions"
-  node_bundler = "esbuild"
 
 [[redirects]]
   from = "/*"

@@ -1,0 +1,10 @@
+dist/index.html: True
+dist/assets/index-CImsDBWP.js: True
+dist/assets/index-DLAUK74H.css: True
+assets/index-CImsDBWP.js: True
+assets/index-DLAUK74H.css: True
+netlify.toml: True
+netlify.toml contem npm install: False
+netlify.toml contem npm run build: False
+
+Correção principal: assets compilados também copiados para a raiz. O index usa caminhos absolutos /assets/...; se o Netlify/GitHub servir a raiz durante teste, o bundle agora existe e o app real pode montar.

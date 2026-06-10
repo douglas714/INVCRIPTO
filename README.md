@@ -44,3 +44,13 @@ supabase/02_promover_admin.sql
 
 Use `.env.example` apenas como modelo. Não suba chaves reais para o GitHub.
 Cadastre as chaves reais no Netlify em `Site settings > Environment variables`.
+
+
+## Atualização USDT/ENV
+
+- O robô opera pares contra USDT.
+- Ao conectar a API Binance, o backend deve consultar e exibir o saldo USDT disponível.
+- O painel usa dólar/USDT para saldo, lucro e taxa.
+- Créditos ENV: 1 ENV = US$ 1,00.
+- Pagamentos em BRL devem converter para ENV pela cotação do dólar/USDT no momento da confirmação.
+- Gráfico nativo SVG corrigido com candles visíveis, sem dependência externa.

@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { initialPaperState, runPaperDecision } from '../lib/paperBot.js';
 import { analyzeMarket, supportResistance } from '../lib/strategy.js';
-import { brl, num } from '../lib/format.js';
+import { brl, usd, usdt, env, num } from '../lib/format.js';
 import { Activity, BarChart3, Bot, Brain, CreditCard, Gauge, History, KeyRound, Pause, Play, Settings, ShieldCheck, SlidersHorizontal, Sparkles, StopCircle, TrendingUp, Wallet } from 'lucide-react';
 
 const allowedSymbols = ['BTCUSDT','ETHUSDT','BNBUSDT','SOLUSDT','XRPUSDT','ADAUSDT','AVAXUSDT','DOGEUSDT','LINKUSDT','DOTUSDT','LTCUSDT','TRXUSDT'];
@@ -13,7 +13,7 @@ export default function ClientPanel({user}){
   const [activeTab,setActiveTab]=useState('dashboard');
   const [symbol,setSymbol]=useState('BTCUSDT');
   const [candles,setCandles]=useState([]);
-  const [state,setState]=useState(()=>JSON.parse(localStorage.getItem('df_paper_state')||'null') || initialPaperState(Number(import.meta.env.VITE_DEFAULT_PAPER_BALANCE_BRL||1000)));
+  const [state,setState]=useState(()=>JSON.parse(localStorage.getItem('df_paper_state')||'null') || initialPaperState(Number(import.meta.env.VITE_DEFAULT_PAPER_BALANCE_USD||1000)));
   const [selectionMode,setSelectionMode]=useState('recommended');
   const lastPrice=candles.at(-1)?.close||0;
   const analysis = useMemo(()=>analyzeMarket(candles),[candles]);
@@ -42,13 +42,13 @@ export default function ClientPanel({user}){
   function operateRecommended(){ setSymbol(recommended.symbol); setSelectionMode('recommended'); setState(s=>({...s,active:true,symbol:recommended.symbol})); }
   function operateSelected(){ setSelectionMode('manual_assisted'); setState(s=>({...s,active:true,symbol})); }
 
-  const tabs=[['dashboard','Dashboard'],['analysis','Análise ao vivo'],['scanner','Radar IA'],['orders','Operações'],['inv','Créditos INV'],['settings','API Binance']];
+  const tabs=[['dashboard','Dashboard'],['analysis','Análise ao vivo'],['scanner','Radar IA'],['orders','Operações'],['inv','Créditos ENV'],['settings','API Binance']];
 
   return <div className="robot-dashboard">
     <div className="hero-row">
       <div className="brand-title">
         <img src="/favicon.png" alt="INVCRIPTO"/>
-        <div><h1>INVCRIPTO IA</h1><p>Crypto Trading Robot — gráfico real, paper trade, radar IA e créditos INV.</p></div>
+        <div><h1>INVCRIPTO IA</h1><p>Crypto Trading Robot — gráfico real, paper trade, radar IA e créditos ENV em dólar.</p></div>
       </div>
       <div className="live-badge"><span className="live-dot"/> {state.active?'LIVE · Bot Active':'PAUSADO'}</div>
     </div>
@@ -69,8 +69,8 @@ export default function ClientPanel({user}){
 function KpiStrip({state,lastPrice,symbol}){
   const winRate = state.orders.length ? Math.round((state.orders.filter(o=>Number(o.profitBrl||0)>0).length / Math.max(1,state.orders.filter(o=>o.side==='SELL').length))*100) : 78;
   return <div className="kpi-strip">
-    <MiniKpi icon={<Wallet/>} label="Saldo Paper" value={brl(state.balanceBrl||0)} delta="Simulação"/>
-    <MiniKpi icon={<TrendingUp/>} label="Lucro total" value={brl(state.realizedProfitBrl||0)} delta={`${num(state.feesInv||0,2)} INV taxa`}/>
+    <MiniKpi icon={<Wallet/>} label="Saldo Paper" value={usd(state.balanceUsd ?? state.balanceBrl ?? 0)} delta="Simulação USDT"/>
+    <MiniKpi icon={<TrendingUp/>} label="Lucro total" value={usd(state.realizedProfitUsd ?? state.realizedProfitBrl ?? 0)} delta={`${num(state.feesEnv ?? state.feesInv ?? 0,2)} ENV taxa`}/>
     <MiniKpi icon={<Gauge/>} label="Win Rate" value={`${winRate||0}%`} delta="estimado"/>
     <MiniKpi icon={<BarChart3/>} label="Par ativo" value={symbol.replace('USDT','/USDT')} delta={lastPrice?`$ ${lastPrice.toFixed(2)}`:'carregando'}/>
     <div className="kpi-live"><img src="/favicon.png"/><strong>{state.active?'ROBÔ ATIVO':'AGUARDANDO'}</strong><span>{state.active?'Último sync agora':'Clique em iniciar'}</span></div>
@@ -146,7 +146,7 @@ function TradingChart({candles,analysis}){
         })}
         {sr?.resistance && <text x={width-150} y={y(sr.resistance)-8} className="chart-label resistance">RESISTÊNCIA {sr.resistance.toFixed(2)}</text>}
         {sr?.support && <text x={width-145} y={y(sr.support)+18} className="chart-label support">SUPORTE {sr.support.toFixed(2)}</text>}
-        <text x="20" y="24" className="chart-label muted">Gráfico nativo INVCRIPTO · sem dependência externa</text>
+        <text x="20" y="24" className="chart-label muted">Gráfico nativo INVCRIPTO · candles visíveis · USDT</text>
       </svg>
     </div>
   </div>
@@ -178,7 +178,7 @@ function RecommendedCard({recommended,symbol,analysis,setSymbol,operateRecommend
 function RecentTrades({orders}){
   const items = orders.slice(0,4);
   const fallback=[['BTC/USDT','LONG','+1.28%','2m'],['ETH/USDT','LONG','+2.15%','18m'],['SOL/USDT','LONG','+0.94%','35m'],['BNB/USDT','WAIT','0.00%','1h']];
-  return <div className="info-card panel-glow"><h3>Recent Trades</h3>{items.length?items.map(o=><div className="trade-line" key={o.id}><span>{o.symbol.replace('USDT','/USDT')}</span><b className={o.side==='BUY'?'green':'gold'}>{o.side}</b><small>{o.profitBrl?brl(o.profitBrl):brl(o.valueBrl||0)}</small></div>):fallback.map((x,i)=><div className="trade-line" key={i}><span>{x[0]}</span><b className={x[1]==='WAIT'?'gold':'green'}>{x[1]}</b><small>{x[2]} · {x[3]}</small></div>)}</div>
+  return <div className="info-card panel-glow"><h3>Recent Trades</h3>{items.length?items.map(o=><div className="trade-line" key={o.id}><span>{o.symbol.replace('USDT','/USDT')}</span><b className={o.side==='BUY'?'green':'gold'}>{o.side}</b><small>{o.profitUsd?usd(o.profitUsd):usd(o.valueUsd ?? o.valueBrl ?? 0)}</small></div>):fallback.map((x,i)=><div className="trade-line" key={i}><span>{x[0]}</span><b className={x[1]==='WAIT'?'gold':'green'}>{x[1]}</b><small>{x[2]} · {x[3]}</small></div>)}</div>
 }
 
 function MarketAI({analysis,radar}){
@@ -186,7 +186,7 @@ function MarketAI({analysis,radar}){
   const score=radar[0]?.score||0;
   return <div className="ai-card panel-glow"><h3>AI Market Analysis</h3><div className="ai-orb"><Brain size={38}/><span>AI</span></div><p>Sentimento atual</p><strong>{sentiment}</strong><small>{analysis?.reason||'Robô aguardando confirmação de entrada.'}</small><div className="progress"><i style={{width:`${score}%`}}/></div><b>{score}%</b></div>
 }
-function SystemPerformance({state}){return <div className="info-card panel-glow"><h3>System Performance</h3><Metric label="Bot status" value={state.active?'Running':'Paused'} pct={state.active?88:35}/><Metric label="API latency" value="112ms" pct={42}/><Metric label="INV" value={`${num(state.invBalance,2)}`} pct={Math.min(100,state.invBalance*10)}/><Metric label="Uptime" value="online" pct={91}/></div>}
+function SystemPerformance({state}){return <div className="info-card panel-glow"><h3>System Performance</h3><Metric label="Bot status" value={state.active?'Running':'Paused'} pct={state.active?88:35}/><Metric label="API latency" value="112ms" pct={42}/><Metric label="ENV" value={`${num(state.envBalance ?? state.invBalance ?? 0,2)}`} pct={Math.min(100,(state.envBalance ?? state.invBalance ?? 0)*10)}/><Metric label="Uptime" value="online" pct={91}/></div>}
 function Metric({label,value,pct}){return <p className="metric"><span>{label}</span><i><b style={{width:`${pct}%`}}/></i><strong>{value}</strong></p>}
 
 function LiveAnalysis({symbol,setSymbol,candles,state,analysis}){
@@ -205,9 +205,9 @@ function Scanner({radar,symbol,setSymbol,operateRecommended}){
   return <div className="panel panel-glow"><h3><Sparkles size={18}/> Radar IA — Top moedas Binance</h3><p className="muted">O cliente pode selecionar a moeda, mas a IA recomenda a melhor oportunidade com score de entrada e Hold Recovery de 12 meses.</p><div className="scanner-grid">{radar.map(r=><div className={r.symbol===symbol?'scanner-card active':'scanner-card'} key={r.symbol}><strong>{r.symbol.replace('USDT','/USDT')}</strong><span>Score {r.score}/100</span><small>Hold {r.hold}/100 · Liquidez {r.liquidity}/100</small><button className="btn small ghost" onClick={()=>setSymbol(r.symbol)}>Selecionar</button></div>)}</div><button className="btn primary gold-btn" onClick={operateRecommended}>Operar melhor recomendação</button></div>
 }
 
-function Orders({orders}){return <div className="panel panel-glow"><h3><History size={18}/> Histórico de operações</h3><div className="table-wrap"><table><thead><tr><th>Hora</th><th>Side</th><th>Ativo</th><th>Preço</th><th>Valor</th><th>Lucro</th><th>Taxa INV</th></tr></thead><tbody>{orders.map(o=><tr key={o.id}><td>{new Date(o.at).toLocaleString('pt-BR')}</td><td>{o.side}</td><td>{o.symbol}</td><td>{o.price.toFixed(2)}</td><td>{brl(o.valueBrl||0)}</td><td>{o.profitBrl?brl(o.profitBrl):'-'}</td><td>{o.feeInv?num(o.feeInv,2):'-'}</td></tr>)}</tbody></table></div></div>}
-function INV({state}){return <div className="panel panel-glow"><h3><CreditCard size={18}/> Créditos INV</h3><p>Saldo atual: <b>{num(state.invBalance,2)} INV</b></p><p>1 INV = R$ 1,00. No modo real, o sistema descontará 10% do lucro realizado. No modo paper, a taxa é apenas simulada.</p><div className="alert">Quando o INV zerar, o robô pausa e solicita recarga.</div></div>}
-function BinanceSettings(){return <div className="panel panel-glow"><h3><KeyRound size={18}/> Configurações Binance</h3><p className="muted">MVP visual. As credenciais reais devem ser criptografadas no backend. Nunca peça permissão de saque.</p><label>API Key</label><input placeholder="Cole a API Key"/><label>Secret Key</label><input type="password" placeholder="Cole a Secret Key"/><button className="btn primary gold-btn">Testar conexão</button><div className="alert">Permissões recomendadas: leitura + spot trading. Saque deve estar desativado.</div></div>}
+function Orders({orders}){return <div className="panel panel-glow"><h3><History size={18}/> Histórico de operações</h3><div className="table-wrap"><table><thead><tr><th>Hora</th><th>Side</th><th>Ativo</th><th>Preço</th><th>Valor</th><th>Lucro</th><th>Taxa ENV</th></tr></thead><tbody>{orders.map(o=><tr key={o.id}><td>{new Date(o.at).toLocaleString('pt-BR')}</td><td>{o.side}</td><td>{o.symbol}</td><td>{o.price.toFixed(2)}</td><td>{usd(o.valueUsd ?? o.valueBrl ?? 0)}</td><td>{o.profitUsd?usd(o.profitUsd):'-'}</td><td>{o.feeEnv?num(o.feeEnv,2):'-'}</td></tr>)}</tbody></table></div></div>}
+function INV({state}){const envBalance=state.envBalance ?? state.invBalance ?? 0;return <div className="panel panel-glow"><h3><CreditCard size={18}/> Créditos ENV</h3><p>Saldo atual: <b>{num(envBalance,2)} ENV</b></p><p>1 ENV = US$ 1,00. O robô opera em USDT e desconta 10% apenas do lucro realizado em dólar.</p><p>No pagamento via Pix/cartão, o valor em reais será convertido pela cotação do dólar/USDT do momento para liberar ENV.</p><div className="alert">Quando o ENV zerar, o robô bloqueia novas entradas, encerra a cesta conforme segurança e solicita recarga.</div></div>}
+function BinanceSettings(){return <div className="panel panel-glow"><h3><KeyRound size={18}/> Configurações Binance</h3><p className="muted">Ao conectar a API, o backend deve consultar o saldo USDT disponível. O robô opera somente pares contra USDT.</p><label>API Key</label><input placeholder="Cole a API Key"/><label>Secret Key</label><input type="password" placeholder="Cole a Secret Key"/><button className="btn primary gold-btn">Testar conexão e puxar saldo USDT</button><div className="alert">Permissões recomendadas: leitura + spot trading. Saque deve estar desativado. Valor BRL fica apenas para recarga, convertido pela cotação do dólar/USDT.</div></div>}
 
 function buildRadar(analysis, currentSymbol){
   const base = allowedSymbols.map((s,idx)=>{

@@ -1,0 +1,24 @@
+{
+  "scripts": {
+    "dev": "vite --host 0.0.0.0",
+    "build": "vite build",
+    "preview": "vite preview",
+    "lint": "echo \"lint placeholder\""
+  },
+  "dependencies": {
+    "@supabase/supabase-js": "2.45.4",
+    "@vitejs/plugin-react": "4.3.4",
+    "vite": "5.4.11",
+    "react": "18.2.0",
+    "react-dom": "18.2.0",
+    "lucide-react": "0.468.0"
+  },
+  "devDependencies": {},
+  "name": "invcripto-ia",
+  "version": "1.0.5",
+  "private": true,
+  "engines": {
+    "node": "20.x",
+    "npm": ">=10"
+  }
+}

@@ -54,7 +54,7 @@ export default function ClientPanel({user}){
       <div className="live-badge"><span className="live-dot"/> {state.active?'LIVE · Bot Active':'PAUSADO'}</div>
     </div>
 
-    <KpiStrip state={state} setState={setState} lastPrice={lastPrice} symbol={symbol}/>
+    <KpiStrip state={state} lastPrice={lastPrice} symbol={symbol}/>
 
     <div className="tabbar premium-tabs">{tabs.map(([k,l])=><button key={k} className={activeTab===k?'active':''} onClick={()=>setActiveTab(k)}>{l}</button>)}</div>
 
@@ -62,16 +62,15 @@ export default function ClientPanel({user}){
     {activeTab==='analysis' && <LiveAnalysis symbol={symbol} setSymbol={setSymbol} timeframe={timeframe} setTimeframe={setTimeframe} candles={candles} state={state} analysis={analysis}/>}    
     {activeTab==='scanner' && <Scanner radar={radar} symbol={symbol} setSymbol={setSymbol} operateRecommended={operateRecommended}/>}    
     {activeTab==='orders' && <Orders orders={state.orders}/>}    
-    {activeTab==='inv' && <INV state={state} setState={setState}/>}    
+    {activeTab==='inv' && <INV state={state}/>}    
     {activeTab==='settings' && <BinanceSettings/>}
   </div>
 }
 
-function KpiStrip({state,setState,lastPrice,symbol}){
+function KpiStrip({state,lastPrice,symbol}){
   const winRate = state.orders.length ? Math.round((state.orders.filter(o=>Number(o.profitBrl||0)>0).length / Math.max(1,state.orders.filter(o=>o.side==='SELL').length))*100) : 78;
   return <div className="kpi-strip">
     <MiniKpi icon={<Wallet/>} label="Saldo Paper" value={usd(state.balanceUsd ?? state.balanceBrl ?? 0)} delta="Simulação USDT"/>
-    <div className="mini-kpi env-kpi-hotfix"><div className="kpi-icon">ENV</div><span>Saldo ENV</span><strong>{num(state.envBalance ?? state.invBalance ?? 10,2)} ENV</strong><small>1 ENV = US$ 1,00</small><button type="button" className="btn small env-add-btn" onClick={()=>{const raw=window.prompt('Quantos ENV deseja adicionar? 1 ENV = US$ 1,00','10'); const amount=Number(String(raw||'').replace(',','.')); if(Number.isFinite(amount)&&amount>0) setState(st=>({...st,envBalance:Number(st.envBalance ?? st.invBalance ?? 10)+amount,invBalance:Number(st.envBalance ?? st.invBalance ?? 10)+amount}));}}>Adicionar saldo</button></div>
     <MiniKpi icon={<TrendingUp/>} label="Lucro total" value={usd(state.realizedProfitUsd ?? state.realizedProfitBrl ?? 0)} delta={`${num(state.feesEnv ?? state.feesInv ?? 0,2)} ENV taxa`}/>
     <MiniKpi icon={<Gauge/>} label="Win Rate" value={`${winRate||0}%`} delta="estimado"/>
     <MiniKpi icon={<BarChart3/>} label="Par ativo" value={symbol.replace('USDT','/USDT')} delta={lastPrice?`$ ${lastPrice.toFixed(2)}`:'carregando'}/>
@@ -114,12 +113,9 @@ function TradingChart({candles,analysis,timeframe,symbol}){
   const startIndex = Math.max(0, endIndex - visibleCount);
   const safeCandles = all.slice(startIndex,endIndex);
   const sr = safeCandles.length ? supportResistance(safeCandles,48) : null;
-  const rawMax = safeCandles.length ? Math.max(...safeCandles.map(c=>c.high)) : 1;
-  const rawMin = safeCandles.length ? Math.min(...safeCandles.map(c=>c.low)) : 0;
-  const pad = Math.max((rawMax-rawMin)*0.16, rawMax*0.0008, 1);
-  const max = rawMax + pad;
-  const min = Math.max(0, rawMin - pad);
-  const range = Math.max(rawMax*0.001, max-min, 1);
+  const max = safeCandles.length ? Math.max(...safeCandles.map(c=>c.high)) : 1;
+  const min = safeCandles.length ? Math.min(...safeCandles.map(c=>c.low)) : 0;
+  const range = Math.max(1, max-min);
   const width = 1200;
   const height = 430;
   const chartH = 330;
@@ -261,7 +257,7 @@ function Scanner({radar,symbol,setSymbol,operateRecommended}){
 }
 
 function Orders({orders}){return <div className="panel panel-glow"><h3><History size={18}/> Histórico de operações</h3><div className="table-wrap"><table><thead><tr><th>Hora</th><th>Side</th><th>Ativo</th><th>Preço</th><th>Valor</th><th>Lucro</th><th>Taxa ENV</th></tr></thead><tbody>{orders.map(o=><tr key={o.id}><td>{new Date(o.at).toLocaleString('pt-BR')}</td><td>{o.side}</td><td>{o.symbol}</td><td>{o.price.toFixed(2)}</td><td>{usd(o.valueUsd ?? o.valueBrl ?? 0)}</td><td>{o.profitUsd?usd(o.profitUsd):'-'}</td><td>{o.feeEnv?num(o.feeEnv,2):'-'}</td></tr>)}</tbody></table></div></div>}
-function INV({state,setState}){const envBalance=state.envBalance ?? state.invBalance ?? 10;function addEnv(){const raw=window.prompt('Quantos ENV deseja adicionar? 1 ENV = US$ 1,00','10');const amount=Number(String(raw||'').replace(',','.'));if(!Number.isFinite(amount)||amount<=0)return;setState(st=>({...st,envBalance:Number(st.envBalance ?? st.invBalance ?? 10)+amount,invBalance:Number(st.envBalance ?? st.invBalance ?? 10)+amount}));}return <div className="panel panel-glow"><h3><CreditCard size={18}/> Créditos ENV</h3><p>Saldo atual: <b>{num(envBalance,2)} ENV</b></p><p>1 ENV = US$ 1,00. O robô opera em USDT e desconta 10% apenas do lucro realizado em dólar.</p><p>No pagamento via Pix/cartão, o valor em reais será convertido pela cotação do dólar/USDT do momento para liberar ENV.</p><button type="button" className="btn primary gold-btn" onClick={addEnv}>Adicionar saldo</button><div className="alert">Quando o ENV zerar, o robô bloqueia novas entradas, encerra a cesta conforme segurança e solicita recarga.</div></div>}
+function INV({state}){const envBalance=state.envBalance ?? state.invBalance ?? 0;return <div className="panel panel-glow"><h3><CreditCard size={18}/> Créditos ENV</h3><p>Saldo atual: <b>{num(envBalance,2)} ENV</b></p><p>1 ENV = US$ 1,00. O robô opera em USDT e desconta 10% apenas do lucro realizado em dólar.</p><p>No pagamento via Pix/cartão, o valor em reais será convertido pela cotação do dólar/USDT do momento para liberar ENV.</p><div className="alert">Quando o ENV zerar, o robô bloqueia novas entradas, encerra a cesta conforme segurança e solicita recarga.</div></div>}
 function BinanceSettings(){return <div className="panel panel-glow"><h3><KeyRound size={18}/> Configurações Binance</h3><p className="muted">Ao conectar a API, o backend deve consultar o saldo USDT disponível. O robô opera somente pares contra USDT.</p><label>API Key</label><input placeholder="Cole a API Key"/><label>Secret Key</label><input type="password" placeholder="Cole a Secret Key"/><button className="btn primary gold-btn">Testar conexão e puxar saldo USDT</button><div className="alert">Permissões recomendadas: leitura + spot trading. Saque deve estar desativado. Valor BRL fica apenas para recarga, convertido pela cotação do dólar/USDT.</div></div>}
 
 function buildRadar(analysis, currentSymbol){

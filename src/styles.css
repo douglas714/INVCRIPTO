@@ -52,9 +52,3 @@ button,input,select{font:inherit}.app-shell{min-height:100vh}.topbar{height:72px
 .chart-controls-overlay button:hover{border-color:#16c957;color:#16c957;box-shadow:0 0 12px rgba(22,201,87,.16)}
 .chart-help{position:absolute;left:14px;bottom:10px;z-index:3;color:rgba(245,235,200,.72);font-size:12px;background:rgba(2,8,5,.62);border:1px solid rgba(216,178,74,.16);border-radius:999px;padding:6px 10px;pointer-events:none}
 .timeframes button:hover{border-color:rgba(216,178,74,.38);color:#fff;background:rgba(216,178,74,.08)}
-
-
-/* INVCRIPTO IA v7 hotfix */
-.env-kpi-hotfix .env-add-btn{margin-top:8px;width:100%;padding:8px 10px;border-radius:10px;font-weight:900;cursor:pointer}
-.boot-fallback{z-index:1}.fallback-screen h1{color:#d8b24a}
-.price-axis-label{fill:#f5ebc8;font-size:12px;font-weight:700;paint-order:stroke;stroke:#020503;stroke-width:3px;stroke-linejoin:round}

@@ -5,6 +5,18 @@ import ClientPanel from './components/ClientPanel.jsx';
 import AdminPanel from './components/AdminPanel.jsx';
 import { Bot, Shield, UserRound, LogOut } from 'lucide-react';
 
+class ErrorBoundary extends React.Component {
+  constructor(props){ super(props); this.state={hasError:false,error:null}; }
+  static getDerivedStateFromError(error){ return {hasError:true,error}; }
+  componentDidCatch(error, info){ console.error('INVCRIPTO UI error:', error, info); }
+  render(){
+    if(this.state.hasError){
+      return <div className="app-shell premium-theme"><div className="fallback-screen"><img src="/favicon.png" alt="INVCRIPTO"/><h1>INVCRIPTO IA</h1><p>O painel encontrou um erro de carregamento visual. Atualize a página ou verifique as variáveis do Netlify.</p><button className="btn primary" onClick={()=>location.reload()}>Recarregar painel</button><small>{String(this.state.error?.message||'Erro desconhecido')}</small></div></div>
+    }
+    return this.props.children;
+  }
+}
+
 export default function App(){
   const [session,setSession]=useState(null);
   const [demoUser,setDemoUser]=useState(()=>JSON.parse(localStorage.getItem('inv_cripto_ia_demo_user')||'null'));
@@ -24,7 +36,7 @@ export default function App(){
     setDemoUser(null);
   }
 
-  return <div className="app-shell premium-theme">
+  return <ErrorBoundary><div className="app-shell premium-theme">
     <header className="topbar premium-topbar">
       <div className="brand premium-brand">
         <img src="/favicon.png" className="brand-mark" alt="INVCRIPTO"/>
@@ -36,7 +48,7 @@ export default function App(){
       {user && <button className="btn ghost" onClick={logout}><LogOut size={16}/> Sair</button>}
     </header>
     {!user ? <AuthScreen setDemoUser={setDemoUser} tab={tab} setTab={setTab}/> : <MainRouter user={user}/>}  
-  </div>
+  </div></ErrorBoundary>
 }
 
 function MainRouter({user}){

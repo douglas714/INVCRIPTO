@@ -44,11 +44,12 @@ function MainRouter({user}){
 }
 
 function AuthScreen({setDemoUser,tab,setTab}){
-  const [email,setEmail]=useState(''); const [password,setPassword]=useState(''); const [name,setName]=useState(''); const [cpf,setCpf]=useState(''); const [msg,setMsg]=useState('');
+  const [email,setEmail]=useState(''); const [password,setPassword]=useState(''); const [name,setName]=useState(''); const [cpf,setCpf]=useState(''); const [phone,setPhone]=useState(''); const [msg,setMsg]=useState('');
   async function demoLogin(){
     if(tab==='register' && !isValidCpf(cpf)){ setMsg('CPF inválido.'); return; }
+    if(tab==='register' && phone.replace(/\D/g,'').length < 10){ setMsg('Telefone obrigatório. Informe DDD + número.'); return; }
     const cpfHash = tab==='register' ? await sha256(onlyDigits(cpf)) : 'demo-cpf-hash';
-    const u={ id:'demo-user', email: email||'cliente@demo.com', full_name:name||'Cliente Demo', cpf_hash:cpfHash, role:'client' };
+    const u={ id:'demo-user', email: email||'cliente@demo.com', full_name:name||'Cliente Demo', phone:phone||'(22) 99999-9999', cpf_hash:cpfHash, role:'client', status:'active' };
     localStorage.setItem('inv_cripto_ia_demo_user', JSON.stringify(u)); setDemoUser(u);
   }
   async function submit(e){
@@ -58,12 +59,13 @@ function AuthScreen({setDemoUser,tab,setTab}){
       const {error}=await supabase.auth.signInWithPassword({email,password}); if(error) setMsg(error.message);
     } else {
       if(!isValidCpf(cpf)){ setMsg('CPF inválido.'); return; }
+      if(phone.replace(/\D/g,'').length < 10){ setMsg('Telefone obrigatório. Informe DDD + número.'); return; }
       const cpfHash = await sha256(onlyDigits(cpf));
       const {data,error}=await supabase.auth.signUp({email,password});
       if(error){ setMsg(error.message); return; }
       const uid=data.user?.id;
       if(uid){
-        await supabase.from('profiles').insert({id:uid,email,full_name:name,role:'client'});
+        await supabase.from('profiles').insert({id:uid,email,full_name:name,phone,role:'client',status:'active'});
         const doc=await supabase.from('user_documents').insert({user_id:uid,cpf_hash:cpfHash,cpf_masked:maskCpf(cpf)});
         if(doc.error){ setMsg('CPF já cadastrado ou erro no documento.'); return; }
         await supabase.rpc('credit_inv',{p_user_id:uid,p_amount:10,p_type:'initial_bonus',p_description:'Bônus inicial de cadastro'});
@@ -75,9 +77,9 @@ function AuthScreen({setDemoUser,tab,setTab}){
     <div className="auth-hero"><UserRound/><h1>{tab==='login'?'Entrar':'Criar conta'}</h1><p>{hasSupabase?'Supabase Auth ativo':'Modo demo local: configure Supabase para produção.'}</p></div>
     <div className="tabs"><button className={tab==='login'?'active':''} onClick={()=>setTab('login')}>Login</button><button className={tab==='register'?'active':''} onClick={()=>setTab('register')}>Cadastro</button></div>
     <form onSubmit={submit}>
-      {tab==='register' && <><label>Nome</label><input value={name} onChange={e=>setName(e.target.value)} placeholder="Nome completo"/><label>CPF</label><input value={cpf} onChange={e=>setCpf(maskCpf(e.target.value))} placeholder="000.000.000-00"/></>}
-      <label>E-mail</label><input value={email} onChange={e=>setEmail(e.target.value)} placeholder="email@dominio.com"/>
-      <label>Senha</label><input type="password" value={password} onChange={e=>setPassword(e.target.value)} placeholder="mínimo 6 caracteres"/>
+      {tab==='register' && <><label>Nome</label><input value={name} onChange={e=>setName(e.target.value)} placeholder="Nome completo" required/><label>CPF</label><input value={cpf} onChange={e=>setCpf(maskCpf(e.target.value))} placeholder="000.000.000-00" required/><label>Telefone</label><input value={phone} onChange={e=>setPhone(e.target.value)} placeholder="(22) 99999-9999" required/></>}
+      <label>E-mail</label><input value={email} onChange={e=>setEmail(e.target.value)} placeholder="email@dominio.com" required/>
+      <label>Senha</label><input type="password" value={password} onChange={e=>setPassword(e.target.value)} placeholder="mínimo 6 caracteres" required/>
       <button className="btn primary">{tab==='login'?'Entrar':'Cadastrar'}</button>
       {msg && <p className="msg">{msg}</p>}
     </form>

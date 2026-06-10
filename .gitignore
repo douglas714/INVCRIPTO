@@ -1,9 +1,16 @@
-node_modules/
-dist/
-build/
+# Arquivos locais e segredos - NAO subir para o GitHub
 .env
 .env.local
 .env.production
+.env.development
+.env.test
+NETLIFY_ENV_VARIAVEIS.txt
+SUPABASE_KEYS.txt
+*SECRET*.txt
+*secret*.txt
+node_modules/
+dist/
+build/
 .netlify/
 npm-debug.log*
 yarn-debug.log*

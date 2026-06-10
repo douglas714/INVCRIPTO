@@ -1,32 +1,22 @@
-# INV CRIPTO IA — Plataforma Web + Paper Trade + INV
+# INV CRIPTO IA
 
-Estrutura inicial para o robô web Binance com Supabase, Netlify e GitHub.
+Plataforma web para robô Binance Spot BTC/ETH com login Supabase, CPF único, telefone obrigatório, carteira INV, painel cliente, painel administrador e modo Paper Trade com gráfico real.
 
-## Módulos incluídos
+## Configuração rápida
 
-- Login/cadastro via Supabase Auth.
-- Cadastro com CPF único usando `cpf_hash`.
-- Painel cliente.
-- Painel administrador.
-- Carteira INV: 1 INV = R$ 1,00.
-- Crédito inicial de 10 INV.
-- Cobrança futura: 10% sobre lucro líquido realizado.
-- Paper trade usando gráfico real de BTC/USDT e ETH/USDT.
-- Estrutura para Binance API Spot/Testnet/Real.
-- Estrutura futura para Pix e webhooks.
+1. Crie/abra o projeto Supabase `pxczyddzqagzijsipche`.
+2. No Supabase SQL Editor, execute:
+   - `supabase/schema.sql`
+3. Cadastre seu usuário pelo site.
+4. No Supabase SQL Editor, execute:
+   - `supabase/02_promover_admin.sql`
+5. Configure o Netlify usando `NETLIFY_ENV_VARIAVEIS.txt`.
+6. Suba para GitHub e conecte no Netlify.
 
-## Como rodar local
+## Build Netlify
 
 ```bash
 npm install
-npm run dev
-```
-
-## Como publicar no Netlify
-
-Build command:
-
-```bash
 npm run build
 ```
 
@@ -36,20 +26,25 @@ Publish directory:
 dist
 ```
 
-Configure as variáveis de ambiente do `.env.example` no Netlify.
+## Cadastro obrigatório
 
-## Supabase
+O cadastro exige:
 
-Rode no SQL Editor:
+- Nome completo
+- CPF único
+- Telefone obrigatório
+- E-mail
+- Senha
 
-```text
-supabase/schema.sql
-```
+## Painel admin
 
-Depois ative Auth com e-mail/senha no Supabase.
+O painel admin permite:
 
-## Importante
+- Ver clientes
+- Ver CPF mascarado
+- Ver telefone
+- Adicionar INV manualmente
+- Bloquear usuário
+- Desbloquear usuário
 
-Este MVP inclui paper trade e estrutura. O módulo real de ordens Binance deve rodar em backend/worker 24h, não somente no navegador. Netlify Functions são boas para APIs e webhooks, mas robô contínuo deve rodar em VPS/Render/Railway/Fly.io ou Supabase Edge Functions com scheduler, respeitando limites.
-
-Nunca peça permissão de saque nas chaves Binance dos clientes.
+Ao bloquear um usuário, os robôs dele são pausados automaticamente.

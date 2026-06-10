@@ -1,56 +1,55 @@
-# INVCRIPTO IA
+# INVCRIPTO IA - versão v3 white-screen fix
 
-Plataforma web para robô de cripto com layout premium verde/dourado, painel cliente, painel administrador, Supabase Auth, créditos INV, modo Paper Trade e scanner IA.
+Versão estática para deploy rápido no Netlify, sem `npm install`.
 
-## Novidades desta versão
+## Correções desta versão
 
-- Logo INVCRIPTO aplicada no painel.
-- Favicon configurado em PNG/ICO.
-- Layout premium baseado na paleta verde escuro + dourado.
-- Dashboard com gráfico real, suporte/resistência, trading control e cards de análise.
-- Radar IA com moedas fortes: BTC, ETH, BNB, SOL, XRP, ADA, AVAX, DOGE, LINK, DOT, LTC e TRX.
-- Cliente pode seguir a recomendação da IA ou escolher manualmente a moeda.
-- Mantém Supabase, CPF/telefone obrigatório, admin com bloqueio de usuário e créditos INV.
+- Corrige tela branca: o login aparece por padrão antes de qualquer script/API externa.
+- Remove dependência obrigatória do CDN do gráfico; existe gráfico nativo em Canvas embutido no `app.js`.
+- Supabase JS passa a carregar sob demanda, sem bloquear a abertura da página.
+- Boot protegido com fallback visual se algum erro de JavaScript acontecer.
+- Candles Binance Spot via REST + WebSocket mantidos.
+- Timeframes: 1m, 5m, 15m, 1h, 4h e 1d.
+- Arrastar horizontal e zoom por scroll no gráfico nativo.
+- Escala do eixo de preço recalculada com margem automática.
+- Suporte e resistência recalculados por símbolo/timeframe com blindagem contra níveis absurdos de cache/símbolo anterior.
+- Card de saldo ENV mantido com botão “Adicionar saldo”.
+- Layout premium verde/dourado, logo e favicon mantidos.
 
-## Instalação
+## Deploy Netlify
 
-```bash
-npm install
-npm run dev
+O `netlify.toml` publica direto a pasta:
+
+```toml
+[build]
+  publish = "dist"
+  command = ""
 ```
 
-## Build Netlify
-
-```text
-Build command: npm run build
-Publish directory: dist
-```
+Não precisa rodar `npm install`.
 
 ## Supabase
 
-Execute no Supabase SQL Editor:
+Edite o arquivo:
 
 ```text
-supabase/schema.sql
+dist/assets/config.js
 ```
 
-Depois cadastre seu usuário e rode:
+Preencha apenas a chave pública:
+
+```js
+SUPABASE_ANON_KEY: 'SUA_ANON_PUBLIC_KEY_AQUI'
+```
+
+Nunca coloque `service_role` ou chave secreta no frontend.
+
+## Banco de dados
+
+Execute o SQL em:
 
 ```text
-supabase/02_promover_admin.sql
+supabase/schema_invcripto.sql
 ```
 
-## Variáveis de ambiente
-
-Use `.env.example` apenas como modelo. Não suba chaves reais para o GitHub.
-Cadastre as chaves reais no Netlify em `Site settings > Environment variables`.
-
-
-## Atualização USDT/ENV
-
-- O robô opera pares contra USDT.
-- Ao conectar a API Binance, o backend deve consultar e exibir o saldo USDT disponível.
-- O painel usa dólar/USDT para saldo, lucro e taxa.
-- Créditos ENV: 1 ENV = US$ 1,00.
-- Pagamentos em BRL devem converter para ENV pela cotação do dólar/USDT no momento da confirmação.
-- Gráfico nativo SVG corrigido com candles visíveis, sem dependência externa.
+Ele cria estrutura para CPF único, perfil, saldo ENV, recargas e funções administrativas.

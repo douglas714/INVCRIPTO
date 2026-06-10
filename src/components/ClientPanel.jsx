@@ -1,5 +1,4 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { createChart } from 'lightweight-charts';
 import { initialPaperState, runPaperDecision } from '../lib/paperBot.js';
 import { analyzeMarket, supportResistance } from '../lib/strategy.js';
 import { brl, num } from '../lib/format.js';
@@ -103,38 +102,54 @@ function ChartHeader({symbol,setSymbol,analysis}){
 }
 
 function TradingChart({candles,analysis}){
-  const ref=useRef(null);
-  useEffect(()=>{
-    if(!ref.current || !candles.length) return;
-    let chart = null;
-    try{
-      const el=ref.current;
-      el.innerHTML='';
-      chart=createChart(el,{height:430,layout:{background:{color:'#06160f'},textColor:'#f5ebc8'},grid:{vertLines:{color:'rgba(216,178,74,.11)'},horzLines:{color:'rgba(216,178,74,.11)'}},rightPriceScale:{borderColor:'rgba(216,178,74,.35)'},timeScale:{borderColor:'rgba(216,178,74,.35)'},crosshair:{mode:1}});
-      const candleSeries=chart.addCandlestickSeries({upColor:'#16c957',downColor:'#d8b24a',borderUpColor:'#16c957',borderDownColor:'#d8b24a',wickUpColor:'#16c957',wickDownColor:'#d8b24a'});
-      candleSeries.setData(candles);
-      const sr = candles.length? supportResistance(candles,48) : null;
-      if(sr?.support && sr?.resistance){
-        const startTime=candles[0].time, endTime=candles[candles.length-1].time;
-        const support=chart.addLineSeries({color:'#d8b24a',lineWidth:2,lineStyle:0,priceLineVisible:true,title:'SUPORTE'});
-        support.setData([{time:startTime,value:sr.support},{time:endTime,value:sr.support}]);
-        const resistance=chart.addLineSeries({color:'#16c957',lineWidth:2,lineStyle:0,priceLineVisible:true,title:'RESISTÊNCIA'});
-        resistance.setData([{time:startTime,value:sr.resistance},{time:endTime,value:sr.resistance}]);
-        if(analysis?.ema21){
-          const ema=chart.addLineSeries({color:'#8a6a22',lineWidth:1,priceLineVisible:false,title:'EMA 21'});
-          ema.setData(candles.slice(-100).map(c=>({time:c.time,value:analysis.ema21})));
-        }
-      }
-      chart.timeScale().fitContent();
-    } catch(err){
-      console.error('Erro ao carregar gráfico INVCRIPTO:', err);
-      if(ref.current){
-        ref.current.innerHTML='<div class="chart-fallback"><b>Gráfico em modo seguro</b><span>O painel continua ativo. Recarregue a página se o gráfico não aparecer.</span></div>';
-      }
-    }
-    return()=>{ if(chart) chart.remove(); };
-  },[candles,analysis?.support,analysis?.resistance]);
-  return <div className="chart-shell"><div className="chart-tool-rail"><span>⌁</span><span>╱</span><span>⌬</span><span>AI</span><span>T</span><span>◎</span></div><div ref={ref} className="chartbox-pro">{!candles.length && <div className="chart-fallback"><b>Carregando gráfico real</b><span>Buscando candles da Binance...</span></div>}</div></div>
+  const safeCandles = (candles || []).slice(-90);
+  const sr = safeCandles.length ? supportResistance(safeCandles,48) : null;
+  const max = safeCandles.length ? Math.max(...safeCandles.map(c=>c.high)) : 1;
+  const min = safeCandles.length ? Math.min(...safeCandles.map(c=>c.low)) : 0;
+  const range = Math.max(1, max-min);
+  const width = 1200;
+  const height = 430;
+  const chartH = 330;
+  const y = (price)=> 35 + ((max - price) / range) * chartH;
+  const candleW = Math.max(5, Math.floor(width / Math.max(1,safeCandles.length)) - 3);
+
+  if(!safeCandles.length){
+    return <div className="chart-shell"><div className="chart-tool-rail"><span>⌁</span><span>╱</span><span>⌬</span><span>AI</span><span>T</span><span>◎</span></div><div className="chartbox-pro chartbox-svg"><div className="chart-fallback"><b>Carregando gráfico real</b><span>Buscando candles da Binance...</span></div></div></div>
+  }
+
+  return <div className="chart-shell">
+    <div className="chart-tool-rail"><span>⌁</span><span>╱</span><span>⌬</span><span>AI</span><span>T</span><span>◎</span></div>
+    <div className="chartbox-pro chartbox-svg">
+      <svg viewBox={`0 0 ${width} ${height}`} preserveAspectRatio="none" className="native-chart" role="img" aria-label="Gráfico INVCRIPTO">
+        <defs>
+          <linearGradient id="chartGlow" x1="0" x2="0" y1="0" y2="1">
+            <stop offset="0%" stopColor="rgba(22,201,87,.25)" />
+            <stop offset="100%" stopColor="rgba(216,178,74,.04)" />
+          </linearGradient>
+        </defs>
+        {[0,1,2,3,4,5,6,7].map(i=><line key={'v'+i} x1={i*width/7} x2={i*width/7} y1="18" y2="390" className="grid-line"/>)}
+        {[0,1,2,3,4,5].map(i=><line key={'h'+i} x1="0" x2={width} y1={35+i*chartH/5} y2={35+i*chartH/5} className="grid-line"/>)}
+        {sr?.resistance && <line x1="0" x2={width} y1={y(sr.resistance)} y2={y(sr.resistance)} className="resistance-line"/>}
+        {sr?.support && <line x1="0" x2={width} y1={y(sr.support)} y2={y(sr.support)} className="support-line"/>}
+        <polyline points={safeCandles.map((c,i)=>`${(i+0.5)*width/safeCandles.length},${y(c.close)}`).join(' ')} className="close-line" fill="none"/>
+        {safeCandles.map((c,i)=>{
+          const x=(i+0.5)*width/safeCandles.length;
+          const up=c.close>=c.open;
+          const top=y(Math.max(c.open,c.close));
+          const bottom=y(Math.min(c.open,c.close));
+          const body=Math.max(2,bottom-top);
+          return <g key={i}>
+            <line x1={x} x2={x} y1={y(c.high)} y2={y(c.low)} className={up?'wick up':'wick down'}/>
+            <rect x={x-candleW/2} y={top} width={candleW} height={body} rx="2" className={up?'candle up':'candle down'}/>
+            <rect x={x-candleW/2} y={395-(Math.min(1,c.volume/(safeCandles.reduce((a,b)=>Math.max(a,b.volume),1)||1))*45)} width={candleW} height={(Math.min(1,c.volume/(safeCandles.reduce((a,b)=>Math.max(a,b.volume),1)||1))*45)} className={up?'volume up':'volume down'}/>
+          </g>
+        })}
+        {sr?.resistance && <text x={width-150} y={y(sr.resistance)-8} className="chart-label resistance">RESISTÊNCIA {sr.resistance.toFixed(2)}</text>}
+        {sr?.support && <text x={width-145} y={y(sr.support)+18} className="chart-label support">SUPORTE {sr.support.toFixed(2)}</text>}
+        <text x="20" y="24" className="chart-label muted">Gráfico nativo INVCRIPTO · sem dependência externa</text>
+      </svg>
+    </div>
+  </div>
 }
 
 function TradingControl({state,setState,symbol,setSymbol,recommended,operateRecommended,operateSelected,selectionMode,setSelectionMode}){

@@ -1,42 +1,16 @@
 <!doctype html>
 <html lang="pt-BR">
-<head>
-  <meta charset="UTF-8"/>
-  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
-  <title>INVCRIPTO IA — Crypto Trading Bot</title>
-  <meta name="theme-color" content="#061B12"/>
-  <link rel="icon" type="image/png" href="/favicon.png"/>
-  <link rel="shortcut icon" href="/favicon.ico"/>
-  <link rel="stylesheet" href="/assets/index-DLAUK74H.css">
-  <style>#root:empty{min-height:100vh;background:#061B12;color:#d8b24a;display:grid;place-items:center;font-family:Arial,sans-serif}#root:empty:before{content:'Carregando INVCRIPTO IA...';}</style>
-</head>
-<body>
-  <div id="root">
-    <div class="app-shell premium-theme">
-      <header class="topbar premium-topbar"><div class="brand premium-brand"><img src="/favicon.png" class="brand-mark" alt="INVCRIPTO"><div><strong>INVCRIPTO IA</strong><span>Crypto Trading Robot · Paper Trade · Binance Spot</span></div></div></header>
-      <div class="auth-page"><div class="auth-card premium-auth"><div class="auth-hero"><img src="/invcripto-logo.png" alt="INVCRIPTO IA"><h1>Entrar no INVCRIPTO IA</h1><p>Carregando painel seguro...</p></div></div></div>
-    </div>
-  </div>
-  <script>
-    window.addEventListener('error', function(e){
-      var root=document.getElementById('root');
-      if(root && (!root.textContent.trim() || root.textContent.includes('Carregando painel seguro'))){
-        root.innerHTML='<div style="min-height:100vh;background:#061B12;color:#f5d77b;display:grid;place-items:center;font-family:Arial,sans-serif;text-align:center;padding:30px"><div><img src="/favicon.png" style="width:72px"><h1>INVCRIPTO IA</h1><p>Erro ao carregar o painel. Verifique o console/deploy.</p><small>'+String(e.message||'erro')+'</small></div></div>';
-      }
-    });
-  </script>
-  <script type="module" crossorigin src="/assets/index-CImsDBWP.js"></script>
-
-  <script>
-    setTimeout(function(){
-      var root=document.getElementById('root');
-      if(root && root.textContent && root.textContent.includes('Carregando painel seguro')){
-        var note=document.createElement('div');
-        note.style.cssText='position:fixed;left:16px;bottom:16px;background:#061B12;color:#f5d77b;border:1px solid #d8b24a;padding:10px 12px;border-radius:10px;font:12px Arial;z-index:9999';
-        note.textContent='App ainda carregando. Se ficar preso, abra DevTools > Console.';
-        document.body.appendChild(note);
-      }
-    },8000);
-  </script>
-</body>
+  <head>
+    <meta charset="UTF-8"/>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+    <title>INVCRIPTO IA — Crypto Trading Bot</title>
+    <meta name="theme-color" content="#061B12"/>
+    <link rel="icon" type="image/png" href="/favicon.png"/>
+    <link rel="shortcut icon" href="/favicon.ico"/>
+    <script type="module" crossorigin src="/assets/index-CImsDBWP.js"></script>
+    <link rel="stylesheet" crossorigin href="/assets/index-DLAUK74H.css">
+  </head>
+  <body>
+    <div id="root"></div>
+  </body>
 </html>

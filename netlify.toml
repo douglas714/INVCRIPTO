@@ -1,7 +1,17 @@
 [build]
-  command = "echo Deploy estatico INVCRIPTO IA - sem npm install"
+  command = "echo 'Deploy estático: usando dist pré-compilado do INVCRIPTO IA'"
   publish = "dist"
+
+[build.environment]
+  NPM_FLAGS = "--version"
+  NODE_VERSION = "20"
+  NPM_VERSION = "10"
 
 [functions]
   directory = "netlify/functions"
   node_bundler = "esbuild"
+
+[[redirects]]
+  from = "/*"
+  to = "/index.html"
+  status = 200

@@ -24,19 +24,83 @@ export default function ClientPanel({user}){
   useEffect(()=>{localStorage.setItem('df_paper_state',JSON.stringify({...state,symbol}))},[state,symbol]);
   useEffect(()=>{
     let closed=false;
-    async function load(){
+    let ws=null;
+    let reloadTimer=null;
+    const normalize=(k)=>({
+      time:Math.floor(Number(k[0])/1000),
+      open:Number(k[1]),
+      high:Number(k[2]),
+      low:Number(k[3]),
+      close:Number(k[4]),
+      volume:Number(k[5])
+    });
+    const upsertLiveCandle=(next)=>{
+      setCandles(prev=>{
+        if(!prev.length) return [next];
+        const copy=[...prev];
+        const last=copy[copy.length-1];
+        if(last.time===next.time){
+          copy[copy.length-1]={...last,...next, high:Math.max(last.high,next.high), low:Math.min(last.low,next.low)};
+        }else if(next.time>last.time){
+          copy.push(next);
+          if(copy.length>520) copy.shift();
+        }
+        return copy;
+      });
+    };
+    async function loadSnapshot(){
       try{
-        const res=await fetch(`/.netlify/functions/binance-klines?symbol=${symbol}&interval=${timeframe}&limit=320`).catch(()=>null);
+        const res=await fetch(`/.netlify/functions/binance-klines?symbol=${symbol}&interval=${timeframe}&limit=500&ts=${Date.now()}`, {cache:'no-store'}).catch(()=>null);
         let data=[];
         if(res?.ok) data=await res.json();
-        if(!data.length){
-          const r=await fetch(`https://api.binance.com/api/v3/klines?symbol=${symbol}&interval=${timeframe}&limit=320`);
+        if(!Array.isArray(data) || !data.length){
+          const r=await fetch(`https://api.binance.com/api/v3/klines?symbol=${symbol}&interval=${timeframe}&limit=500`, {cache:'no-store'});
           data=await r.json();
         }
-        if(!closed) setCandles(data.map(k=>({time:Math.floor(k[0]/1000),open:+k[1],high:+k[2],low:+k[3],close:+k[4],volume:+k[5]})));
-      } catch(e){ if(!closed) setCandles([]); }
+        if(!closed && Array.isArray(data)){
+          setCandles(data.map(normalize).filter(c=>Number.isFinite(c.close)));
+        }
+      } catch(e){
+        if(!closed) console.warn('Falha ao buscar candles Binance', e);
+      }
     }
-    load(); const t=setInterval(load,12000); return()=>{closed=true;clearInterval(t)};
+    function connectStream(){
+      try{
+        const streamSymbol=symbol.toLowerCase();
+        ws=new WebSocket(`wss://stream.binance.com:9443/stream?streams=${streamSymbol}@kline_${timeframe}/${streamSymbol}@ticker/${streamSymbol}@trade`);
+        ws.onmessage=(event)=>{
+          if(closed) return;
+          const payload=JSON.parse(event.data||'{}');
+          const data=payload.data||payload;
+          if(data.e==='kline' && data.k){
+            const k=data.k;
+            upsertLiveCandle({
+              time:Math.floor(Number(k.t)/1000),
+              open:Number(k.o), high:Number(k.h), low:Number(k.l), close:Number(k.c), volume:Number(k.v)
+            });
+          }
+          if((data.e==='trade' || data.e==='24hrTicker') && data.p){
+            const livePrice=Number(data.p);
+            if(Number.isFinite(livePrice)){
+              setCandles(prev=>{
+                if(!prev.length) return prev;
+                const copy=[...prev];
+                const last={...copy[copy.length-1]};
+                last.close=livePrice;
+                last.high=Math.max(last.high,livePrice);
+                last.low=Math.min(last.low,livePrice);
+                copy[copy.length-1]=last;
+                return copy;
+              });
+            }
+          }
+        };
+        ws.onerror=()=>console.warn('WebSocket Binance com instabilidade; snapshot REST seguirá como fallback.');
+      } catch(e){ console.warn('Falha ao iniciar WebSocket Binance', e); }
+    }
+    loadSnapshot().then(connectStream);
+    reloadTimer=setInterval(loadSnapshot,60000);
+    return()=>{closed=true; if(ws) ws.close(); if(reloadTimer) clearInterval(reloadTimer);};
   },[symbol,timeframe]);
   useEffect(()=>{ if(state.active && candles.length){ const t=setInterval(()=>setState(s=>runPaperDecision({...s,symbol},candles)),9000); return()=>clearInterval(t) }},[state.active,candles,symbol]);
 

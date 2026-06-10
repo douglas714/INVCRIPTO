@@ -29,42 +29,14 @@ export default function ClientPanel({user}){
         const res=await fetch(`/.netlify/functions/binance-klines?symbol=${symbol}&interval=${timeframe}&limit=320`).catch(()=>null);
         let data=[];
         if(res?.ok) data=await res.json();
-        if(!Array.isArray(data) || !data.length){
+        if(!data.length){
           const r=await fetch(`https://api.binance.com/api/v3/klines?symbol=${symbol}&interval=${timeframe}&limit=320`);
           data=await r.json();
         }
-        const mapped = (Array.isArray(data) ? data : []).map(k=>({time:Math.floor(k[0]/1000),open:+k[1],high:+k[2],low:+k[3],close:+k[4],volume:+k[5]})).filter(c=>c.open>0 && c.high>0 && c.low>0 && c.close>0);
-        if(!closed) setCandles(mapped);
+        if(!closed) setCandles(data.map(k=>({time:Math.floor(k[0]/1000),open:+k[1],high:+k[2],low:+k[3],close:+k[4],volume:+k[5]})));
       } catch(e){ if(!closed) setCandles([]); }
     }
-    load(); const t=setInterval(load,45000); return()=>{closed=true;clearInterval(t)};
-  },[symbol,timeframe]);
-
-  // Atualização em tempo real pelo WebSocket oficial da Binance Spot.
-  useEffect(()=>{
-    let closed=false;
-    const stream = `${symbol.toLowerCase()}@kline_${timeframe}`;
-    let ws;
-    try{
-      ws = new WebSocket(`wss://stream.binance.com:9443/ws/${stream}`);
-      ws.onmessage = (event)=>{
-        if(closed) return;
-        try{
-          const payload = JSON.parse(event.data);
-          const k = payload.k;
-          if(!k) return;
-          const candle = { time: Math.floor(k.t/1000), open:+k.o, high:+k.h, low:+k.l, close:+k.c, volume:+k.v };
-          if(!(candle.open>0 && candle.high>0 && candle.low>0 && candle.close>0)) return;
-          setCandles(prev=>{
-            if(!prev.length) return [candle];
-            const last = prev[prev.length-1];
-            if(last.time === candle.time) return [...prev.slice(0,-1), candle];
-            return [...prev.slice(-319), candle];
-          });
-        }catch{}
-      };
-    }catch{}
-    return()=>{ closed=true; try{ws?.close?.();}catch{} };
+    load(); const t=setInterval(load,12000); return()=>{closed=true;clearInterval(t)};
   },[symbol,timeframe]);
   useEffect(()=>{ if(state.active && candles.length){ const t=setInterval(()=>setState(s=>runPaperDecision({...s,symbol},candles)),9000); return()=>clearInterval(t) }},[state.active,candles,symbol]);
 
@@ -90,7 +62,7 @@ export default function ClientPanel({user}){
     {activeTab==='analysis' && <LiveAnalysis symbol={symbol} setSymbol={setSymbol} timeframe={timeframe} setTimeframe={setTimeframe} candles={candles} state={state} analysis={analysis}/>}    
     {activeTab==='scanner' && <Scanner radar={radar} symbol={symbol} setSymbol={setSymbol} operateRecommended={operateRecommended}/>}    
     {activeTab==='orders' && <Orders orders={state.orders}/>}    
-    {activeTab==='inv' && <INV state={state}/>}    
+    {activeTab==='inv' && <INV state={state} setState={setState}/>}    
     {activeTab==='settings' && <BinanceSettings/>}
   </div>
 }
@@ -99,26 +71,12 @@ function KpiStrip({state,setState,lastPrice,symbol}){
   const winRate = state.orders.length ? Math.round((state.orders.filter(o=>Number(o.profitBrl||0)>0).length / Math.max(1,state.orders.filter(o=>o.side==='SELL').length))*100) : 78;
   return <div className="kpi-strip">
     <MiniKpi icon={<Wallet/>} label="Saldo Paper" value={usd(state.balanceUsd ?? state.balanceBrl ?? 0)} delta="Simulação USDT"/>
-    <EnvMiniCard state={state} setState={setState}/>
+    <div className="mini-kpi env-kpi-hotfix"><div className="kpi-icon">ENV</div><span>Saldo ENV</span><strong>{num(state.envBalance ?? state.invBalance ?? 10,2)} ENV</strong><small>1 ENV = US$ 1,00</small><button type="button" className="btn small env-add-btn" onClick={()=>{const raw=window.prompt('Quantos ENV deseja adicionar? 1 ENV = US$ 1,00','10'); const amount=Number(String(raw||'').replace(',','.')); if(Number.isFinite(amount)&&amount>0) setState(st=>({...st,envBalance:Number(st.envBalance ?? st.invBalance ?? 10)+amount,invBalance:Number(st.envBalance ?? st.invBalance ?? 10)+amount}));}}>Adicionar saldo</button></div>
     <MiniKpi icon={<TrendingUp/>} label="Lucro total" value={usd(state.realizedProfitUsd ?? state.realizedProfitBrl ?? 0)} delta={`${num(state.feesEnv ?? state.feesInv ?? 0,2)} ENV taxa`}/>
     <MiniKpi icon={<Gauge/>} label="Win Rate" value={`${winRate||0}%`} delta="estimado"/>
     <MiniKpi icon={<BarChart3/>} label="Par ativo" value={symbol.replace('USDT','/USDT')} delta={lastPrice?`$ ${lastPrice.toFixed(2)}`:'carregando'}/>
     <div className="kpi-live"><img src="/favicon.png"/><strong>{state.active?'ROBÔ ATIVO':'AGUARDANDO'}</strong><span>{state.active?'Último sync agora':'Clique em iniciar'}</span></div>
   </div>
-}
-
-function requestEnvTopUp(setState){
-  const raw = window.prompt('Quantos ENV deseja adicionar? 1 ENV = US$ 1,00', '10');
-  if(raw === null) return;
-  const amount = Number(String(raw).replace(',', '.'));
-  if(!Number.isFinite(amount) || amount <= 0){ window.alert('Informe um valor válido em ENV.'); return; }
-  setState(s => ({...s, envBalance: Number(s.envBalance ?? s.invBalance ?? 0) + amount}));
-  window.alert(`Solicitação registrada: ${amount.toFixed(2)} ENV. No Pix futuro, o valor será convertido pela cotação USDT/BRL do momento.`);
-}
-
-function EnvMiniCard({state,setState}){
-  const balance = Number(state.envBalance ?? state.invBalance ?? 10);
-  return <div className="mini-kpi env-kpi"><div className="kpi-icon"><CreditCard size={18}/></div><span>Saldo ENV</span><strong>{num(balance,2)} ENV</strong><small>1 ENV = US$ 1,00</small><button type="button" className="btn small env-add-btn" onClick={()=>requestEnvTopUp(setState)}>Adicionar saldo</button></div>
 }
 function MiniKpi({icon,label,value,delta}){return <div className="mini-kpi"><div className="kpi-icon">{icon}</div><span>{label}</span><strong>{value}</strong><small>{delta}</small></div>}
 
@@ -158,11 +116,10 @@ function TradingChart({candles,analysis,timeframe,symbol}){
   const sr = safeCandles.length ? supportResistance(safeCandles,48) : null;
   const rawMax = safeCandles.length ? Math.max(...safeCandles.map(c=>c.high)) : 1;
   const rawMin = safeCandles.length ? Math.min(...safeCandles.map(c=>c.low)) : 0;
-  const pad = Math.max(rawMax * 0.0008, (rawMax-rawMin) * 0.12, 0.000001);
+  const pad = Math.max((rawMax-rawMin)*0.16, rawMax*0.0008, 1);
   const max = rawMax + pad;
   const min = Math.max(0, rawMin - pad);
-  const range = Math.max(0.000001, max-min);
-  const priceTicks = Array.from({length:6},(_,i)=> max - (i*(max-min)/5));
+  const range = Math.max(rawMax*0.001, max-min, 1);
   const width = 1200;
   const height = 430;
   const chartH = 330;
@@ -218,7 +175,6 @@ function TradingChart({candles,analysis,timeframe,symbol}){
         </defs>
         {[0,1,2,3,4,5,6,7].map(i=><line key={'v'+i} x1={i*width/7} x2={i*width/7} y1="18" y2="390" className="grid-line"/>)}
         {[0,1,2,3,4,5].map(i=><line key={'h'+i} x1="0" x2={width} y1={35+i*chartH/5} y2={35+i*chartH/5} className="grid-line"/>)}
-        {priceTicks.map((p,i)=><text key={'price'+i} x={width-8} y={35+i*chartH/5-4} textAnchor="end" className="chart-label price-axis">{p.toFixed(p>1000?2:p>10?3:5)}</text>)}
         {sr?.resistance && <line x1="0" x2={width} y1={y(sr.resistance)} y2={y(sr.resistance)} className="resistance-line"/>}
         {sr?.support && <line x1="0" x2={width} y1={y(sr.support)} y2={y(sr.support)} className="support-line"/>}
         <polyline points={safeCandles.map((c,i)=>`${(i+0.5)*width/safeCandles.length},${y(c.close)}`).join(' ')} className="close-line" fill="none"/>
@@ -305,7 +261,7 @@ function Scanner({radar,symbol,setSymbol,operateRecommended}){
 }
 
 function Orders({orders}){return <div className="panel panel-glow"><h3><History size={18}/> Histórico de operações</h3><div className="table-wrap"><table><thead><tr><th>Hora</th><th>Side</th><th>Ativo</th><th>Preço</th><th>Valor</th><th>Lucro</th><th>Taxa ENV</th></tr></thead><tbody>{orders.map(o=><tr key={o.id}><td>{new Date(o.at).toLocaleString('pt-BR')}</td><td>{o.side}</td><td>{o.symbol}</td><td>{o.price.toFixed(2)}</td><td>{usd(o.valueUsd ?? o.valueBrl ?? 0)}</td><td>{o.profitUsd?usd(o.profitUsd):'-'}</td><td>{o.feeEnv?num(o.feeEnv,2):'-'}</td></tr>)}</tbody></table></div></div>}
-function INV({state}){const envBalance=state.envBalance ?? state.invBalance ?? 0;return <div className="panel panel-glow"><h3><CreditCard size={18}/> Créditos ENV</h3><p>Saldo atual: <b>{num(envBalance,2)} ENV</b></p><p>1 ENV = US$ 1,00. O robô opera em USDT e desconta 10% apenas do lucro realizado em dólar.</p><p>No pagamento via Pix/cartão, o valor em reais será convertido pela cotação do dólar/USDT do momento para liberar ENV.</p><button className="btn primary gold-btn" onClick={()=>window.alert('Fluxo de recarga Pix/USDT preparado. Próxima etapa: conectar gateway Pix e gravar solicitação no Supabase.')}>Adicionar saldo</button><div className="alert">Quando o ENV zerar, o robô bloqueia novas entradas, encerra a cesta conforme segurança e solicita recarga.</div></div>}
+function INV({state,setState}){const envBalance=state.envBalance ?? state.invBalance ?? 10;function addEnv(){const raw=window.prompt('Quantos ENV deseja adicionar? 1 ENV = US$ 1,00','10');const amount=Number(String(raw||'').replace(',','.'));if(!Number.isFinite(amount)||amount<=0)return;setState(st=>({...st,envBalance:Number(st.envBalance ?? st.invBalance ?? 10)+amount,invBalance:Number(st.envBalance ?? st.invBalance ?? 10)+amount}));}return <div className="panel panel-glow"><h3><CreditCard size={18}/> Créditos ENV</h3><p>Saldo atual: <b>{num(envBalance,2)} ENV</b></p><p>1 ENV = US$ 1,00. O robô opera em USDT e desconta 10% apenas do lucro realizado em dólar.</p><p>No pagamento via Pix/cartão, o valor em reais será convertido pela cotação do dólar/USDT do momento para liberar ENV.</p><button type="button" className="btn primary gold-btn" onClick={addEnv}>Adicionar saldo</button><div className="alert">Quando o ENV zerar, o robô bloqueia novas entradas, encerra a cesta conforme segurança e solicita recarga.</div></div>}
 function BinanceSettings(){return <div className="panel panel-glow"><h3><KeyRound size={18}/> Configurações Binance</h3><p className="muted">Ao conectar a API, o backend deve consultar o saldo USDT disponível. O robô opera somente pares contra USDT.</p><label>API Key</label><input placeholder="Cole a API Key"/><label>Secret Key</label><input type="password" placeholder="Cole a Secret Key"/><button className="btn primary gold-btn">Testar conexão e puxar saldo USDT</button><div className="alert">Permissões recomendadas: leitura + spot trading. Saque deve estar desativado. Valor BRL fica apenas para recarga, convertido pela cotação do dólar/USDT.</div></div>}
 
 function buildRadar(analysis, currentSymbol){

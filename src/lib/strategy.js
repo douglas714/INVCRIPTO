@@ -7,32 +7,10 @@ export function ema(values, period) {
   return out;
 }
 
-export function supportResistance(candles, lookback=80) {
-  const slice = (candles || [])
-    .filter(c => Number.isFinite(c.low) && Number.isFinite(c.high) && Number.isFinite(c.close) && c.low > 0 && c.high > 0)
-    .slice(-lookback);
-  if (!slice.length) return { support: 0, resistance: 0 };
-
-  const lastPrice = slice.at(-1)?.close || slice.at(-1)?.high || 0;
-  const swingLows = [];
-  const swingHighs = [];
-
-  for (let i = 2; i < slice.length - 2; i++) {
-    const c = slice[i];
-    const prev = slice.slice(i - 2, i);
-    const next = slice.slice(i + 1, i + 3);
-    if (prev.every(x => c.low <= x.low) && next.every(x => c.low <= x.low)) swingLows.push(c.low);
-    if (prev.every(x => c.high >= x.high) && next.every(x => c.high >= x.high)) swingHighs.push(c.high);
-  }
-
-  const lows = (swingLows.length ? swingLows : slice.map(c => c.low)).filter(v => v > 0).sort((a,b)=>a-b);
-  const highs = (swingHighs.length ? swingHighs : slice.map(c => c.high)).filter(v => v > 0).sort((a,b)=>a-b);
-  const below = lows.filter(v => v <= lastPrice);
-  const above = highs.filter(v => v >= lastPrice);
-
-  // Pega níveis próximos ao preço atual, evitando mínimas/máximas absurdas muito antigas.
-  const support = below.length ? below[below.length - 1] : lows[Math.max(0, Math.floor(lows.length * 0.20))];
-  const resistance = above.length ? above[0] : highs[Math.min(highs.length - 1, Math.floor(highs.length * 0.80))];
+export function supportResistance(candles, lookback=40) {
+  const slice = candles.slice(-lookback);
+  const support = Math.min(...slice.map(c=>c.low));
+  const resistance = Math.max(...slice.map(c=>c.high));
   return { support, resistance };
 }
 

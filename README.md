@@ -54,8 +54,3 @@ Cadastre as chaves reais no Netlify em `Site settings > Environment variables`.
 - Créditos ENV: 1 ENV = US$ 1,00.
 - Pagamentos em BRL devem converter para ENV pela cotação do dólar/USDT no momento da confirmação.
 - Gráfico nativo SVG corrigido com candles visíveis, sem dependência externa.
-
-
-## v6 — Base login/cadastro funcionando + gráfico/ENV
-
-Esta versão mantém a base funcional `INV_CRIPTO_IA_LOGIN_CADASTRO_FIX(1).zip` e adiciona correções de gráfico, suporte/resistência, card ENV e deploy estático direto da pasta `dist`.

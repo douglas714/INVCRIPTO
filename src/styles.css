@@ -54,7 +54,7 @@ button,input,select{font:inherit}.app-shell{min-height:100vh}.topbar{height:72px
 .timeframes button:hover{border-color:rgba(216,178,74,.38);color:#fff;background:rgba(216,178,74,.08)}
 
 
-/* INVCRIPTO IA v6 - card ENV e eixo de preço do gráfico */
-.env-kpi{position:relative;border-color:rgba(22,201,87,.42)!important;background:linear-gradient(180deg,rgba(22,201,87,.13),rgba(216,178,74,.07))!important;box-shadow:0 0 26px rgba(22,201,87,.10)}
-.env-kpi .env-add-btn{margin-top:8px;width:100%;justify-content:center;padding:7px 10px;border-color:rgba(216,178,74,.42);background:linear-gradient(135deg,rgba(216,178,74,.22),rgba(22,201,87,.13));color:#f5ebc8}
-.native-chart .price-axis{fill:rgba(245,235,200,.72);font-size:12px;font-weight:700;stroke:#020503;stroke-width:2px;paint-order:stroke;pointer-events:none}
+/* INVCRIPTO IA v7 hotfix */
+.env-kpi-hotfix .env-add-btn{margin-top:8px;width:100%;padding:8px 10px;border-radius:10px;font-weight:900;cursor:pointer}
+.boot-fallback{z-index:1}.fallback-screen h1{color:#d8b24a}
+.price-axis-label{fill:#f5ebc8;font-size:12px;font-weight:700;paint-order:stroke;stroke:#020503;stroke-width:3px;stroke-linejoin:round}

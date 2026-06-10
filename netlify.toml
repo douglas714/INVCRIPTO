@@ -1,9 +1,8 @@
 [build]
-  command = "echo 'Deploy estático: usando dist pré-compilado do INVCRIPTO IA'"
+  command = "npm install --no-audit --no-fund && npm run build"
   publish = "dist"
 
 [build.environment]
-  NPM_FLAGS = "--version"
   NODE_VERSION = "20"
   NPM_VERSION = "10"
 

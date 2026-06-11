@@ -172,18 +172,12 @@ function AuthScreen({ setDemoUser, tab, setTab, authNotice, setAuthNotice }) {
       const cleanName = name.trim();
       const cleanPhone = phone.trim();
       const cpfHash = await sha256(onlyDigits(cpf));
-      const { data, error } = await supabase.auth.signUp({
-        email: cleanEmail,
-        password,
-        options: {
-          emailRedirectTo: `${appUrl}/`,
-          data: {
-            full_name: cleanName,
-            phone: cleanPhone,
-            cpf_masked: maskCpf(cpf),
-            cpf_hash: cpfHash
-          }
-        }
+      const { data: uid, error } = await supabase.rpc('cadastrar_cliente_site', {
+        p_email: cleanEmail,
+        p_full_name: cleanName,
+        p_phone: cleanPhone,
+        p_cpf_hash: cpfHash,
+        p_cpf_masked: maskCpf(cpf)
       });
       if (error) {
         if (String(error.message || '').toLowerCase().includes('rate limit')) {
@@ -196,8 +190,14 @@ function AuthScreen({ setDemoUser, tab, setTab, authNotice, setAuthNotice }) {
         setMsg(formatAuthError(error.message));
         return;
       }
-      const uid = data.user?.id;
       if (uid) {
+        const manualUser = { id: uid, email: cleanEmail, full_name: cleanName, phone: cleanPhone, role: 'client', status: 'active', manual_profile: true };
+        localStorage.setItem('inv_cripto_ia_demo_user', JSON.stringify(manualUser));
+        setDemoUser(manualUser);
+        return;
+      }
+      const authUid = null;
+      if (authUid) {
         const profile = await supabase
           .from('profiles')
           .upsert({ id: uid, email: cleanEmail, full_name: cleanName, phone: cleanPhone, role: 'client', status: 'active' }, { onConflict: 'id' });

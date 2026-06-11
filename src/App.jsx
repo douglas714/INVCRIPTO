@@ -12,9 +12,18 @@ function formatAuthError(message) {
   const text = String(message || '');
   const lower = text.toLowerCase();
   if (lower.includes('rate limit')) return 'Limite de e-mails do Supabase atingido. Aguarde alguns minutos antes de tentar novamente ou use Login se a conta já existe.';
-  if (text === 'Invalid login credentials') return 'E-mail ou senha inválidos. Use “Esqueci minha senha” para redefinir.';
-  if (lower.includes('already registered') || lower.includes('user already registered')) return 'Este e-mail já está cadastrado. Use Login ou “Esqueci minha senha”.';
+  if (text === 'Invalid login credentials') return 'E-mail ou senha inválidos. Use “Redefinir senha” para criar uma nova senha.';
+  if (lower.includes('already registered') || lower.includes('user already registered')) return 'Este e-mail já está cadastrado. Use Login ou “Redefinir senha”.';
   return text;
+}
+
+function safeStoredUser() {
+  try {
+    return JSON.parse(localStorage.getItem('inv_cripto_ia_demo_user') || 'null');
+  } catch {
+    localStorage.removeItem('inv_cripto_ia_demo_user');
+    return null;
+  }
 }
 
 function persistManualUser(profile, setDemoUser) {
@@ -55,7 +64,7 @@ class ErrorBoundary extends React.Component {
 
 export default function App() {
   const [session, setSession] = useState(null);
-  const [demoUser, setDemoUser] = useState(() => JSON.parse(localStorage.getItem('inv_cripto_ia_demo_user') || 'null'));
+  const [demoUser, setDemoUser] = useState(() => safeStoredUser());
   const [tab, setTab] = useState('login');
   const [authNotice, setAuthNotice] = useState('');
   const user = session?.user || demoUser;
@@ -66,7 +75,7 @@ export default function App() {
     const type = hash.get('type');
     const isResetPath = window.location.pathname === '/reset-password';
     if (errorDescription) {
-      setAuthNotice(errorDescription.includes('expired') ? 'O link de redefinição expirou ou já foi usado. Solicite um novo link abaixo.' : errorDescription);
+      setAuthNotice(errorDescription.includes('expired') ? 'O link de redefinição expirou ou já foi usado. Use a redefinição por CPF abaixo.' : errorDescription);
       setTab('reset');
     } else if (type === 'recovery' || isResetPath) {
       setTab('update-password');
@@ -100,7 +109,7 @@ export default function App() {
       </div>
       {user && <button className="btn ghost" onClick={logout}><LogOut size={16}/> Sair</button>}
     </header>
-    {!user ? <AuthScreen setDemoUser={setDemoUser} tab={tab} setTab={setTab} authNotice={authNotice} setAuthNotice={setAuthNotice}/> : <MainRouter user={user}/>}
+    {!user ? <AuthScreen setDemoUser={setDemoUser} tab={tab} setTab={setTab} authNotice={authNotice} setAuthNotice={setAuthNotice}/> : <MainRouter user={user}/>} 
   </div></ErrorBoundary>;
 }
 
@@ -130,10 +139,29 @@ function AuthScreen({ setDemoUser, tab, setTab, authNotice, setAuthNotice }) {
   const [phone, setPhone] = useState('');
   const [msg, setMsg] = useState(authNotice || '');
   const [newPassword, setNewPassword] = useState('');
+  const [confirmPassword, setConfirmPassword] = useState('');
 
   useEffect(() => {
     if (authNotice) setMsg(authNotice);
   }, [authNotice]);
+
+  function openReset() {
+    setMsg('');
+    setAuthNotice('');
+    setPassword('');
+    setNewPassword('');
+    setConfirmPassword('');
+    setTab('reset');
+  }
+
+  function backToLogin() {
+    setMsg('');
+    setAuthNotice('');
+    setPassword('');
+    setNewPassword('');
+    setConfirmPassword('');
+    setTab('login');
+  }
 
   async function demoLogin() {
     if (tab === 'register' && !isValidCpf(cpf)) {
@@ -160,11 +188,41 @@ function AuthScreen({ setDemoUser, tab, setTab, authNotice, setAuthNotice }) {
     }
 
     if (tab === 'reset') {
-      const { error } = await supabase.auth.resetPasswordForEmail(email, { redirectTo: resetUrl });
-      setMsg(error ? error.message : 'Enviamos o link de redefinição para seu e-mail. Abra o link mais recente recebido.');
+      const cleanEmail = email.trim().toLowerCase();
+      if (!cleanEmail) {
+        setMsg('Informe o e-mail cadastrado.');
+        return;
+      }
+      if (!isValidCpf(cpf)) {
+        setMsg('Informe o CPF cadastrado para confirmar sua identidade.');
+        return;
+      }
+      if (newPassword.length < 8) {
+        setMsg('A nova senha precisa ter no mínimo 8 caracteres.');
+        return;
+      }
+      if (newPassword !== confirmPassword) {
+        setMsg('A confirmação da senha não confere.');
+        return;
+      }
+      const cpfHash = await sha256(onlyDigits(cpf));
+      const { error } = await supabase.rpc('redefinir_senha_cliente_site', {
+        p_email: cleanEmail,
+        p_cpf_hash: cpfHash,
+        p_new_password: newPassword
+      });
+      if (error) {
+        setMsg(formatAuthError(error.message));
+        return;
+      }
+      setPassword(newPassword);
+      setNewPassword('');
+      setConfirmPassword('');
+      setMsg('Senha redefinida com sucesso. Clique em Entrar para acessar.');
+      setTab('login');
     } else if (tab === 'update-password') {
-      if (newPassword.length < 6) {
-        setMsg('Informe uma nova senha com no mínimo 6 caracteres.');
+      if (newPassword.length < 8) {
+        setMsg('Informe uma nova senha com no mínimo 8 caracteres.');
         return;
       }
       const { error } = await supabase.auth.updateUser({ password: newPassword });
@@ -217,22 +275,6 @@ function AuthScreen({ setDemoUser, tab, setTab, authNotice, setAuthNotice }) {
         persistManualUser({ id: uid, email: cleanEmail, full_name: cleanName, phone: cleanPhone, role: 'client', status: 'active' }, setDemoUser);
         return;
       }
-      const authUid = null;
-      if (authUid) {
-        const profile = await supabase
-          .from('profiles')
-          .upsert({ id: uid, email: cleanEmail, full_name: cleanName, phone: cleanPhone, role: 'client', status: 'active' }, { onConflict: 'id' });
-        if (profile.error) {
-          setMsg(profile.error.message);
-          return;
-        }
-        const doc = await supabase.from('user_documents').insert({ user_id: uid, cpf_hash: cpfHash, cpf_masked: maskCpf(cpf) });
-        if (doc.error) {
-          setMsg('CPF já cadastrado ou erro no documento.');
-          return;
-        }
-        await supabase.rpc('credit_inv', { p_user_id: uid, p_amount: 10, p_type: 'initial_bonus', p_description: 'Bônus inicial de cadastro' });
-      }
       setMsg('Cadastro criado. Verifique seu e-mail se a confirmação estiver ativa.');
     }
   }
@@ -245,15 +287,16 @@ function AuthScreen({ setDemoUser, tab, setTab, authNotice, setAuthNotice }) {
         <h1>{title}</h1>
         <p>{hasSupabase ? 'Supabase Auth ativo' : 'Modo demo local: configure Supabase para produção.'}</p>
       </div>
-      <div className="tabs"><button className={tab === 'login' ? 'active' : ''} type="button" onClick={() => setTab('login')}>Login</button><button className={tab === 'register' ? 'active' : ''} type="button" onClick={() => setTab('register')}>Cadastro</button></div>
+      <div className="tabs"><button className={tab === 'login' ? 'active' : ''} type="button" onClick={backToLogin}>Login</button><button className={tab === 'register' ? 'active' : ''} type="button" onClick={() => setTab('register')}>Cadastro</button></div>
       <form onSubmit={submit}>
         {tab === 'register' && <><label>Nome</label><input value={name} onChange={e => setName(e.target.value)} placeholder="Nome completo" required/><label>CPF</label><input value={cpf} onChange={e => setCpf(maskCpf(e.target.value))} placeholder="000.000.000-00" required/><label>Telefone</label><input value={phone} onChange={e => setPhone(e.target.value)} placeholder="(22) 99999-9999" required/></>}
         {tab !== 'update-password' && <><label>E-mail</label><input value={email} onChange={e => setEmail(e.target.value)} placeholder="email@dominio.com" required/></>}
+        {tab === 'reset' && <><label>CPF cadastrado</label><input value={cpf} onChange={e => setCpf(maskCpf(e.target.value))} placeholder="000.000.000-00" required/><label>Nova senha</label><input type="password" value={newPassword} onChange={e => setNewPassword(e.target.value)} placeholder="mínimo 8 caracteres" required/><label>Confirmar nova senha</label><input type="password" value={confirmPassword} onChange={e => setConfirmPassword(e.target.value)} placeholder="repita a nova senha" required/></>}
         {tab === 'login' || tab === 'register' ? <><label>Senha</label><input type="password" value={password} onChange={e => setPassword(e.target.value)} placeholder="mínimo 6 caracteres" required/></> : null}
         {tab === 'update-password' && <><label>Nova senha</label><input type="password" value={newPassword} onChange={e => setNewPassword(e.target.value)} placeholder="nova senha" required/></>}
-        <button className="btn primary auth-submit"><UserRound size={16}/>{tab === 'reset' ? 'Enviar link' : tab === 'update-password' ? 'Salvar nova senha' : tab === 'login' ? 'Entrar' : 'Cadastrar'}</button>
-        {tab === 'login' && <button className="btn ghost auth-submit" type="button" onClick={() => setTab('reset')}>Esqueci minha senha</button>}
-        {(tab === 'reset' || tab === 'update-password') && <button className="btn ghost auth-submit" type="button" onClick={() => setTab('login')}>Voltar para login</button>}
+        <button className="btn primary auth-submit"><UserRound size={16}/>{tab === 'reset' ? 'Redefinir senha' : tab === 'update-password' ? 'Salvar nova senha' : tab === 'login' ? 'Entrar' : 'Cadastrar'}</button>
+        {tab === 'login' && <button className="btn ghost auth-submit" type="button" onClick={openReset}>Redefinir senha</button>}
+        {(tab === 'reset' || tab === 'update-password') && <button className="btn ghost auth-submit" type="button" onClick={backToLogin}>Voltar para login</button>}
         {msg && <p className="msg">{msg}</p>}
       </form>
     </div>

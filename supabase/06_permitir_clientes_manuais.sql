@@ -7,6 +7,17 @@ alter table public.profiles
 create unique index if not exists profiles_email_lower_uidx
   on public.profiles (lower(email));
 
+create table if not exists public.manual_login_credentials (
+  user_id uuid primary key references public.profiles(id) on delete cascade,
+  email text not null,
+  password_hash text not null,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
+create unique index if not exists manual_login_credentials_email_lower_uidx
+  on public.manual_login_credentials (lower(email));
+
 create or replace function public.cadastrar_cliente_manual(
   p_email text,
   p_full_name text,
@@ -93,13 +104,16 @@ create or replace function public.cadastrar_cliente_site(
   p_full_name text,
   p_phone text,
   p_cpf_hash text,
-  p_cpf_masked text
+  p_cpf_masked text,
+  p_password text
 )
 returns uuid
 language plpgsql
 security definer
 set search_path = public
 as $$
+declare
+  v_user_id uuid;
 begin
   if p_email is null or position('@' in p_email) <= 1 then
     raise exception 'E-mail invalido';
@@ -117,7 +131,19 @@ begin
     raise exception 'CPF invalido';
   end if;
 
-  return public.cadastrar_cliente_manual(
+  if p_password is null or length(p_password) < 6 then
+    raise exception 'Senha deve ter no minimo 6 caracteres';
+  end if;
+
+  if exists (select 1 from public.profiles where lower(email) = lower(trim(p_email))) then
+    raise exception 'Este e-mail ja esta cadastrado. Use Login para entrar.';
+  end if;
+
+  if exists (select 1 from public.user_documents where cpf_hash = p_cpf_hash) then
+    raise exception 'Este CPF ja esta cadastrado. Use Login para entrar.';
+  end if;
+
+  v_user_id := public.cadastrar_cliente_manual(
     p_email,
     p_full_name,
     p_phone,
@@ -126,7 +152,52 @@ begin
     10,
     200
   );
+
+  insert into public.manual_login_credentials(user_id, email, password_hash)
+  values (v_user_id, lower(trim(p_email)), crypt(p_password, gen_salt('bf')))
+  on conflict (user_id) do update set
+    email = excluded.email,
+    password_hash = excluded.password_hash,
+    updated_at = now();
+
+  return v_user_id;
 end;
 $$;
 
-grant execute on function public.cadastrar_cliente_site(text,text,text,text,text) to anon, authenticated;
+grant execute on function public.cadastrar_cliente_site(text,text,text,text,text,text) to anon, authenticated;
+
+create or replace function public.login_cliente_site(
+  p_email text,
+  p_password text
+)
+returns table (
+  id uuid,
+  email text,
+  full_name text,
+  phone text,
+  role text,
+  status text
+)
+language plpgsql
+security definer
+set search_path = public
+as $$
+begin
+  return query
+  select
+    p.id,
+    p.email,
+    p.full_name,
+    p.phone,
+    p.role::text,
+    p.status
+  from public.manual_login_credentials c
+  join public.profiles p on p.id = c.user_id
+  where lower(c.email) = lower(trim(p_email))
+    and c.password_hash = crypt(p_password, c.password_hash)
+    and p.status = 'active'
+  limit 1;
+end;
+$$;
+
+grant execute on function public.login_cliente_site(text,text) to anon, authenticated;

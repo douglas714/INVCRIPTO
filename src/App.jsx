@@ -17,6 +17,20 @@ function formatAuthError(message) {
   return text;
 }
 
+function persistManualUser(profile, setDemoUser) {
+  const manualUser = {
+    id: profile.id,
+    email: profile.email,
+    full_name: profile.full_name,
+    phone: profile.phone,
+    role: profile.role || 'client',
+    status: profile.status || 'active',
+    manual_profile: true
+  };
+  localStorage.setItem('inv_cripto_ia_demo_user', JSON.stringify(manualUser));
+  setDemoUser(manualUser);
+}
+
 class ErrorBoundary extends React.Component {
   constructor(props) {
     super(props);
@@ -157,8 +171,16 @@ function AuthScreen({ setDemoUser, tab, setTab, authNotice, setAuthNotice }) {
       setMsg(error ? error.message : 'Senha redefinida com sucesso. Você já pode entrar.');
       if (!error) setTab('login');
     } else if (tab === 'login') {
-      const { error } = await supabase.auth.signInWithPassword({ email, password });
-      if (error) setMsg(error.message === 'Invalid login credentials' ? 'E-mail ou senha inválidos. Use “Esqueci minha senha” para redefinir.' : error.message);
+      const cleanEmail = email.trim().toLowerCase();
+      const { error } = await supabase.auth.signInWithPassword({ email: cleanEmail, password });
+      if (!error) return;
+      const manual = await supabase.rpc('login_cliente_site', { p_email: cleanEmail, p_password: password });
+      const profile = Array.isArray(manual.data) ? manual.data[0] : null;
+      if (!manual.error && profile?.id) {
+        persistManualUser(profile, setDemoUser);
+        return;
+      }
+      setMsg(manual.error ? formatAuthError(manual.error.message) : formatAuthError(error.message));
     } else {
       if (!isValidCpf(cpf)) {
         setMsg('CPF inválido.');
@@ -177,7 +199,8 @@ function AuthScreen({ setDemoUser, tab, setTab, authNotice, setAuthNotice }) {
         p_full_name: cleanName,
         p_phone: cleanPhone,
         p_cpf_hash: cpfHash,
-        p_cpf_masked: maskCpf(cpf)
+        p_cpf_masked: maskCpf(cpf),
+        p_password: password
       });
       if (error) {
         if (String(error.message || '').toLowerCase().includes('rate limit')) {
@@ -191,9 +214,7 @@ function AuthScreen({ setDemoUser, tab, setTab, authNotice, setAuthNotice }) {
         return;
       }
       if (uid) {
-        const manualUser = { id: uid, email: cleanEmail, full_name: cleanName, phone: cleanPhone, role: 'client', status: 'active', manual_profile: true };
-        localStorage.setItem('inv_cripto_ia_demo_user', JSON.stringify(manualUser));
-        setDemoUser(manualUser);
+        persistManualUser({ id: uid, email: cleanEmail, full_name: cleanName, phone: cleanPhone, role: 'client', status: 'active' }, setDemoUser);
         return;
       }
       const authUid = null;

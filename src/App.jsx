@@ -26,7 +26,10 @@ export default function App(){
   useEffect(()=>{
     if(!hasSupabase) return;
     supabase.auth.getSession().then(({data})=>setSession(data.session));
-    const { data: sub } = supabase.auth.onAuthStateChange((_event,session)=>setSession(session));
+    const { data: sub } = supabase.auth.onAuthStateChange((event,session)=>{
+      setSession(session);
+      if(event === 'PASSWORD_RECOVERY') setTab('update-password');
+    });
     return ()=>sub.subscription.unsubscribe();
   },[]);
 
@@ -76,6 +79,7 @@ function AuthScreen({setDemoUser,tab,setTab}){
   const [cpf,setCpf]=useState('');
   const [phone,setPhone]=useState('');
   const [msg,setMsg]=useState('');
+  const [newPassword,setNewPassword]=useState('');
 
   async function demoLogin(){
     if(tab==='register' && !isValidCpf(cpf)){ setMsg('CPF inválido.'); return; }
@@ -90,9 +94,17 @@ function AuthScreen({setDemoUser,tab,setTab}){
     e.preventDefault();
     setMsg('');
     if(!hasSupabase){ await demoLogin(); return; }
-    if(tab==='login'){
+    if(tab==='reset'){
+      const {error}=await supabase.auth.resetPasswordForEmail(email,{redirectTo:window.location.origin});
+      setMsg(error ? error.message : 'Enviamos o link de redefinição para seu e-mail.');
+    } else if(tab==='update-password'){
+      if(newPassword.length < 6){ setMsg('Informe uma nova senha com no mínimo 6 caracteres.'); return; }
+      const {error}=await supabase.auth.updateUser({password:newPassword});
+      setMsg(error ? error.message : 'Senha redefinida com sucesso. Você já pode entrar.');
+      if(!error) setTab('login');
+    } else if(tab==='login'){
       const {error}=await supabase.auth.signInWithPassword({email,password});
-      if(error) setMsg(error.message);
+      if(error) setMsg(error.message === 'Invalid login credentials' ? 'E-mail ou senha inválidos. Use “Esqueci minha senha” para redefinir.' : error.message);
     } else {
       if(!isValidCpf(cpf)){ setMsg('CPF inválido.'); return; }
       if(phone.replace(/\D/g,'').length < 10){ setMsg('Telefone obrigatório. Informe DDD + número.'); return; }
@@ -110,19 +122,23 @@ function AuthScreen({setDemoUser,tab,setTab}){
     }
   }
 
+  const title = tab==='reset' ? 'Redefinir senha' : tab==='update-password' ? 'Criar nova senha' : tab==='login' ? 'Entrar no INVCRIPTO IA' : 'Criar conta';
   return <div className="auth-page">
     <div className="auth-card premium-auth">
       <div className="auth-hero">
         <img src="/invcripto-logo.png" alt="INVCRIPTO IA"/>
-        <h1>{tab==='login'?'Entrar no INVCRIPTO IA':'Criar conta'}</h1>
+        <h1>{title}</h1>
         <p>{hasSupabase?'Supabase Auth ativo':'Modo demo local: configure Supabase para produção.'}</p>
       </div>
       <div className="tabs"><button className={tab==='login'?'active':''} type="button" onClick={()=>setTab('login')}>Login</button><button className={tab==='register'?'active':''} type="button" onClick={()=>setTab('register')}>Cadastro</button></div>
       <form onSubmit={submit}>
         {tab==='register' && <><label>Nome</label><input value={name} onChange={e=>setName(e.target.value)} placeholder="Nome completo" required/><label>CPF</label><input value={cpf} onChange={e=>setCpf(maskCpf(e.target.value))} placeholder="000.000.000-00" required/><label>Telefone</label><input value={phone} onChange={e=>setPhone(e.target.value)} placeholder="(22) 99999-9999" required/></>}
-        <label>E-mail</label><input value={email} onChange={e=>setEmail(e.target.value)} placeholder="email@dominio.com" required/>
-        <label>Senha</label><input type="password" value={password} onChange={e=>setPassword(e.target.value)} placeholder="mínimo 6 caracteres" required/>
-        <button className="btn primary auth-submit"><UserRound size={16}/>{tab==='login'?'Entrar':'Cadastrar'}</button>
+        {tab!=='update-password' && <><label>E-mail</label><input value={email} onChange={e=>setEmail(e.target.value)} placeholder="email@dominio.com" required/></>}
+        {tab==='login' || tab==='register' ? <><label>Senha</label><input type="password" value={password} onChange={e=>setPassword(e.target.value)} placeholder="mínimo 6 caracteres" required/></> : null}
+        {tab==='update-password' && <><label>Nova senha</label><input type="password" value={newPassword} onChange={e=>setNewPassword(e.target.value)} placeholder="nova senha" required/></>}
+        <button className="btn primary auth-submit"><UserRound size={16}/>{tab==='reset'?'Enviar link':tab==='update-password'?'Salvar nova senha':tab==='login'?'Entrar':'Cadastrar'}</button>
+        {tab==='login' && <button className="btn ghost auth-submit" type="button" onClick={()=>setTab('reset')}>Esqueci minha senha</button>}
+        {(tab==='reset'||tab==='update-password') && <button className="btn ghost auth-submit" type="button" onClick={()=>setTab('login')}>Voltar para login</button>}
         {msg && <p className="msg">{msg}</p>}
       </form>
     </div>

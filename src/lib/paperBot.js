@@ -13,6 +13,7 @@ export function initialPaperState(balanceUsd=1000) {
     active: false,
     symbol: 'BTCUSDT',
     mode: 'paper',
+    accountMode: 'demo',
     binanceUsdtBalance: 0,
     apiConnected: false
   };
@@ -25,6 +26,7 @@ function normalizeState(state){
   if (n.envBalance == null) n.envBalance = Number(n.invBalance || 10);
   if (n.feesEnv == null) n.feesEnv = Number(n.feesInv || 0);
   if (n.binanceUsdtBalance == null) n.binanceUsdtBalance = 0;
+  if (!n.accountMode) n.accountMode = 'demo';
   if (!Array.isArray(n.targetOrders)) n.targetOrders = [];
   return n;
 }
@@ -72,7 +74,7 @@ export function runPaperDecision(state, candles) {
   const now = new Date().toISOString();
   next.decisions.unshift({ at: now, symbol: state.symbol, ...analysis });
   next.decisions = next.decisions.slice(0, 50);
-  if (!next.active || next.envBalance <= 0 || price <= 0) return next;
+  if (!next.active || (next.accountMode === 'live' && next.envBalance <= 0) || price <= 0) return next;
 
   if (analysis.action === 'BUY' && analysis.score >= 78 && next.positions.length === 0) {
     const plan = analysis.orderPlan;
@@ -121,12 +123,12 @@ export function runPaperDecision(state, candles) {
       const fee = grossUsd * 0.10;
       next.realizedProfitUsd += grossUsd;
       next.feesEnv += fee;
-      next.envBalance = Math.max(0, next.envBalance - fee);
+      if (next.accountMode === 'live') next.envBalance = Math.max(0, next.envBalance - fee);
       const valueUsd = p.qty * price;
       next.balanceUsd += valueUsd;
       next.orders.unshift({ id: crypto.randomUUID(), at: now, side:'SELL_RECOVERY', symbol:state.symbol, qty:p.qty, price, valueUsd, profitUsd:grossUsd, feeEnv:fee, reason:'Saída da cesta com +0,5% sobre preço médio' });
       next.positions = [];
-      if (next.envBalance <= 0) next.active = false;
+      if (next.accountMode === 'live' && next.envBalance <= 0) next.active = false;
     }
   }
   return next;

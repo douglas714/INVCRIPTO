@@ -202,6 +202,8 @@ update public.profiles set full_name = coalesce(nullif(email,''),'Usuário') whe
 update public.user_documents set cpf_masked = '***.***.***-**' where cpf_masked is null;
 alter table public.profiles add column if not exists blocked_at timestamptz;
 alter table public.profiles add column if not exists blocked_reason text;
+alter table public.binance_api_credentials add column if not exists real_usdt_free numeric(20,8) not null default 0;
+alter table public.binance_api_credentials add column if not exists real_usdt_locked numeric(20,8) not null default 0;
 alter table public.profiles alter column phone set not null;
 alter table public.profiles alter column full_name set not null;
 alter table public.user_documents alter column cpf_masked set not null;
@@ -317,6 +319,14 @@ select
   p.created_at,
   d.cpf_masked,
   coalesce(w.balance_inv,0) as balance_inv,
+  coalesce(pw.balance_usdt,0) as demo_usdt,
+  coalesce(pw.realized_profit_brl,0) as demo_profit_usdt,
+  coalesce(c.real_usdt_free,0) as real_usdt_free,
+  coalesce(c.real_usdt_locked,0) as real_usdt_locked,
+  c.environment as binance_environment,
+  c.api_key_masked as binance_key,
+  coalesce(c.can_trade,false) as binance_can_trade,
+  coalesce(c.can_withdraw,false) as binance_can_withdraw,
   bi.mode as bot_mode,
   bi.status as bot_status,
   coalesce((select sum(pe.profit_brl) from public.profit_events pe where pe.user_id=p.id and pe.created_at::date=current_date),0) as profit_today_brl,
@@ -324,6 +334,16 @@ select
 from public.profiles p
 left join public.user_documents d on d.user_id=p.id
 left join public.inv_wallets w on w.user_id=p.id
+left join lateral (
+  select balance_usdt, realized_profit_brl from public.paper_wallets pw where pw.user_id=p.id order by pw.updated_at desc limit 1
+) pw on true
+left join lateral (
+  select real_usdt_free, real_usdt_locked, environment, api_key_masked, can_trade, can_withdraw
+  from public.binance_api_credentials c
+  where c.user_id=p.id
+  order by c.updated_at desc
+  limit 1
+) c on true
 left join lateral (
   select mode,status from public.bot_instances b where b.user_id=p.id order by b.created_at desc limit 1
 ) bi on true;

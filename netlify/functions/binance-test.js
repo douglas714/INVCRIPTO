@@ -112,7 +112,7 @@ export async function handler(event) {
   const canTrade = Boolean(account.payload?.canTrade);
   const canWithdraw = Boolean(account.payload?.canWithdraw);
 
-  const { error: insertError } = await supabase.from('binance_api_credentials').insert({
+  const credentialRow = {
     user_id: authData.user.id,
     label,
     api_key_masked: maskKey(apiKey),
@@ -123,8 +123,17 @@ export async function handler(event) {
     can_withdraw: canWithdraw,
     environment,
     status: canTrade ? 'active' : 'read_only',
-    last_test_at: new Date().toISOString()
-  });
+    last_test_at: new Date().toISOString(),
+    real_usdt_free: Number(usdtBalance?.free || 0),
+    real_usdt_locked: Number(usdtBalance?.locked || 0)
+  };
+
+  let { error: insertError } = await supabase.from('binance_api_credentials').insert(credentialRow);
+  if (insertError && /real_usdt/i.test(insertError.message || '')) {
+    const { real_usdt_free, real_usdt_locked, ...fallbackRow } = credentialRow;
+    const retry = await supabase.from('binance_api_credentials').insert(fallbackRow);
+    insertError = retry.error;
+  }
 
   if (insertError) return json(400, { error: insertError.message });
 

@@ -19,6 +19,33 @@ export default function AdminPanel() {
       return;
     }
 
+    const { data: sessionData } = await supabase.auth.getSession();
+    const token = sessionData?.session?.access_token;
+    if (token) {
+      const response = await fetch('/.netlify/functions/admin-clients', { headers: { authorization: `Bearer ${token}` } }).catch(() => null);
+      if (response?.ok) {
+        const payload = await response.json();
+        setClients((payload.clients || []).map(client => ({
+          id: client.user_id,
+          full_name: client.full_name,
+          email: client.email,
+          phone: client.phone,
+          cpf_masked: client.cpf_masked,
+          inv: Number(client.balance_inv || 0),
+          demoUsdt: Number(client.demo_usdt || 0),
+          realUsdt: Number(client.real_usdt_free || 0),
+          binanceKey: client.binance_key,
+          binanceCanTrade: client.binance_can_trade,
+          status: client.status,
+          lucro: Number(client.demo_profit_usdt || 0),
+          taxa: Number(client.fee_today_inv || 0),
+          mode: client.bot_mode || 'paper',
+          botStatus: client.bot_status || 'inactive'
+        })));
+        return;
+      }
+    }
+
     const { data, error } = await supabase
       .from('admin_clients_view')
       .select('*')
@@ -36,6 +63,10 @@ export default function AdminPanel() {
       phone: client.phone,
       cpf_masked: client.cpf_masked,
       inv: Number(client.balance_inv || 0),
+      demoUsdt: Number(client.demo_usdt || 0),
+      realUsdt: Number(client.real_usdt_free || 0),
+      binanceKey: client.binance_key,
+      binanceCanTrade: client.binance_can_trade,
       status: client.status,
       lucro: Number(client.profit_today_brl || 0),
       taxa: Number(client.fee_today_inv || 0),
@@ -88,6 +119,8 @@ export default function AdminPanel() {
   }
 
   const totalInv = clients.reduce((sum, client) => sum + (Number(client.inv) || 0), 0);
+  const totalDemo = clients.reduce((sum, client) => sum + (Number(client.demoUsdt) || 0), 0);
+  const totalReal = clients.reduce((sum, client) => sum + (Number(client.realUsdt) || 0), 0);
   const totalLucro = clients.reduce((sum, client) => sum + (Number(client.lucro) || 0), 0);
   const totalTaxa = clients.reduce((sum, client) => sum + (Number(client.taxa) || 0), 0);
 
@@ -97,10 +130,12 @@ export default function AdminPanel() {
     <div className="grid">
       <div className="card"><span>Clientes</span><strong>{clients.length}</strong><small>Cadastrados</small></div>
       <div className="card"><span>ENV em aberto</span><strong>{num(totalInv, 2)}</strong><small>Saldo total</small></div>
+      <div className="card"><span>USDT demo</span><strong>{usd(totalDemo)}</strong><small>Saldo simulado</small></div>
+      <div className="card"><span>USDT real</span><strong>{usd(totalReal)}</strong><small>Binance conectada</small></div>
       <div className="card"><span>Lucro em USDT</span><strong>{usd(totalLucro)}</strong><small>Hoje</small></div>
       <div className="card"><span>Taxa ENV gerada</span><strong>{usd(totalTaxa)}</strong><small>Hoje</small></div>
     </div>
-    <div className="panel"><h3>Clientes</h3><div className="table-wrap"><table><thead><tr><th>Nome</th><th>E-mail</th><th>Telefone</th><th>CPF</th><th>ENV</th><th>Status</th><th>Lucro hoje</th><th>Taxa</th><th></th></tr></thead><tbody>{clients.map((client, index) => <tr key={client.id || index}><td>{client.full_name || client.name}</td><td>{client.email}</td><td>{client.phone || '-'}</td><td>{client.cpf_masked || client.cpf}</td><td>{num(client.inv, 2)}</td><td><span className={client.status === 'blocked' ? 'badge danger' : 'badge ok'}>{client.status === 'blocked' ? 'Bloqueado' : 'Ativo'}</span></td><td>{usd(client.lucro)}</td><td>{usd(client.taxa)}</td><td><button className="btn small" onClick={() => setSelected(client)}>Gerenciar</button></td></tr>)}</tbody></table></div></div>
+    <div className="panel"><h3>Clientes</h3><div className="table-wrap"><table><thead><tr><th>Nome</th><th>E-mail</th><th>Telefone</th><th>CPF</th><th>ENV</th><th>Demo USDT</th><th>Real USDT</th><th>Binance</th><th>Status</th><th>Taxa</th><th></th></tr></thead><tbody>{clients.map((client, index) => <tr key={client.id || index}><td>{client.full_name || client.name}</td><td>{client.email}</td><td>{client.phone || '-'}</td><td>{client.cpf_masked || client.cpf}</td><td>{num(client.inv, 2)}</td><td>{usd(client.demoUsdt || 0)}</td><td>{usd(client.realUsdt || 0)}</td><td>{client.binanceKey ? `${client.binanceKey} ${client.binanceCanTrade?'trade':'read'}` : '-'}</td><td><span className={client.status === 'blocked' ? 'badge danger' : 'badge ok'}>{client.status === 'blocked' ? 'Bloqueado' : client.status || 'Ativo'}</span></td><td>{usd(client.taxa)}</td><td><button className="btn small" onClick={() => setSelected(client)}>Gerenciar</button></td></tr>)}</tbody></table></div></div>
     {selected && <div className="panel"><h3>Gerenciar {selected.full_name || selected.name}</h3><div className="controls"><input style={{ maxWidth: 140 }} value={amount} onChange={event => setAmount(event.target.value)} placeholder="ENV"/><button className="btn primary" onClick={() => addInv(selected.id)}>Adicionar ENV manual</button>{selected.status === 'blocked' ? <button className="btn ghost" onClick={() => blockUser(selected.id, false)}>Desbloquear usuário</button> : <button className="btn danger" onClick={() => blockUser(selected.id, true)}>Bloquear usuário</button>}</div><p className="muted">Ao bloquear, o usuário fica com status bloqueado e todos os robôs dele são pausados. Cada ação entra em admin_actions.</p></div>}
   </div>;
 }

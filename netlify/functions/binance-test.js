@@ -135,6 +135,9 @@ export async function handler(event) {
   const usdtBalance = balances.find(balance => balance.asset === 'USDT');
   const canTrade = Boolean(account.payload?.canTrade);
   const canWithdraw = Boolean(account.payload?.canWithdraw);
+  const permissions = Array.isArray(account.payload?.permissions) ? account.payload.permissions : [];
+  const hasSpot = permissions.length ? permissions.includes('SPOT') : true;
+  const credentialStatus = canTrade && hasSpot && !canWithdraw ? 'active' : 'review_required';
 
   const credentialRow = {
     user_id: userId,
@@ -146,7 +149,7 @@ export async function handler(event) {
     can_trade: canTrade,
     can_withdraw: canWithdraw,
     environment,
-    status: canTrade ? 'active' : 'read_only',
+    status: credentialStatus,
     last_test_at: new Date().toISOString(),
     real_usdt_free: Number(usdtBalance?.free || 0),
     real_usdt_locked: Number(usdtBalance?.locked || 0)
@@ -167,8 +170,17 @@ export async function handler(event) {
     apiKeyMasked: maskKey(apiKey),
     canTrade,
     canWithdraw,
+    hasSpot,
+    credentialStatus,
+    productionReady: credentialStatus === 'active',
     usdtFree: Number(usdtBalance?.free || 0),
     usdtLocked: Number(usdtBalance?.locked || 0),
-    warning: canWithdraw ? 'Confira na Binance se a chave API não tem permissão de saque. O robô não deve operar com saque habilitado.' : null
+    warning: canWithdraw
+      ? 'Chave salva, mas marcada para revisão: desative permissão de saque antes de operar.'
+      : !canTrade
+        ? 'Chave salva, mas marcada para revisão: Spot Trading não está habilitado.'
+        : !hasSpot
+          ? 'Chave salva, mas marcada para revisão: permissão SPOT não identificada.'
+          : null
   });
 }

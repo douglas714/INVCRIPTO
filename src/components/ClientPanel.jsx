@@ -131,7 +131,7 @@ export default function ClientPanel({user}){
     {activeTab==='scanner' && <Scanner radar={radar} symbol={symbol} setSymbol={setSymbol} operateRecommended={operateRecommended}/>}    
     {activeTab==='orders' && <Orders orders={state.orders}/>}    
     {activeTab==='inv' && <INV state={state}/>}    
-    {activeTab==='settings' && <BinanceSettings setState={setState} setAccountMode={setAccountMode}/>}
+    {activeTab==='settings' && <BinanceSettings user={user} setState={setState} setAccountMode={setAccountMode}/>}
   </div>
 }
 
@@ -373,7 +373,7 @@ function Scanner({radar,symbol,setSymbol,operateRecommended}){
 
 function Orders({orders}){return <div className="panel panel-glow"><h3><History size={18}/> Histórico de operações</h3><div className="table-wrap"><table><thead><tr><th>Hora</th><th>Side</th><th>Ativo</th><th>Preço</th><th>Valor</th><th>Lucro</th><th>Taxa ENV</th></tr></thead><tbody>{orders.map(o=><tr key={o.id}><td>{new Date(o.at).toLocaleString('pt-BR')}</td><td>{o.side}</td><td>{o.symbol}</td><td>{o.price.toFixed(2)}</td><td>{usd(o.valueUsd ?? o.valueBrl ?? 0)}</td><td>{o.profitUsd?usd(o.profitUsd):'-'}</td><td>{o.feeEnv?num(o.feeEnv,2):'-'}</td></tr>)}</tbody></table></div></div>}
 function INV({state}){const envBalance=state.envBalance ?? state.invBalance ?? 0;return <div className="panel panel-glow"><h3><CreditCard size={18}/> Créditos ENV</h3><p>Saldo atual: <b>{num(envBalance,2)} ENV</b></p><p>1 ENV = US$ 1,00. O robô opera em USDT e desconta 10% apenas do lucro realizado em dólar.</p><p>No pagamento via Pix/cartão, o valor em reais será convertido pela cotação do dólar/USDT do momento para liberar ENV.</p><div className="alert">Quando o ENV zerar, o robô bloqueia novas entradas, encerra a cesta conforme segurança e solicita recarga.</div></div>}
-function BinanceSettings({setState,setAccountMode}){
+function BinanceSettings({user,setState,setAccountMode}){
   const [apiKey,setApiKey]=useState('');
   const [apiSecret,setApiSecret]=useState('');
   const [environment,setEnvironment]=useState('testnet');
@@ -396,11 +396,12 @@ function BinanceSettings({setState,setAccountMode}){
     try{
       const { data } = await supabase.auth.getSession();
       const token = data?.session?.access_token;
-      if(!token) throw new Error('Sessão expirada. Faça login novamente.');
+      const manualUserId = user?.manual_profile ? user.id : null;
+      if(!token && !manualUserId) throw new Error('Sessão expirada. Faça login novamente.');
       const response = await fetch('/.netlify/functions/binance-test', {
         method:'POST',
-        headers:{ 'content-type':'application/json', authorization:`Bearer ${token}` },
-        body:JSON.stringify({ apiKey, apiSecret, environment })
+        headers:{ 'content-type':'application/json', ...(token ? { authorization:`Bearer ${token}` } : {}) },
+        body:JSON.stringify({ apiKey, apiSecret, environment, manualUserId, manualEmail: user?.email || '' })
       });
       const payload = await response.json().catch(()=>({}));
       if(!response.ok) throw new Error(payload.error || 'Não foi possível validar a API Binance.');

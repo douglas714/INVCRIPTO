@@ -62,15 +62,31 @@ export async function handler(event) {
   const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
   if (!supabaseUrl || !serviceKey) return json(500, { error: 'Supabase service role not configured' });
 
-  const token = (event.headers.authorization || event.headers.Authorization || '').replace(/^Bearer\s+/i, '');
-  if (!token) return json(401, { error: 'Missing Supabase access token' });
-
   const supabase = createClient(supabaseUrl, serviceKey, { auth: { persistSession: false } });
-  const { data: authData, error: authError } = await supabase.auth.getUser(token);
-  if (authError || !authData?.user) return json(401, { error: 'Invalid Supabase session' });
 
   let body;
   try { body = JSON.parse(event.body || '{}'); } catch { return json(400, { error: 'Invalid JSON body' }); }
+
+  const token = (event.headers.authorization || event.headers.Authorization || '').replace(/^Bearer\s+/i, '');
+  let userId = null;
+  if (token) {
+    const { data: authData, error: authError } = await supabase.auth.getUser(token);
+    if (authError || !authData?.user) return json(401, { error: 'Invalid Supabase session' });
+    userId = authData.user.id;
+  } else if (body.manualUserId) {
+    const manualUserId = String(body.manualUserId || '').trim();
+    const manualEmail = String(body.manualEmail || '').trim().toLowerCase();
+    const { data: profile, error: profileError } = await supabase
+      .from('profiles')
+      .select('id,email,status')
+      .eq('id', manualUserId)
+      .maybeSingle();
+    if (profileError || !profile || profile.status !== 'active') return json(401, { error: 'Perfil manual inválido ou bloqueado.' });
+    if (manualEmail && String(profile.email || '').toLowerCase() !== manualEmail) return json(401, { error: 'Perfil manual não confere com o e-mail.' });
+    userId = profile.id;
+  } else {
+    return json(401, { error: 'Sessão expirada. Faça login novamente.' });
+  }
 
   const apiKey = String(body.apiKey || '').trim();
   const apiSecret = String(body.apiSecret || '').trim();
@@ -104,7 +120,7 @@ export async function handler(event) {
   await supabase
     .from('binance_api_credentials')
     .delete()
-    .eq('user_id', authData.user.id)
+    .eq('user_id', userId)
     .eq('environment', environment);
 
   const balances = Array.isArray(account.payload?.balances) ? account.payload.balances : [];
@@ -113,7 +129,7 @@ export async function handler(event) {
   const canWithdraw = Boolean(account.payload?.canWithdraw);
 
   const credentialRow = {
-    user_id: authData.user.id,
+    user_id: userId,
     label,
     api_key_masked: maskKey(apiKey),
     api_key_encrypted: encryptedApiKey,

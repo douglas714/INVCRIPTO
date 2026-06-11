@@ -8,6 +8,15 @@ import { Bot, Shield, UserRound, LogOut } from 'lucide-react';
 const appUrl = (import.meta.env.VITE_APP_URL || 'https://invcripto.netlify.app').replace(/\/$/, '');
 const resetUrl = import.meta.env.VITE_PASSWORD_RESET_URL || `${appUrl}/reset-password`;
 
+function formatAuthError(message) {
+  const text = String(message || '');
+  const lower = text.toLowerCase();
+  if (lower.includes('rate limit')) return 'Limite de e-mails do Supabase atingido. Aguarde alguns minutos antes de tentar novamente ou use Login se a conta já existe.';
+  if (text === 'Invalid login credentials') return 'E-mail ou senha inválidos. Use “Esqueci minha senha” para redefinir.';
+  if (lower.includes('already registered') || lower.includes('user already registered')) return 'Este e-mail já está cadastrado. Use Login ou “Esqueci minha senha”.';
+  return text;
+}
+
 class ErrorBoundary extends React.Component {
   constructor(props) {
     super(props);
@@ -177,7 +186,14 @@ function AuthScreen({ setDemoUser, tab, setTab, authNotice, setAuthNotice }) {
         }
       });
       if (error) {
-        setMsg(error.message);
+        if (String(error.message || '').toLowerCase().includes('rate limit')) {
+          const login = await supabase.auth.signInWithPassword({ email: cleanEmail, password });
+          if (!login.error) {
+            setMsg('Conta já existente. Login realizado com sucesso.');
+            return;
+          }
+        }
+        setMsg(formatAuthError(error.message));
         return;
       }
       const uid = data.user?.id;

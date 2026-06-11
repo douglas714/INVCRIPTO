@@ -6,6 +6,7 @@ import AdminPanel from './components/AdminPanel.jsx';
 import { Bot, Shield, UserRound, LogOut } from 'lucide-react';
 
 const appUrl = (import.meta.env.VITE_APP_URL || 'https://invcripto.netlify.app').replace(/\/$/, '');
+const resetUrl = import.meta.env.VITE_PASSWORD_RESET_URL || `${appUrl}/reset-password`;
 
 class ErrorBoundary extends React.Component {
   constructor(props) {
@@ -40,10 +41,11 @@ export default function App() {
     const hash = new URLSearchParams(window.location.hash.replace(/^#/, ''));
     const errorDescription = hash.get('error_description');
     const type = hash.get('type');
+    const isResetPath = window.location.pathname === '/reset-password';
     if (errorDescription) {
       setAuthNotice(errorDescription.includes('expired') ? 'O link de redefinição expirou ou já foi usado. Solicite um novo link abaixo.' : errorDescription);
       setTab('reset');
-    } else if (type === 'recovery') {
+    } else if (type === 'recovery' || isResetPath) {
       setTab('update-password');
     }
   }, []);
@@ -135,7 +137,7 @@ function AuthScreen({ setDemoUser, tab, setTab, authNotice, setAuthNotice }) {
     }
 
     if (tab === 'reset') {
-      const { error } = await supabase.auth.resetPasswordForEmail(email, { redirectTo: `${appUrl}/?type=recovery` });
+      const { error } = await supabase.auth.resetPasswordForEmail(email, { redirectTo: resetUrl });
       setMsg(error ? error.message : 'Enviamos o link de redefinição para seu e-mail. Abra o link mais recente recebido.');
     } else if (tab === 'update-password') {
       if (newPassword.length < 6) {

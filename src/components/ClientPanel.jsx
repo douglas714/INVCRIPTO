@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { initialPaperState, runPaperDecision } from '../lib/paperBot.js';
+import { createTargetPreviewOrder, initialPaperState, runPaperDecision } from '../lib/paperBot.js';
 import { analyzeMarket, supportResistance } from '../lib/strategy.js';
 import { brl, usd, usdt, env, num } from '../lib/format.js';
 import { supabase, hasSupabase } from '../lib/supabase.js';
@@ -73,6 +73,7 @@ export default function ClientPanel({user}){
 
   function operateRecommended(){ setSymbol(recommended.symbol); setSelectionMode('recommended'); setState(s=>({...s,active:true,symbol:recommended.symbol})); }
   function operateSelected(){ setSelectionMode('manual_assisted'); setState(s=>({...s,active:true,symbol})); }
+  function createTargetOrder(){ setState(s=>createTargetPreviewOrder({...s,symbol},symbol,analysis,timeframe)); }
 
   const tabs=[['dashboard','Dashboard'],['analysis','Análise ao vivo'],['scanner','Radar IA'],['orders','Operações'],['inv','Créditos ENV'],['settings','API Binance']];
 
@@ -85,11 +86,11 @@ export default function ClientPanel({user}){
       <div className="live-badge"><span className="live-dot"/> {state.active?'LIVE · Bot Active':'PAUSADO'}</div>
     </div>
 
-    <KpiStrip state={state} lastPrice={lastPrice} symbol={symbol}/>
+    <KpiStrip state={state} lastPrice={lastPrice} symbol={symbol} timeframe={timeframe}/>
 
     <div className="tabbar premium-tabs">{tabs.map(([k,l])=><button key={k} className={activeTab===k?'active':''} onClick={()=>setActiveTab(k)}>{l}</button>)}</div>
 
-    {activeTab==='dashboard' && <Dashboard state={state} setState={setState} symbol={symbol} setSymbol={setSymbol} timeframe={timeframe} setTimeframe={setTimeframe} candles={candles} analysis={analysis} radar={radar} recommended={recommended} operateRecommended={operateRecommended} operateSelected={operateSelected} selectionMode={selectionMode} setSelectionMode={setSelectionMode}/>}    
+    {activeTab==='dashboard' && <Dashboard state={state} setState={setState} symbol={symbol} setSymbol={setSymbol} timeframe={timeframe} setTimeframe={setTimeframe} candles={candles} analysis={analysis} radar={radar} recommended={recommended} operateRecommended={operateRecommended} operateSelected={operateSelected} createTargetOrder={createTargetOrder} selectionMode={selectionMode} setSelectionMode={setSelectionMode}/>}    
     {activeTab==='analysis' && <LiveAnalysis symbol={symbol} setSymbol={setSymbol} timeframe={timeframe} setTimeframe={setTimeframe} candles={candles} state={state} analysis={analysis}/>}    
     {activeTab==='scanner' && <Scanner radar={radar} symbol={symbol} setSymbol={setSymbol} operateRecommended={operateRecommended}/>}    
     {activeTab==='orders' && <Orders orders={state.orders}/>}    
@@ -98,25 +99,27 @@ export default function ClientPanel({user}){
   </div>
 }
 
-function KpiStrip({state,lastPrice,symbol}){
+function KpiStrip({state,lastPrice,symbol,timeframe}){
   const winRate = state.orders.length ? Math.round((state.orders.filter(o=>Number(o.profitUsd||o.profitBrl||0)>0).length / Math.max(1,state.orders.filter(o=>o.side==='SELL').length))*100) : 78;
   return <div className="kpi-strip">
     <MiniKpi icon={<Wallet/>} label="Saldo Paper" value={usd(state.balanceUsd ?? state.balanceBrl ?? 0)} delta="Simulação USDT"/>
     <MiniKpi icon={<TrendingUp/>} label="Lucro total" value={usd(state.realizedProfitUsd ?? state.realizedProfitBrl ?? 0)} delta={`${num(state.feesEnv ?? state.feesInv ?? 0,2)} ENV taxa`}/>
     <MiniKpi icon={<Gauge/>} label="Win Rate" value={`${winRate||0}%`} delta="estimado"/>
     <MiniKpi icon={<BarChart3/>} label="Par ativo" value={symbol.replace('USDT','/USDT')} delta={lastPrice?`$ ${lastPrice.toFixed(2)}`:'carregando'}/>
+    <MiniKpi icon={<Activity/>} label="Timeframe" value={timeframe.toUpperCase()} delta="janela de operação"/>
     <div className="kpi-live"><img src="/favicon.png"/><strong>{state.active?'ROBÔ ATIVO':'AGUARDANDO'}</strong><span>{state.active?'Último sync agora':'Clique em iniciar'}</span></div>
   </div>
 }
 function MiniKpi({icon,label,value,delta}){return <div className="mini-kpi"><div className="kpi-icon">{icon}</div><span>{label}</span><strong>{value}</strong><small>{delta}</small></div>}
 
-function Dashboard({state,setState,symbol,setSymbol,timeframe,setTimeframe,candles,analysis,radar,recommended,operateRecommended,operateSelected,selectionMode,setSelectionMode}){
+function Dashboard({state,setState,symbol,setSymbol,timeframe,setTimeframe,candles,analysis,radar,recommended,operateRecommended,operateSelected,createTargetOrder,selectionMode,setSelectionMode}){
   return <div className="terminal-layout">
     <div className="chart-zone panel-glow">
       <ChartHeader symbol={symbol} setSymbol={setSymbol} timeframe={timeframe} setTimeframe={setTimeframe} analysis={analysis}/>
       <TradingChart candles={candles} analysis={analysis} timeframe={timeframe} symbol={symbol}/>
     </div>
-    <TradingControl state={state} setState={setState} symbol={symbol} setSymbol={setSymbol} recommended={recommended} operateRecommended={operateRecommended} operateSelected={operateSelected} selectionMode={selectionMode} setSelectionMode={setSelectionMode}/>
+    <TradingControl state={state} setState={setState} symbol={symbol} setSymbol={setSymbol} analysis={analysis} recommended={recommended} operateRecommended={operateRecommended} operateSelected={operateSelected} createTargetOrder={createTargetOrder} selectionMode={selectionMode} setSelectionMode={setSelectionMode}/>
+    <TargetOrderPreview state={state} symbol={symbol} analysis={analysis} createTargetOrder={createTargetOrder}/>
     <RecommendedCard recommended={recommended} symbol={symbol} analysis={analysis} setSymbol={setSymbol} operateRecommended={operateRecommended}/>
     <RecentTrades orders={state.orders}/>
     <MarketAI analysis={analysis} radar={radar}/>
@@ -234,7 +237,8 @@ function TradingChart({candles,analysis,timeframe,symbol}){
   </div>
 }
 
-function TradingControl({state,setState,symbol,setSymbol,recommended,operateRecommended,operateSelected,selectionMode,setSelectionMode}){
+function TradingControl({state,setState,symbol,setSymbol,analysis,recommended,operateRecommended,operateSelected,createTargetOrder,selectionMode,setSelectionMode}){
+  const canPreview = Boolean(analysis?.orderPlan);
   return <div className="trade-control panel-glow">
     <h3><span/> Trading Control</h3>
     <label>Modo de escolha</label>
@@ -245,11 +249,39 @@ function TradingControl({state,setState,symbol,setSymbol,recommended,operateReco
     <div className="recommend-line"><strong>{recommended.symbol?.replace('USDT','/USDT')}</strong><span>{recommended.score}/100</span></div>
     <div className="mode-buttons"><button className="active">Spot</button><button>Paper</button></div>
     <div className="switch-row"><span>Auto Trading</span><button className={state.active?'switch on':'switch'} onClick={()=>setState(s=>({...s,active:!s.active}))}/></div>
+    <button className="btn ghost" type="button" onClick={createTargetOrder} disabled={!canPreview}><TrendingUp size={16}/> Criar ordem alvo 1</button>
     <button className="btn primary gold-btn" onClick={operateRecommended}><Play size={16}/> Operar recomendado</button>
     <button className="btn ghost" onClick={operateSelected}><ShieldCheck size={16}/> Operar moeda selecionada</button>
     <button className="btn danger full" onClick={()=>setState(s=>({...s,active:false}))}><StopCircle size={16}/> Parar robô</button>
     <small className="sync"><span className="live-dot"/> Last sync: 2 sec ago</small>
   </div>
+}
+
+function TargetOrderPreview({state,symbol,analysis,createTargetOrder}){
+  const order = (state.targetOrders || []).find(item=>item.symbol===symbol);
+  const plan = analysis?.orderPlan;
+  if(!order && !plan){
+    return <div className="info-card panel-glow"><h3>Ordem alvo 1</h3><p className="muted">A IA ainda não encontrou setup de compra com risco/retorno suficiente para criar uma ordem de visualização.</p><p><b>Ação:</b> {analysis?.action || 'WAIT'}</p><p><b>Score:</b> {analysis?.score || 0}/100</p></div>
+  }
+  const baseValue = Math.min(state.balanceUsd ?? 1000, Math.max(10, (state.balanceUsd ?? 1000) * 0.05));
+  const view = order || {
+    status:'PLANO',
+    side:'BUY_TARGET_1',
+    timeframe:'plano',
+    price:plan.entry,
+    valueUsd:baseValue,
+    qty:baseValue / plan.entry,
+    stopLoss:plan.stopLoss,
+    target1:plan.target1,
+    target2:plan.target2,
+    recoveryTarget:plan.recoveryTarget,
+    ladder:plan.ladder,
+    riskUsd:((plan.entry - plan.stopLoss) * (baseValue / plan.entry)),
+    potentialProfitUsd:((plan.target1 - plan.entry) * (baseValue / plan.entry)),
+    riskReward:plan.riskReward,
+    confidence:plan.confidence
+  };
+  return <div className="info-card panel-glow"><h3>Ordem alvo 1</h3><div className="pair-row"><span className="badge ok">{view.status}</span><strong>{symbol.replace('USDT','/USDT')}</strong></div><p><span>Timeframe:</span><b>{String(view.timeframe || '15m').toUpperCase()}</b></p><p><span>Tipo:</span><b>Compra limite paper</b></p><p><span>Entrada mão 1:</span><b>{view.price.toFixed(6)}</b></p><p><span>Quantidade:</span><b>{num(view.qty,8)}</b></p><p><span>Valor mão 1:</span><b>{usd(view.valueUsd)}</b></p><p><span>Stop estrutural:</span><b>{view.stopLoss.toFixed(6)}</b></p><p><span>Alvo 1:</span><b>{view.target1.toFixed(6)}</b></p><p><span>Alvo recuperação:</span><b>{view.recoveryTarget?.toFixed?.(6) || '-'}</b></p><p><span>Risco / ganho alvo 1:</span><b>{usd(view.riskUsd)} / {usd(view.potentialProfitUsd)}</b></p><p><span>R/R:</span><b>{num(view.riskReward,2)}</b></p><p><span>Confiança:</span><b>{view.confidence}/100</b></p>{view.ladder?.length&&<div><h4>Martingale controlado</h4>{view.ladder.map(hand=><p key={hand.level}><span>{hand.label} x{hand.multiplier}:</span><b>{hand.entry.toFixed(6)}</b></p>)}</div>}<button className="btn primary small" type="button" onClick={createTargetOrder}>Salvar prévia alvo 1</button></div>
 }
 
 function RecommendedCard({recommended,symbol,analysis,setSymbol,operateRecommended}){
@@ -278,7 +310,7 @@ function LiveAnalysis({symbol,setSymbol,timeframe,setTimeframe,candles,state,ana
       <div className="status-pill">{state.active?'🟢 ROBÔ ATIVO':'⚪ PAUSADO'}</div>
       <p><b>Regime:</b> {analysis?.regime||'Carregando'}</p><p><b>Ação:</b> {analysis?.action||'WAIT'}</p><p><b>Score:</b> {analysis?.score||0}</p><p><b>Motivo:</b> {analysis?.reason||'Aguardando candle'}</p>
       <p><b>Suporte:</b> {analysis?.support?.toFixed?.(2)||'-'}</p><p><b>Resistência:</b> {analysis?.resistance?.toFixed?.(2)||'-'}</p>
-      <h4>Cesta atual</h4>{state.positions.length?state.positions.map(p=><p key={p.id}>{p.symbol}: {num(p.qty,8)} @ {p.avgPrice.toFixed(2)}</p>):<p className="muted">Sem posição aberta.</p>}
+      <h4>Cesta atual</h4>{state.positions.length?state.positions.map(p=><p key={p.id}>{p.symbol}: {num(p.qty,8)} @ {p.avgPrice.toFixed(6)} · mão {p.ladderLevel||1} · saída {p.recoveryTarget?.toFixed?.(6)||'-'}</p>):<p className="muted">Sem posição aberta.</p>}
     </div>
   </div>
 }

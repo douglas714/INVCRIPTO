@@ -253,10 +253,10 @@ begin
   insert into public.profiles(id, email, full_name, phone, role, status)
   values (
     new.id,
-    coalesce(new.email, ''),
+    coalesce(nullif(new.email, ''), 'sem-email-' || new.id::text || '@invcripto.local'),
     coalesce(new.raw_user_meta_data->>'full_name', split_part(coalesce(new.email, 'Usuário'), '@', 1), 'Usuário'),
     coalesce(new.raw_user_meta_data->>'phone', 'não informado'),
-    'client',
+    'client'::public.user_role,
     'active'
   )
   on conflict (id) do update set
@@ -279,13 +279,16 @@ for each row execute function public.handle_new_auth_user();
 insert into public.profiles(id, email, full_name, phone, role, status)
 select
   u.id,
-  coalesce(u.email, ''),
+  coalesce(nullif(u.email, ''), 'sem-email-' || u.id::text || '@invcripto.local'),
   coalesce(u.raw_user_meta_data->>'full_name', split_part(coalesce(u.email, 'Usuário'), '@', 1), 'Usuário'),
   coalesce(u.raw_user_meta_data->>'phone', 'não informado'),
-  'client',
+  'client'::public.user_role,
   'active'
 from auth.users u
-on conflict (id) do nothing;
+on conflict (id) do update set
+  email = excluded.email,
+  full_name = coalesce(nullif(public.profiles.full_name, ''), excluded.full_name),
+  phone = coalesce(nullif(public.profiles.phone, ''), excluded.phone);
 
 insert into public.inv_wallets(user_id, balance_inv)
 select p.id, 0

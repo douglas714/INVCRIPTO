@@ -159,15 +159,36 @@ function AuthScreen({ setDemoUser, tab, setTab, authNotice, setAuthNotice }) {
         setMsg('Telefone obrigatório. Informe DDD + número.');
         return;
       }
+      const cleanEmail = email.trim().toLowerCase();
+      const cleanName = name.trim();
+      const cleanPhone = phone.trim();
       const cpfHash = await sha256(onlyDigits(cpf));
-      const { data, error } = await supabase.auth.signUp({ email, password });
+      const { data, error } = await supabase.auth.signUp({
+        email: cleanEmail,
+        password,
+        options: {
+          emailRedirectTo: `${appUrl}/`,
+          data: {
+            full_name: cleanName,
+            phone: cleanPhone,
+            cpf_masked: maskCpf(cpf),
+            cpf_hash: cpfHash
+          }
+        }
+      });
       if (error) {
         setMsg(error.message);
         return;
       }
       const uid = data.user?.id;
       if (uid) {
-        await supabase.from('profiles').insert({ id: uid, email, full_name: name, phone, role: 'client', status: 'active' });
+        const profile = await supabase
+          .from('profiles')
+          .upsert({ id: uid, email: cleanEmail, full_name: cleanName, phone: cleanPhone, role: 'client', status: 'active' }, { onConflict: 'id' });
+        if (profile.error) {
+          setMsg(profile.error.message);
+          return;
+        }
         const doc = await supabase.from('user_documents').insert({ user_id: uid, cpf_hash: cpfHash, cpf_masked: maskCpf(cpf) });
         if (doc.error) {
           setMsg('CPF já cadastrado ou erro no documento.');

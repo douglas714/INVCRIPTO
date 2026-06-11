@@ -1,5 +1,5 @@
--- Rode este arquivo no SQL Editor do Supabase.
--- Ele cria a view public.clientes e sincroniza usuarios do Auth para public.profiles.
+-- Rode este arquivo inteiro no SQL Editor do Supabase.
+-- Corrige o erro "Database error saving new user" no cadastro e sincroniza Auth -> profiles/clientes.
 
 alter table public.binance_api_credentials
   add column if not exists real_usdt_free numeric(20,8) not null default 0;
@@ -22,14 +22,16 @@ begin
   on conflict (id) do update set
     email = excluded.email,
     full_name = coalesce(nullif(public.profiles.full_name, ''), excluded.full_name),
-    phone = coalesce(nullif(public.profiles.phone, ''), excluded.phone);
+    phone = coalesce(nullif(public.profiles.phone, ''), excluded.phone),
+    status = coalesce(nullif(public.profiles.status, ''), excluded.status);
 
   insert into public.inv_wallets(user_id, balance_inv)
   values (new.id, 0)
   on conflict (user_id) do nothing;
 
   return new;
-end; $$;
+end;
+$$;
 
 drop trigger if exists on_auth_user_created on auth.users;
 create trigger on_auth_user_created

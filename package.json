@@ -16,6 +16,7 @@
   "devDependencies": {},
   "name": "invcripto-ia",
   "version": "1.0.5",
+  "type": "module",
   "private": true,
   "engines": {
     "node": "20.x",

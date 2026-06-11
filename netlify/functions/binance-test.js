@@ -1,5 +1,141 @@
+import crypto from 'node:crypto';
+import { createClient } from '@supabase/supabase-js';
+
+const jsonHeaders = {
+  'content-type': 'application/json',
+  'access-control-allow-origin': '*',
+  'access-control-allow-headers': 'authorization,content-type',
+  'access-control-allow-methods': 'POST,OPTIONS'
+};
+
+function json(statusCode, body) {
+  return { statusCode, headers: jsonHeaders, body: JSON.stringify(body) };
+}
+
+function maskKey(apiKey) {
+  if (!apiKey || apiKey.length < 12) return '********';
+  return `${apiKey.slice(0, 6)}...${apiKey.slice(-4)}`;
+}
+
+function encryptionKey() {
+  const source = process.env.APP_ENCRYPTION_KEY || '';
+  if (source.length < 24) throw new Error('APP_ENCRYPTION_KEY is not configured');
+  return crypto.createHash('sha256').update(source).digest();
+}
+
+function encryptSecret(value) {
+  const iv = crypto.randomBytes(12);
+  const cipher = crypto.createCipheriv('aes-256-gcm', encryptionKey(), iv);
+  const encrypted = Buffer.concat([cipher.update(value, 'utf8'), cipher.final()]);
+  const tag = cipher.getAuthTag();
+  return JSON.stringify({
+    alg: 'aes-256-gcm',
+    iv: iv.toString('base64'),
+    tag: tag.toString('base64'),
+    value: encrypted.toString('base64')
+  });
+}
+
+async function signedBinanceAccount({ apiKey, apiSecret, environment }) {
+  const baseUrl = environment === 'testnet'
+    ? (process.env.BINANCE_TESTNET_BASE_URL || 'https://testnet.binance.vision')
+    : (process.env.BINANCE_SPOT_BASE_URL || 'https://api.binance.com');
+  const query = `timestamp=${Date.now()}&recvWindow=5000`;
+  const signature = crypto.createHmac('sha256', apiSecret).update(query).digest('hex');
+  const response = await fetch(`${baseUrl}/api/v3/account?${query}&signature=${signature}`, {
+    headers: { 'X-MBX-APIKEY': apiKey }
+  });
+  const text = await response.text();
+  let payload;
+  try { payload = JSON.parse(text); } catch { payload = { raw: text }; }
+  if (!response.ok) {
+    return { ok: false, status: response.status, payload };
+  }
+  return { ok: true, status: response.status, payload };
+}
+
 export async function handler(event) {
-  if (event.httpMethod !== 'POST') return { statusCode: 405, body: 'Method not allowed' };
-  // MVP placeholder. In production, sign Binance requests server-side and never expose secret.
-  return { statusCode: 200, headers:{'content-type':'application/json'}, body: JSON.stringify({ ok:true, mode:'placeholder', message:'Estrutura pronta para teste de API Binance no backend.' }) };
+  if (event.httpMethod === 'OPTIONS') return { statusCode: 204, headers: jsonHeaders, body: '' };
+  if (event.httpMethod !== 'POST') return json(405, { error: 'Method not allowed' });
+
+  const supabaseUrl = process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL;
+  const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+  if (!supabaseUrl || !serviceKey) return json(500, { error: 'Supabase service role not configured' });
+
+  const token = (event.headers.authorization || event.headers.Authorization || '').replace(/^Bearer\s+/i, '');
+  if (!token) return json(401, { error: 'Missing Supabase access token' });
+
+  const supabase = createClient(supabaseUrl, serviceKey, { auth: { persistSession: false } });
+  const { data: authData, error: authError } = await supabase.auth.getUser(token);
+  if (authError || !authData?.user) return json(401, { error: 'Invalid Supabase session' });
+
+  let body;
+  try { body = JSON.parse(event.body || '{}'); } catch { return json(400, { error: 'Invalid JSON body' }); }
+
+  const apiKey = String(body.apiKey || '').trim();
+  const apiSecret = String(body.apiSecret || '').trim();
+  const environment = body.environment === 'live' ? 'live' : 'testnet';
+  const label = String(body.label || 'Principal').slice(0, 80);
+
+  if (apiKey.length < 20 || apiSecret.length < 20) {
+    return json(400, { error: 'API Key e Secret Key são obrigatórias.' });
+  }
+
+  let account;
+  try {
+    account = await signedBinanceAccount({ apiKey, apiSecret, environment });
+  } catch (error) {
+    return json(502, { error: 'Falha ao consultar Binance.', detail: String(error?.message || error) });
+  }
+
+  if (!account.ok) {
+    return json(400, { error: 'A Binance rejeitou as credenciais.', status: account.status, detail: account.payload });
+  }
+
+  let encryptedApiKey;
+  let encryptedSecret;
+  try {
+    encryptedApiKey = encryptSecret(apiKey);
+    encryptedSecret = encryptSecret(apiSecret);
+  } catch (error) {
+    return json(500, { error: String(error?.message || error) });
+  }
+
+  await supabase
+    .from('binance_api_credentials')
+    .delete()
+    .eq('user_id', authData.user.id)
+    .eq('environment', environment);
+
+  const balances = Array.isArray(account.payload?.balances) ? account.payload.balances : [];
+  const usdtBalance = balances.find(balance => balance.asset === 'USDT');
+  const canTrade = Boolean(account.payload?.canTrade);
+  const canWithdraw = Boolean(account.payload?.canWithdraw);
+
+  const { error: insertError } = await supabase.from('binance_api_credentials').insert({
+    user_id: authData.user.id,
+    label,
+    api_key_masked: maskKey(apiKey),
+    api_key_encrypted: encryptedApiKey,
+    api_secret_encrypted: encryptedSecret,
+    can_read: true,
+    can_trade: canTrade,
+    can_withdraw: canWithdraw,
+    environment,
+    status: canTrade ? 'active' : 'read_only',
+    last_test_at: new Date().toISOString()
+  });
+
+  if (insertError) return json(400, { error: insertError.message });
+
+  return json(200, {
+    ok: true,
+    environment,
+    apiKeyMasked: maskKey(apiKey),
+    canTrade,
+    canWithdraw,
+    usdtFree: Number(usdtBalance?.free || 0),
+    usdtLocked: Number(usdtBalance?.locked || 0),
+    warning: canWithdraw ? 'Confira na Binance se a chave API não tem permissão de saque. O robô não deve operar com saque habilitado.' : null
+  });
 }

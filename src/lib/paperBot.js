@@ -34,23 +34,27 @@ export function runPaperDecision(state, candles) {
   const now = new Date().toISOString();
   next.decisions.unshift({ at: now, symbol: state.symbol, ...analysis });
   next.decisions = next.decisions.slice(0, 50);
-  if (!next.active || next.envBalance <= 0) return next;
+  if (!next.active || next.envBalance <= 0 || price <= 0) return next;
 
   if (analysis.action === 'BUY' && analysis.score >= 78 && next.positions.length === 0) {
-    const valueUsd = Math.max(10, next.balanceUsd * 0.05);
+    const valueUsd = Math.min(next.balanceUsd, Math.max(10, next.balanceUsd * 0.05));
+    if (valueUsd < 10) return next;
     const qty = valueUsd / price;
+    next.balanceUsd -= valueUsd;
     next.positions.push({ id: crypto.randomUUID(), symbol: state.symbol, qty, avgPrice: price, investedUsd: valueUsd, openedAt: now });
     next.orders.unshift({ id: crypto.randomUUID(), at: now, side:'BUY', symbol:state.symbol, qty, price, valueUsd, reason: analysis.reason });
   } else if (next.positions.length > 0) {
     const p = next.positions[0];
     const grossUsd = ((price - p.avgPrice) * p.qty);
-    const target = Math.max(0.25, next.balanceUsd * 0.001);
+    const target = Math.max(0.25, (next.balanceUsd + Number(p.investedUsd || 0)) * 0.001);
     if (grossUsd >= target) {
       const fee = grossUsd * 0.10;
       next.realizedProfitUsd += grossUsd;
       next.feesEnv += fee;
       next.envBalance = Math.max(0, next.envBalance - fee);
-      next.orders.unshift({ id: crypto.randomUUID(), at: now, side:'SELL', symbol:state.symbol, qty:p.qty, price, valueUsd:p.qty*price, profitUsd:grossUsd, feeEnv:fee, reason:'Micro lucro realizado em USDT' });
+      const valueUsd = p.qty * price;
+      next.balanceUsd += valueUsd;
+      next.orders.unshift({ id: crypto.randomUUID(), at: now, side:'SELL', symbol:state.symbol, qty:p.qty, price, valueUsd, profitUsd:grossUsd, feeEnv:fee, reason:'Micro lucro realizado em USDT' });
       next.positions = [];
       if (next.envBalance <= 0) next.active = false;
     }

@@ -105,6 +105,14 @@ export async function handler(event) {
   }
 
   if (!account.ok) {
+    if (account.status === 451 || /restricted location|eligibility/i.test(account.payload?.msg || '')) {
+      return json(451, {
+        error: 'A Binance bloqueou a localização/IP do servidor Netlify.',
+        status: account.status,
+        detail: account.payload,
+        action: 'Use um backend/servidor em região elegível pela Binance.com para operar conta real Spot.'
+      });
+    }
     return json(400, { error: 'A Binance rejeitou as credenciais.', status: account.status, detail: account.payload });
   }
 

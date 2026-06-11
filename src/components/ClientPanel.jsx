@@ -404,7 +404,10 @@ function BinanceSettings({user,setState,setAccountMode}){
         body:JSON.stringify({ apiKey, apiSecret, environment, manualUserId, manualEmail: user?.email || '' })
       });
       const payload = await response.json().catch(()=>({}));
-      if(!response.ok) throw new Error(payload.error || 'Não foi possível validar a API Binance.');
+      if(!response.ok) {
+        const detail = payload.detail?.msg || payload.action || '';
+        throw new Error([payload.error || 'Não foi possível validar a API Binance.', detail].filter(Boolean).join(' '));
+      }
       setResult(payload);
       setState(s=>({...s,apiConnected:true,binanceUsdtBalance:Number(payload.usdtFree||0),accountMode:payload.environment==='live'?'live':'demo'}));
       setAccountMode(payload.environment==='live'?'live':'demo');

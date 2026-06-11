@@ -1,6 +1,12 @@
 -- Rode este arquivo no SQL Editor do Supabase.
 -- Ele cria a view public.clientes e sincroniza usuarios do Auth para public.profiles.
 
+alter table public.binance_api_credentials
+  add column if not exists real_usdt_free numeric(20,8) not null default 0;
+
+alter table public.binance_api_credentials
+  add column if not exists real_usdt_locked numeric(20,8) not null default 0;
+
 create or replace function public.handle_new_auth_user()
 returns trigger language plpgsql security definer set search_path = public as $$
 begin

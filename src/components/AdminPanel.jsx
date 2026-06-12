@@ -41,26 +41,24 @@ export default function AdminPanel({ user }) {
 
     const { data: sessionData } = await supabase.auth.getSession();
     const token = sessionData?.session?.access_token;
-    if (token) {
-      const response = await fetch('/.netlify/functions/admin-clients', { headers: { authorization: `Bearer ${token}` } }).catch(() => null);
-      if (response?.ok) {
-        const payload = await response.json();
-        setClients((payload.clients || []).map(mapClient));
-        return;
-      }
-    }
-
-    const { data, error } = await supabase
-      .from('admin_clients_view')
-      .select('*')
-      .order('created_at', { ascending: false });
-
-    if (error) {
-      setMsg('Não foi possível carregar clientes. Verifique se seu usuário está como admin.');
+    const response = await fetch('/.netlify/functions/admin-clients', {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        ...(token ? { authorization: `Bearer ${token}` } : {})
+      },
+      body: JSON.stringify({
+        manualAdminUserId: user?.id || '',
+        manualAdminEmail: user?.email || ''
+      })
+    }).catch(() => null);
+    const payload = await response?.json().catch(() => ({}));
+    if (!response?.ok || !payload?.clients) {
+      setMsg(payload?.error || 'Não foi possível carregar clientes. Verifique se seu usuário está como admin.');
       return;
     }
 
-    setClients((data || []).map(mapClient));
+    setClients((payload.clients || []).map(mapClient));
   }
 
   useEffect(() => { loadClients(); }, []);
@@ -109,8 +107,8 @@ export default function AdminPanel({ user }) {
         user_id: userId,
         amount_inv: value,
         description: 'Crédito manual pelo painel admin',
-        manualAdminUserId: user?.manual_profile ? user.id : '',
-        manualAdminEmail: user?.manual_profile ? user.email : ''
+        manualAdminUserId: user?.id || '',
+        manualAdminEmail: user?.email || ''
       })
     });
     const payload = await response.json().catch(() => ({}));

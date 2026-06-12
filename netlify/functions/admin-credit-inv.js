@@ -11,11 +11,23 @@ function json(statusCode, body) {
   return { statusCode, headers, body: JSON.stringify(body) };
 }
 
-async function resolveAdminUser({ supabase, token, manualAdminUserId, manualAdminEmail }) {
+async function getActiveAdminProfile(supabase, userId) {
+  if (!userId) return null;
+  const { data: profile } = await supabase
+    .from('profiles')
+    .select('id,email,role,status')
+    .eq('id', userId)
+    .maybeSingle();
+  return profile?.role === 'admin' && profile?.status === 'active' ? profile : null;
+}
+
+async function resolveAdminProfile({ supabase, token, manualAdminUserId, manualAdminEmail }) {
   if (token) {
     const { data, error } = await supabase.auth.getUser(token);
-    if (error || !data?.user) return null;
-    return data.user.id;
+    if (!error && data?.user) {
+      const tokenAdmin = await getActiveAdminProfile(supabase, data.user.id);
+      if (tokenAdmin) return tokenAdmin;
+    }
   }
 
   if (!manualAdminUserId) return null;
@@ -27,7 +39,7 @@ async function resolveAdminUser({ supabase, token, manualAdminUserId, manualAdmi
 
   if (error || !profile) return null;
   if (manualAdminEmail && String(profile.email || '').toLowerCase() !== manualAdminEmail) return null;
-  return profile.id;
+  return profile.role === 'admin' && profile.status === 'active' ? profile : null;
 }
 
 export async function handler(event) {
@@ -52,16 +64,8 @@ export async function handler(event) {
   if (!amount || amount <= 0) return json(400, { error: 'Valor ENV precisa ser maior que zero.' });
 
   const supabase = createClient(supabaseUrl, serviceKey, { auth: { persistSession: false } });
-  const adminUserId = await resolveAdminUser({ supabase, token, manualAdminUserId, manualAdminEmail });
-  if (!adminUserId) return json(401, { error: 'Admin não identificado.' });
-
-  const { data: adminProfile } = await supabase
-    .from('profiles')
-    .select('id,role,status')
-    .eq('id', adminUserId)
-    .maybeSingle();
-
-  if (adminProfile?.role !== 'admin' || adminProfile?.status !== 'active') {
+  const adminProfile = await resolveAdminProfile({ supabase, token, manualAdminUserId, manualAdminEmail });
+  if (!adminProfile) {
     return json(403, { error: 'Apenas admin pode adicionar ENV.' });
   }
 
@@ -74,7 +78,7 @@ export async function handler(event) {
   if (error) return json(400, { error: error.message });
 
   await supabase.from('admin_actions').insert({
-    admin_user_id: adminUserId,
+    admin_user_id: adminProfile.id,
     target_user_id: targetUserId,
     action: 'credit_inv',
     details: { amount, description }

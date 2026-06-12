@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+﻿import React, { useEffect, useState } from 'react';
 import { supabase, hasSupabase } from './lib/supabase.js';
 import { isValidCpf, maskCpf, onlyDigits, sha256 } from './lib/cpf.js';
 import ClientPanel from './components/ClientPanel.jsx';
@@ -12,8 +12,8 @@ function formatAuthError(message) {
   const text = String(message || '');
   const lower = text.toLowerCase();
   if (lower.includes('rate limit')) return 'Limite de e-mails do Supabase atingido. Aguarde alguns minutos antes de tentar novamente ou use Login se a conta já existe.';
-  if (text === 'Invalid login credentials') return 'E-mail ou senha inválidos. Use “Redefinir senha” para criar uma nova senha.';
-  if (lower.includes('already registered') || lower.includes('user already registered')) return 'Este e-mail já está cadastrado. Use Login ou “Redefinir senha”.';
+  if (text === 'Invalid login credentials') return 'E-mail ou senha inválidos. Use "Redefinir senha" para criar uma nova senha.';
+  if (lower.includes('already registered') || lower.includes('user already registered')) return 'Este e-mail já está cadastrado. Use Login ou "Redefinir senha".';
   return text;
 }
 
@@ -104,7 +104,7 @@ export default function App() {
         <img src="/favicon.png" className="brand-mark" alt="INVCRIPTO"/>
         <div>
           <strong>INVCRIPTO IA</strong>
-          <span>Crypto Trading Robot · Paper Trade · Binance Spot</span>
+          <span>Crypto Trading Robot | Paper Trade | Binance Spot</span>
         </div>
       </div>
       {user && <button className="btn ghost" onClick={logout}><LogOut size={16}/> Sair</button>}
@@ -302,3 +302,4 @@ function AuthScreen({ setDemoUser, tab, setTab, authNotice, setAuthNotice }) {
     </div>
   </div>;
 }
+

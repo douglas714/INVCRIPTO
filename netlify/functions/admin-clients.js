@@ -4,7 +4,7 @@ const headers = {
   'content-type': 'application/json',
   'access-control-allow-origin': '*',
   'access-control-allow-headers': 'authorization,content-type',
-  'access-control-allow-methods': 'GET,OPTIONS'
+  'access-control-allow-methods': 'GET,POST,OPTIONS'
 };
 
 function json(statusCode, body) {
@@ -17,27 +17,51 @@ function byUserId(rows, key = 'user_id') {
   return map;
 }
 
+async function getActiveAdminProfile(supabase, userId) {
+  if (!userId) return null;
+  const { data: profile } = await supabase
+    .from('profiles')
+    .select('id,email,role,status')
+    .eq('id', userId)
+    .maybeSingle();
+  return profile?.role === 'admin' && profile?.status === 'active' ? profile : null;
+}
+
+async function resolveAdminProfile({ supabase, event, body }) {
+  const token = (event.headers.authorization || event.headers.Authorization || '').replace(/^Bearer\s+/i, '');
+  if (token) {
+    const { data: authData, error: authError } = await supabase.auth.getUser(token);
+    if (!authError && authData?.user) {
+      const tokenAdmin = await getActiveAdminProfile(supabase, authData.user.id);
+      if (tokenAdmin) return tokenAdmin;
+    }
+  }
+
+  const manualAdminUserId = String(body.manualAdminUserId || '').trim();
+  const manualAdminEmail = String(body.manualAdminEmail || '').trim().toLowerCase();
+  if (!manualAdminUserId) return null;
+  const manualAdmin = await getActiveAdminProfile(supabase, manualAdminUserId);
+  if (!manualAdmin) return null;
+  if (manualAdminEmail && String(manualAdmin.email || '').toLowerCase() !== manualAdminEmail) return null;
+  return manualAdmin;
+}
+
 export async function handler(event) {
   if (event.httpMethod === 'OPTIONS') return { statusCode: 204, headers, body: '' };
-  if (event.httpMethod !== 'GET') return json(405, { error: 'Method not allowed' });
+  if (!['GET', 'POST'].includes(event.httpMethod)) return json(405, { error: 'Method not allowed' });
 
   const supabaseUrl = process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL;
   const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
   if (!supabaseUrl || !serviceKey) return json(500, { error: 'Supabase service role not configured' });
 
-  const token = (event.headers.authorization || event.headers.Authorization || '').replace(/^Bearer\s+/i, '');
-  if (!token) return json(401, { error: 'Missing Supabase access token' });
+  let body = {};
+  if (event.httpMethod === 'POST') {
+    try { body = JSON.parse(event.body || '{}'); } catch { return json(400, { error: 'Invalid JSON body' }); }
+  }
 
   const supabase = createClient(supabaseUrl, serviceKey, { auth: { persistSession: false } });
-  const { data: authData, error: authError } = await supabase.auth.getUser(token);
-  if (authError || !authData?.user) return json(401, { error: 'Invalid Supabase session' });
-
-  const { data: adminProfile } = await supabase
-    .from('profiles')
-    .select('id,role,status')
-    .eq('id', authData.user.id)
-    .maybeSingle();
-  if (adminProfile?.role !== 'admin' || adminProfile?.status === 'blocked') {
+  const adminProfile = await resolveAdminProfile({ supabase, event, body });
+  if (!adminProfile) {
     return json(403, { error: 'Apenas administradores podem listar clientes.' });
   }
 
@@ -62,7 +86,19 @@ export async function handler(event) {
   const credMap = new Map();
   for (const cred of creds.data || []) if (!credMap.has(cred.user_id)) credMap.set(cred.user_id, cred);
 
-  const clients = (authUsers.users || []).map(user => {
+  const authRows = authUsers.users || [];
+  const manualRows = (profiles.data || [])
+    .filter(profile => !authRows.some(user => user.id === profile.id))
+    .map(profile => ({
+      id: profile.id,
+      email: profile.email,
+      phone: profile.phone,
+      user_metadata: { full_name: profile.full_name },
+      created_at: profile.created_at,
+      confirmed_at: profile.status === 'active' ? profile.created_at : null
+    }));
+
+  const clients = [...authRows, ...manualRows].map(user => {
     const profile = profileMap.get(user.id) || {};
     const doc = docMap.get(user.id) || {};
     const wallet = walletMap.get(user.id) || {};

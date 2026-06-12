@@ -49,6 +49,7 @@ export default function ClientPanel({user}){
   const [accountMode,setAccountMode]=useState(()=>localStorage.getItem('df_account_mode') || state.accountMode || 'demo');
   const [liveTicker,setLiveTicker]=useState(null);
   const [marketStatus,setMarketStatus]=useState('Sincronizando mercado');
+  const [analysisSplash,setAnalysisSplash]=useState(false);
   const autoOrderRef = useRef('');
   const lastPrice=Number(liveTicker?.lastPrice || liveTicker?.price || candles.at(-1)?.close || 0);
   const analysis = useMemo(()=>analyzeMarket(candles),[candles]);
@@ -62,6 +63,12 @@ export default function ClientPanel({user}){
       setSymbol(recommended.symbol);
     }
   },[selectionMode,recommended.symbol,symbol]);
+  useEffect(()=>{
+    if(!analysisSplash) return;
+    const delay = recommended?.symbol && candles.length ? 3600 : 5200;
+    const timer = setTimeout(()=>setAnalysisSplash(false), delay);
+    return()=>clearTimeout(timer);
+  },[analysisSplash,recommended?.symbol,candles.length]);
   useEffect(()=>{
     if(!hasSupabase || !user?.id) return;
     let closed = false;
@@ -224,7 +231,7 @@ export default function ClientPanel({user}){
     return()=>{cancelled=true};
   },[state.active,accountMode,analysis,symbol,timeframe,state.apiConnected,state.binanceCanTrade,state.envBalance,state.binanceUsdtBalance,user?.id]);
 
-  function operateRecommended(){ setSymbol(recommended.symbol); setSelectionMode('recommended'); setState(s=>({...s,active:true,symbol:recommended.symbol,accountMode,selectionMode:'recommended'})); }
+  function operateRecommended(){ setAnalysisSplash(true); setActiveTab('dashboard'); setSymbol(recommended.symbol); setSelectionMode('recommended'); setState(s=>({...s,active:true,symbol:recommended.symbol,accountMode,selectionMode:'recommended'})); }
   function operateSelected(){ setSelectionMode('manual_assisted'); setState(s=>({...s,active:true,symbol,accountMode,selectionMode:'manual_assisted'})); }
   function createTargetOrder(){ setState(s=>createTargetPreviewOrder({...s,symbol},symbol,analysis,timeframe)); }
 
@@ -243,7 +250,8 @@ export default function ClientPanel({user}){
 
     <div className="tabbar premium-tabs">{tabs.map(([k,l])=><button key={k} className={activeTab===k?'active':''} onClick={()=>setActiveTab(k)}>{l}</button>)}</div>
 
-    {activeTab==='dashboard' && <Dashboard user={user} state={state} setState={setState} symbol={symbol} setSymbol={setSymbol} timeframe={timeframe} setTimeframe={setTimeframe} candles={candles} analysis={analysis} radar={radar} recommended={recommended} operateRecommended={operateRecommended} operateSelected={operateSelected} createTargetOrder={createTargetOrder} selectionMode={selectionMode} setSelectionMode={setSelectionMode} accountMode={accountMode} setAccountMode={setAccountMode} marketStatus={marketStatus} lastPrice={lastPrice}/>}    
+    {activeTab==='dashboard' && analysisSplash && <AnalysisSplash radar={radar} recommended={recommended} timeframe={timeframe} accountMode={accountMode} onDone={()=>setAnalysisSplash(false)}/>}
+    {activeTab==='dashboard' && !analysisSplash && <Dashboard user={user} state={state} setState={setState} symbol={symbol} setSymbol={setSymbol} timeframe={timeframe} setTimeframe={setTimeframe} candles={candles} analysis={analysis} radar={radar} recommended={recommended} operateRecommended={operateRecommended} operateSelected={operateSelected} createTargetOrder={createTargetOrder} selectionMode={selectionMode} setSelectionMode={setSelectionMode} accountMode={accountMode} setAccountMode={setAccountMode} marketStatus={marketStatus} lastPrice={lastPrice}/>}    
     {activeTab==='analysis' && <LiveAnalysis symbol={symbol} setSymbol={setSymbol} timeframe={timeframe} setTimeframe={setTimeframe} candles={candles} state={state} analysis={analysis}/>}    
     {activeTab==='scanner' && <Scanner radar={radar} symbol={symbol} setSymbol={setSymbol} operateRecommended={operateRecommended}/>}    
     {activeTab==='orders' && <Orders orders={state.orders}/>}    
@@ -290,6 +298,34 @@ function AccountBalanceKpi({state,accountMode,setAccountMode}){
   </div>
 }
 function MiniKpi({icon,label,value,delta}){return <div className="mini-kpi"><div className="kpi-icon">{icon}</div><span>{label}</span><strong>{value}</strong><small>{delta}</small></div>}
+
+function AnalysisSplash({radar,recommended,timeframe,accountMode,onDone}){
+  const top = radar.slice(0,6);
+  return <div className="analysis-splash panel-glow">
+    <div className="analysis-splash-main">
+      <div className="radar-ring"><Brain size={46}/><span/></div>
+      <div>
+        <p className="eyebrow">Radar IA em execução</p>
+        <h2>Analisando pares Spot da Binance</h2>
+        <p className="muted">Validando tendência, volume, liquidez, suporte, resistência e score antes de abrir o dashboard operacional.</p>
+      </div>
+    </div>
+    <div className="scan-progress"><i/></div>
+    <div className="scan-grid">
+      {top.map((item,index)=><div className={item.symbol===recommended.symbol?'scan-row best':'scan-row'} key={item.symbol}>
+        <span>{index+1}</span>
+        <strong>{item.symbol.replace('USDT','/USDT')}</strong>
+        <small>Score {item.score}/100</small>
+      </div>)}
+    </div>
+    <div className="scan-result">
+      <span>Melhor oportunidade encontrada</span>
+      <strong>{recommended.symbol?.replace('USDT','/USDT') || 'Aguardando'}</strong>
+      <small>{String(timeframe || '15m').toUpperCase()} | {accountMode === 'live' ? 'Conta real' : 'Conta demo'} | Aguardando confirmação de entrada</small>
+    </div>
+    <button className="btn ghost small" type="button" onClick={onDone}>Abrir dashboard agora</button>
+  </div>
+}
 
 function Dashboard({user,state,setState,symbol,setSymbol,timeframe,setTimeframe,candles,analysis,radar,recommended,operateRecommended,operateSelected,createTargetOrder,selectionMode,setSelectionMode,accountMode,setAccountMode,marketStatus,lastPrice}){
   return <div className="terminal-layout">

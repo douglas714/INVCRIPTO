@@ -18,12 +18,10 @@ if errorlevel 1 (
 )
 
 if not exist .env (
-  copy .env.example .env >nul
-  echo Arquivo .env criado.
+  echo Arquivo .env nao encontrado.
+  echo Vou abrir a configuracao agora.
   echo.
-  echo Abra o arquivo .env e preencha SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY e APP_ENCRYPTION_KEY.
-  echo Depois rode INICIAR_CONNECTOR.bat
-  echo.
+  call CONFIGURAR_CONNECTOR.bat
 )
 
 echo Instalando dependencias...
@@ -31,6 +29,6 @@ npm install
 
 echo.
 echo Instalacao finalizada.
-echo Configure o .env e rode INICIAR_CONNECTOR.bat
+echo Rode INICIAR_CONNECTOR.bat e deixe a janela aberta.
 echo.
 pause

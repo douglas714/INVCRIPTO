@@ -34,6 +34,11 @@ button,input,select{font:inherit}.app-shell{min-height:100vh}.topbar{height:72px
 .native-chart .grid-line{stroke:rgba(216,178,74,.16);stroke-width:1;vector-effect:non-scaling-stroke}
 .native-chart .resistance-line{stroke:#16c957;stroke-width:1.4;stroke-dasharray:5 5;vector-effect:non-scaling-stroke;filter:drop-shadow(0 0 3px rgba(22,201,87,.8))}
 .native-chart .support-line{stroke:#d8b24a;stroke-width:1.4;stroke-dasharray:5 5;vector-effect:non-scaling-stroke;filter:drop-shadow(0 0 3px rgba(216,178,74,.8))}
+.native-chart .order-line{stroke-width:1.7;stroke-dasharray:8 5;vector-effect:non-scaling-stroke}
+.native-chart .order-line.buy{stroke:#16c957;filter:drop-shadow(0 0 4px rgba(22,201,87,.8))}
+.native-chart .order-line.sell{stroke:#f04452;filter:drop-shadow(0 0 4px rgba(240,68,82,.78))}
+.native-chart .order-tag.buy{fill:rgba(22,201,87,.2);stroke:#16c957;stroke-width:1;vector-effect:non-scaling-stroke}
+.native-chart .order-tag.sell{fill:rgba(240,68,82,.2);stroke:#f04452;stroke-width:1;vector-effect:non-scaling-stroke}
 .native-chart .close-line{stroke:rgba(245,235,200,.28);stroke-width:1.4;vector-effect:non-scaling-stroke}
 .native-chart .wick{stroke-width:1.2;vector-effect:non-scaling-stroke}
 .native-chart .wick.up{stroke:#18e36b}.native-chart .wick.down{stroke:#f1b846}
@@ -41,7 +46,7 @@ button,input,select{font:inherit}.app-shell{min-height:100vh}.topbar{height:72px
 .native-chart .candle.down{fill:#d8b24a;stroke:#ffe59a;stroke-width:.65;vector-effect:non-scaling-stroke;filter:drop-shadow(0 0 2px rgba(216,178,74,.48))}
 .native-chart .volume.up{fill:rgba(22,201,87,.48)}.native-chart .volume.down{fill:rgba(216,178,74,.42)}
 .native-chart .chart-label{font-size:13px;font-weight:800;letter-spacing:.4px;paint-order:stroke;stroke:#020503;stroke-width:3px;stroke-linejoin:round}
-.native-chart .chart-label.resistance{fill:#16c957}.native-chart .chart-label.support{fill:#d8b24a}.native-chart .chart-label.muted{fill:#f5ebc8;opacity:.85}
+.native-chart .chart-label.resistance{fill:#16c957}.native-chart .chart-label.support{fill:#d8b24a}.native-chart .chart-label.muted{fill:#f5ebc8;opacity:.85}.native-chart .chart-label.order.buy{fill:#bcf7d0}.native-chart .chart-label.order.sell{fill:#ffd1d6}
 .usdt-note{color:var(--green);font-weight:800}
 
 /* INVCRIPTO v1.0.5 - gráfico interativo */

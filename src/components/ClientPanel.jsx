@@ -40,6 +40,19 @@ function fallbackCandles(symbol, timeframe, count=320){
   });
 }
 
+function mergeRealOrders(existing, realOrders){
+  const realIds = new Set((realOrders || []).map(order=>order.id));
+  const keepLocal = (existing || []).filter(order=>{
+    if(realIds.has(order.id)) return false;
+    const side = String(order.side || '');
+    if(side === 'REAL_BUY' || side === 'REAL_SELL') return false;
+    return true;
+  });
+  return [...(realOrders || []), ...keepLocal]
+    .sort((a,b)=>new Date(b.at || 0) - new Date(a.at || 0))
+    .slice(0,120);
+}
+
 export default function ClientPanel({user}){
   const [activeTab,setActiveTab]=useState('dashboard');
   const [symbol,setSymbol]=useState('BTCUSDT');
@@ -104,6 +117,16 @@ export default function ClientPanel({user}){
             accountMode:'live'
           }));
           setAccountMode('live');
+        }
+
+        const ordersResponse = await fetch('/.netlify/functions/binance-real-orders', {
+          method:'POST',
+          headers:{ 'content-type':'application/json', ...(token ? { authorization:`Bearer ${token}` } : {}) },
+          body:JSON.stringify({ manualUserId, manualEmail: user?.email || '', environment:'live', limit:80 })
+        });
+        const ordersPayload = await ordersResponse.json().catch(()=>({}));
+        if(!closed && ordersResponse.ok && ordersPayload?.ok && Array.isArray(ordersPayload.orders)){
+          setState(s=>({...s, orders: mergeRealOrders(s.orders, ordersPayload.orders)}));
         }
       } catch {}
     }
@@ -339,7 +362,7 @@ function Dashboard({user,state,setState,symbol,setSymbol,timeframe,setTimeframe,
     <div className="chart-zone panel-glow">
       <RobotStatusBar state={state} analysis={analysis} accountMode={accountMode} marketStatus={marketStatus} lastPrice={lastPrice}/>
       <ChartHeader symbol={symbol} setSymbol={setSymbol} timeframe={timeframe} setTimeframe={setTimeframe} analysis={analysis}/>
-      <TradingChart candles={candles} analysis={analysis} timeframe={timeframe} symbol={symbol}/>
+      <TradingChart candles={candles} analysis={analysis} timeframe={timeframe} symbol={symbol} orders={state.orders}/>
     </div>
     <TradingControl state={state} setState={setState} symbol={symbol} setSymbol={setSymbol} analysis={analysis} recommended={recommended} operateRecommended={operateRecommended} operateSelected={operateSelected} createTargetOrder={createTargetOrder} selectionMode={selectionMode} setSelectionMode={setSelectionMode} accountMode={accountMode} setAccountMode={setAccountMode} stopRobot={stopRobot}/>
     <TargetOrderPreview state={state} symbol={symbol} timeframe={timeframe} analysis={analysis} createTargetOrder={createTargetOrder} accountMode={accountMode} user={user}/>
@@ -370,7 +393,7 @@ function ChartHeader({symbol,setSymbol,timeframe,setTimeframe,analysis}){
   </div>
 }
 
-function TradingChart({candles,analysis,timeframe,symbol}){
+function TradingChart({candles,analysis,timeframe,symbol,orders=[]}){
   const [visibleCount,setVisibleCount]=useState(90);
   const [offset,setOffset]=useState(0);
   const dragRef=useRef(null);
@@ -381,8 +404,18 @@ function TradingChart({candles,analysis,timeframe,symbol}){
   const startIndex = Math.max(0, endIndex - visibleCount);
   const safeCandles = all.slice(startIndex,endIndex);
   const sr = safeCandles.length ? supportResistance(safeCandles,48) : null;
-  const max = safeCandles.length ? Math.max(...safeCandles.map(c=>c.high)) : 1;
-  const min = safeCandles.length ? Math.min(...safeCandles.map(c=>c.low)) : 0;
+  const orderMarkers = (orders || [])
+    .filter(order=>order.symbol===symbol && Number(order.price || 0) > 0)
+    .filter(order=>{
+      const side = String(order.side || '').toUpperCase();
+      return side.includes('BUY') || side.includes('SELL');
+    })
+    .slice(0,12);
+  const rawMax = safeCandles.length ? Math.max(...safeCandles.map(c=>c.high)) : 1;
+  const rawMin = safeCandles.length ? Math.min(...safeCandles.map(c=>c.low)) : 0;
+  const markerPrices = orderMarkers.map(order=>Number(order.price || 0));
+  const max = Math.max(rawMax, ...markerPrices);
+  const min = Math.min(rawMin, ...markerPrices);
   const range = Math.max(1, max-min);
   const width = 1200;
   const height = 430;
@@ -441,6 +474,21 @@ function TradingChart({candles,analysis,timeframe,symbol}){
         {[0,1,2,3,4,5].map(i=><line key={'h'+i} x1="0" x2={width} y1={35+i*chartH/5} y2={35+i*chartH/5} className="grid-line"/>)}
         {sr?.resistance && <line x1="0" x2={width} y1={y(sr.resistance)} y2={y(sr.resistance)} className="resistance-line"/>}
         {sr?.support && <line x1="0" x2={width} y1={y(sr.support)} y2={y(sr.support)} className="support-line"/>}
+        {orderMarkers.map((order,index)=>{
+          const side = String(order.side || '').toUpperCase();
+          const isSell = side.includes('SELL');
+          const price = Number(order.price || 0);
+          const yy = y(price);
+          const label = `${isSell ? 'VENDA' : 'COMPRA'} ${price.toFixed(2)}`;
+          const labelWidth = Math.max(112, label.length * 8);
+          const x = isSell ? width - labelWidth - 12 : 12;
+          const markerY = Math.max(24, Math.min(368, yy + (index % 3) * 3));
+          return <g key={`${order.id || index}-marker`}>
+            <line x1="0" x2={width} y1={yy} y2={yy} className={isSell?'order-line sell':'order-line buy'}/>
+            <rect x={x} y={markerY-15} width={labelWidth} height="26" rx="8" className={isSell?'order-tag sell':'order-tag buy'}/>
+            <text x={x+10} y={markerY+3} className={isSell?'chart-label order sell':'chart-label order buy'}>{label}</text>
+          </g>
+        })}
         <polyline points={safeCandles.map((c,i)=>`${(i+0.5)*width/safeCandles.length},${y(c.close)}`).join(' ')} className="close-line" fill="none"/>
         {safeCandles.map((c,i)=>{
           const x=(i+0.5)*width/safeCandles.length;

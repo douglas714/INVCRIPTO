@@ -71,9 +71,13 @@ export default function ClientPanel({user}){
         });
         const payload = await response.json().catch(()=>({}));
         if(closed || !response.ok || !payload?.ok) return;
+        if(payload.envBalance !== undefined){
+          setState(s=>({...s, envBalance:Number(payload.envBalance || 0)}));
+        }
         if(payload.connected || payload.credentialStatus){
           setState(s=>({
             ...s,
+            ...(payload.envBalance !== undefined ? { envBalance:Number(payload.envBalance || 0) } : {}),
             apiConnected:Boolean(payload.connected),
             binancePending:payload.credentialStatus === 'pending_connector_validation',
             binanceCredentialStatus:payload.credentialStatus,
@@ -238,7 +242,7 @@ function RobotStatusBar({state,analysis,accountMode,marketStatus,lastPrice}){
 function ChartHeader({symbol,setSymbol,timeframe,setTimeframe,analysis}){
   const price=analysis?.price;
   return <div className="chart-head-pro">
-    <div className="symbol-select"><span className="coin-badge">â‚¿</span><select value={symbol} onChange={e=>setSymbol(e.target.value)}>{allowedSymbols.map(s=><option key={s}>{s}</option>)}</select><strong>{price?price.toFixed(2):'...'}</strong><small>{analysis?.regime||'Carregando'}</small></div>
+    <div className="symbol-select"><span className="coin-badge">BTC</span><select value={symbol} onChange={e=>setSymbol(e.target.value)}>{allowedSymbols.map(s=><option key={s}>{s}</option>)}</select><strong>{price?price.toFixed(2):'...'}</strong><small>{analysis?.regime||'Carregando'}</small></div>
     <div className="timeframes">{['1m','5m','15m','1h','4h','1d'].map(tf=><button key={tf} className={timeframe===tf?'active':''} onClick={()=>setTimeframe(tf)}>{tf==='1d'?'1D':tf}</button>)}</div>
     <div className="chart-actions"><span><SlidersHorizontal size={15}/> Indicadores</span><span><Settings size={15}/> Template</span></div>
   </div>
@@ -298,13 +302,13 @@ function TradingChart({candles,analysis,timeframe,symbol}){
   }
 
   if(!safeCandles.length){
-    return <div className="chart-shell"><div className="chart-tool-rail"><span>âŒ</span><span>â•±</span><span>âŒ¬</span><span>AI</span><span>T</span><span>â—Ž</span></div><div className="chartbox-pro chartbox-svg"><div className="chart-fallback"><b>Carregando grÃ¡fico real</b><span>Buscando candles da Binance...</span></div></div></div>
+    return <div className="chart-shell"><div className="chart-tool-rail"><span>+</span><span>/</span><span>-</span><span>AI</span><span>T</span><span>O</span></div><div className="chartbox-pro chartbox-svg"><div className="chart-fallback"><b>Carregando gráfico real</b><span>Buscando candles da Binance...</span></div></div></div>
   }
 
   return <div className="chart-shell">
-    <div className="chart-tool-rail"><span>âŒ</span><span>â•±</span><span>âŒ¬</span><span>AI</span><span>T</span><span>â—Ž</span></div>
+    <div className="chart-tool-rail"><span>+</span><span>/</span><span>-</span><span>AI</span><span>T</span><span>O</span></div>
     <div className="chartbox-pro chartbox-svg interactive-chart" onWheel={onWheel} onPointerDown={onPointerDown} onPointerMove={onPointerMove} onPointerUp={onPointerUp} onPointerCancel={onPointerUp} onDoubleClick={resetLive} title="Arraste para movimentar. Use o scroll para dar zoom. Clique duas vezes para voltar ao ao vivo.">
-      <svg viewBox={`0 0 ${width} ${height}`} preserveAspectRatio="none" className="native-chart" role="img" aria-label="GrÃ¡fico INVCRIPTO interativo">
+      <svg viewBox={`0 0 ${width} ${height}`} preserveAspectRatio="none" className="native-chart" role="img" aria-label="Gráfico INVCRIPTO interativo">
         <defs>
           <linearGradient id="chartGlow" x1="0" x2="0" y1="0" y2="1">
             <stop offset="0%" stopColor="rgba(22,201,87,.25)" />
@@ -329,18 +333,18 @@ function TradingChart({candles,analysis,timeframe,symbol}){
             <rect x={x-candleW/2} y={395-volH} width={candleW} height={volH} className={up?'volume up':'volume down'}/>
           </g>
         })}
-        {sr?.resistance && <text x={width-170} y={y(sr.resistance)-8} className="chart-label resistance">RESISTÃŠNCIA {sr.resistance.toFixed(2)}</text>}
+        {sr?.resistance && <text x={width-170} y={y(sr.resistance)-8} className="chart-label resistance">RESISTÊNCIA {sr.resistance.toFixed(2)}</text>}
         {sr?.support && <text x={width-155} y={y(sr.support)+18} className="chart-label support">SUPORTE {sr.support.toFixed(2)}</text>}
-        <text x="20" y="24" className="chart-label muted">INVCRIPTO Â· {symbol} Â· {timeframe.toUpperCase()} Â· arraste/scroll</text>
+        <text x="20" y="24" className="chart-label muted">INVCRIPTO | {symbol} | {timeframe.toUpperCase()} | arraste/scroll</text>
       </svg>
       <div className="chart-controls-overlay">
-        <button onClick={(e)=>{e.stopPropagation();pan(18)}} title="Voltar no histÃ³rico">â€¹</button>
+        <button onClick={(e)=>{e.stopPropagation();pan(18)}} title="Voltar no histórico">&lt;</button>
         <button onClick={(e)=>{e.stopPropagation();zoom('in')}} title="Aproximar">ï¼‹</button>
         <button onClick={(e)=>{e.stopPropagation();zoom('out')}} title="Afastar">ï¼</button>
         <button onClick={(e)=>{e.stopPropagation();resetLive()}} title="Voltar ao candle atual">LIVE</button>
-        <button onClick={(e)=>{e.stopPropagation();pan(-18)}} title="AvanÃ§ar">â€º</button>
+        <button onClick={(e)=>{e.stopPropagation();pan(-18)}} title="Avançar">&gt;</button>
       </div>
-      <div className="chart-help">Arraste para mover Â· Scroll para zoom Â· Duplo clique para voltar ao vivo Â· {safeCandles.length} candles</div>
+      <div className="chart-help">Arraste para mover | Scroll para zoom | Duplo clique para voltar ao vivo | {safeCandles.length} candles</div>
     </div>
   </div>
 }
@@ -350,19 +354,19 @@ function TradingControl({state,setState,symbol,setSymbol,analysis,recommended,op
   return <div className="trade-control panel-glow">
     <h3><span/> Trading Control</h3>
     <label>Modo de escolha</label>
-    <select value={selectionMode} onChange={e=>setSelectionMode(e.target.value)}><option value="recommended">Operar recomendado pela IA</option><option value="manual_assisted">Manual assistido</option><option value="auto_ai">IA escolhe automÃ¡tico</option></select>
+    <select value={selectionMode} onChange={e=>setSelectionMode(e.target.value)}><option value="recommended">Operar recomendado pela IA</option><option value="manual_assisted">Manual assistido</option><option value="auto_ai">IA escolhe automático</option></select>
     <label>Moeda selecionada</label>
     <select value={symbol} onChange={e=>setSymbol(e.target.value)}>{allowedSymbols.map(s=><option key={s}>{s}</option>)}</select>
-    <label>RecomendaÃ§Ã£o IA</label>
+    <label>Recomendação IA</label>
     <div className="recommend-line"><strong>{recommended.symbol?.replace('USDT','/USDT')}</strong><span>{recommended.score}/100</span></div>
-    <label>Conta de operaÃ§Ã£o</label>
+    <label>Conta de operação</label>
     <div className="mode-buttons"><button className={accountMode==='demo'?'active':''} type="button" onClick={()=>setAccountMode('demo')}>Demo</button><button className={accountMode==='live'?'active':''} type="button" onClick={()=>setAccountMode('live')}>Real Spot</button></div>
-    <small className="sync">{accountMode==='demo'?'Conta demo nÃ£o consome ENV.':'Conta real consome ENV somente sobre lucro realizado.'}</small>
+    <small className="sync">{accountMode==='demo'?'Conta demo não consome ENV.':'Conta real consome ENV somente sobre lucro realizado.'}</small>
     <div className="switch-row"><span>Auto Trading</span><button className={state.active?'switch on':'switch'} onClick={()=>setState(s=>({...s,active:!s.active}))}/></div>
     <button className="btn ghost" type="button" onClick={createTargetOrder} disabled={!canPreview}><TrendingUp size={16}/> Criar ordem alvo 1</button>
     <button className="btn primary gold-btn" onClick={operateRecommended}><Play size={16}/> Operar recomendado</button>
     <button className="btn ghost" onClick={operateSelected}><ShieldCheck size={16}/> Operar moeda selecionada</button>
-    <button className="btn danger full" onClick={()=>setState(s=>({...s,active:false}))}><StopCircle size={16}/> Parar robÃ´</button>
+    <button className="btn danger full" onClick={()=>setState(s=>({...s,active:false}))}><StopCircle size={16}/> Parar robô</button>
     <small className="sync"><span className="live-dot"/> Last sync: 2 sec ago</small>
   </div>
 }
@@ -373,7 +377,7 @@ function TargetOrderPreview({state,symbol,timeframe,analysis,createTargetOrder,a
   const order = (state.targetOrders || []).find(item=>item.symbol===symbol);
   const plan = analysis?.orderPlan;
   if(!order && !plan){
-    return <div className="info-card panel-glow"><h3>Ordem alvo 1</h3><p className="muted">A IA ainda nao encontrou setup de compra com risco/retorno suficiente para criar uma ordem de visualizacao.</p><p><b>Acao:</b> {analysis?.action || 'WAIT'}</p><p><b>Score:</b> {analysis?.score || 0}/100</p></div>
+    return <div className="info-card panel-glow"><h3>Ordem alvo 1</h3><p className="muted">A IA ainda não encontrou setup de compra com risco/retorno suficiente para criar uma ordem de visualização.</p><p><b>Ação:</b> {analysis?.action || 'WAIT'}</p><p><b>Score:</b> {analysis?.score || 0}/100</p></div>
   }
   const demoBaseValue = Math.min(state.balanceUsd - 1000, Math.max(10, (state.balanceUsd - 1000) * 0.05));
   const liveBalance = Number(state.binanceUsdtBalance || 0);
@@ -445,11 +449,11 @@ function TargetOrderPreview({state,symbol,timeframe,analysis,createTargetOrder,a
     }
   }
 
-  return <div className="info-card panel-glow"><h3>Ordem alvo 1</h3><div className="pair-row"><span className="badge ok">{view.status}</span><strong>{symbol.replace('USDT','/USDT')}</strong></div><p><span>Timeframe:</span><b>{String(view.timeframe || '15m').toUpperCase()}</b></p><p><span>Tipo:</span><b>{accountMode==='live'?'Compra mercado + venda limite Binance':'Compra limite paper'}</b></p><p><span>Entrada mao 1:</span><b>{view.price.toFixed(6)}</b></p><p><span>Quantidade estimada:</span><b>{num(view.qty,8)}</b></p><p><span>Valor mao 1:</span><b>{usd(view.valueUsd)}</b></p><p><span>Stop estrutural:</span><b>{view.stopLoss.toFixed(6)}</b></p><p><span>Alvo 1:</span><b>{view.target1.toFixed(6)}</b></p><p><span>Venda protegida:</span><b>{view.recoveryTarget?.toFixed?.(6) || '-'}</b></p><p><span>Risco / ganho alvo 1:</span><b>{usd(view.riskUsd)} / {usd(view.potentialProfitUsd)}</b></p><p><span>R/R:</span><b>{num(view.riskReward,2)}</b></p><p><span>Confianca:</span><b>{view.confidence}/100</b></p>{view.ladder?.length&&<div><h4>Martingale controlado</h4>{view.ladder.map(hand=><p key={hand.level}><span>{hand.label} x{hand.multiplier}:</span><b>{hand.entry.toFixed(6)}</b></p>)}</div>}<button className="btn primary small" type="button" onClick={createTargetOrder}>Salvar previa alvo 1</button>{accountMode==='live'&&<button className="btn danger small" type="button" onClick={sendProtectedOrder} disabled={sending}>{sending?'Enviando...':'Enviar compra protegida real'}</button>}{message&&<div className="alert">{message}</div>}</div>
+  return <div className="info-card panel-glow"><h3>Ordem alvo 1</h3><div className="pair-row"><span className="badge ok">{view.status}</span><strong>{symbol.replace('USDT','/USDT')}</strong></div><p><span>Timeframe:</span><b>{String(view.timeframe || '15m').toUpperCase()}</b></p><p><span>Tipo:</span><b>{accountMode==='live'?'Compra mercado + venda limite Binance':'Compra limite paper'}</b></p><p><span>Entrada mão 1:</span><b>{view.price.toFixed(6)}</b></p><p><span>Quantidade estimada:</span><b>{num(view.qty,8)}</b></p><p><span>Valor mão 1:</span><b>{usd(view.valueUsd)}</b></p><p><span>Stop estrutural:</span><b>{view.stopLoss.toFixed(6)}</b></p><p><span>Alvo 1:</span><b>{view.target1.toFixed(6)}</b></p><p><span>Venda protegida:</span><b>{view.recoveryTarget?.toFixed?.(6) || '-'}</b></p><p><span>Risco / ganho alvo 1:</span><b>{usd(view.riskUsd)} / {usd(view.potentialProfitUsd)}</b></p><p><span>R/R:</span><b>{num(view.riskReward,2)}</b></p><p><span>Confiança:</span><b>{view.confidence}/100</b></p>{view.ladder?.length&&<div><h4>Martingale controlado</h4>{view.ladder.map(hand=><p key={hand.level}><span>{hand.label} x{hand.multiplier}:</span><b>{hand.entry.toFixed(6)}</b></p>)}</div>}<button className="btn primary small" type="button" onClick={createTargetOrder}>Salvar prévia alvo 1</button>{accountMode==='live'&&<button className="btn danger small" type="button" onClick={sendProtectedOrder} disabled={sending}>{sending?'Enviando...':'Enviar compra protegida real'}</button>}{message&&<div className="alert">{message}</div>}</div>
 }
 function RecommendedCard({recommended,symbol,analysis,setSymbol,operateRecommended}){
   const isCurrent = recommended.symbol === symbol;
-  return <div className="info-card panel-glow"><h3>Recommended Pair</h3><div className="pair-row"><span className="coin-badge">â‚¿</span><strong>{recommended.symbol?.replace('USDT','/USDT')}</strong><span className="badge ok">LONG</span></div><p>ConfianÃ§a: <b>{recommended.score}%</b></p><div className="progress"><i style={{width:`${recommended.score||0}%`}}/></div><p><span>Hold Recovery:</span><b>{recommended.hold}/100</b></p><p><span>Entrada:</span><b>{analysis?.support?`${analysis.support.toFixed(2)} â€“ ${(analysis.support*1.004).toFixed(2)}`:'aguardando'}</b></p><p><span>Alvo:</span><b>{analysis?.resistance?analysis.resistance.toFixed(2):'aguardando'}</b></p>{!isCurrent&&<button className="btn primary small" onClick={()=>setSymbol(recommended.symbol)}>Selecionar moeda</button>}<button className="btn ghost small" onClick={operateRecommended}>Seguir IA</button></div>
+  return <div className="info-card panel-glow"><h3>Par recomendado</h3><div className="pair-row"><span className="coin-badge">BTC</span><strong>{recommended.symbol?.replace('USDT','/USDT')}</strong><span className="badge ok">LONG</span></div><p>Confiança: <b>{recommended.score}%</b></p><div className="progress"><i style={{width:`${recommended.score||0}%`}}/></div><p><span>Hold Recovery:</span><b>{recommended.hold}/100</b></p><p><span>Entrada:</span><b>{analysis?.support?`${analysis.support.toFixed(2)} - ${(analysis.support*1.004).toFixed(2)}`:'aguardando'}</b></p><p><span>Alvo:</span><b>{analysis?.resistance?analysis.resistance.toFixed(2):'aguardando'}</b></p>{!isCurrent&&<button className="btn primary small" onClick={()=>setSymbol(recommended.symbol)}>Selecionar moeda</button>}<button className="btn ghost small" onClick={operateRecommended}>Seguir IA</button></div>
 }
 
 function RecentTrades({orders}){
@@ -461,7 +465,7 @@ function RecentTrades({orders}){
 function MarketAI({analysis,radar}){
   const sentiment=analysis?.regime?.includes('ALTA')?'BULLISH':analysis?.regime?.includes('BAIXA')?'DEFENSIVO':'NEUTRO';
   const score=radar[0]?.score||0;
-  return <div className="ai-card panel-glow"><h3>AI Market Analysis</h3><div className="ai-orb"><Brain size={38}/><span>AI</span></div><p>Sentimento atual</p><strong>{sentiment}</strong><small>{analysis?.reason||'RobÃ´ aguardando confirmaÃ§Ã£o de entrada.'}</small><div className="progress"><i style={{width:`${score}%`}}/></div><b>{score}%</b></div>
+  return <div className="ai-card panel-glow"><h3>Análise de Mercado IA</h3><div className="ai-orb"><Brain size={38}/><span>AI</span></div><p>Sentimento atual</p><strong>{sentiment}</strong><small>{analysis?.reason||'Robô aguardando confirmação de entrada.'}</small><div className="progress"><i style={{width:`${score}%`}}/></div><b>{score}%</b></div>
 }
 function SystemPerformance({state}){const envBalance=Number(state.envBalance ?? state.invBalance ?? 0);return <div className="info-card panel-glow"><h3>Performance do sistema</h3><Metric label="Bot status" value={state.active?'Rodando':'Pausado'} pct={state.active?88:35}/><Metric label="API latency" value="112ms" pct={42}/><Metric label="ENV" value={`${num(envBalance,2)}`} pct={Math.min(100,envBalance*10)}/><Metric label="Uptime" value="online" pct={91}/></div>}
 function Metric({label,value,pct}){return <p className="metric"><span>{label}</span><i><b style={{width:`${pct}%`}}/></i><strong>{value}</strong></p>}
@@ -469,17 +473,17 @@ function Metric({label,value,pct}){return <p className="metric"><span>{label}</s
 function LiveAnalysis({symbol,setSymbol,timeframe,setTimeframe,candles,state,analysis}){
   return <div className="analysis-layout premium-analysis">
     <div className="chart-card panel-glow"><ChartHeader symbol={symbol} setSymbol={setSymbol} timeframe={timeframe} setTimeframe={setTimeframe} analysis={analysis}/><TradingChart candles={candles} analysis={analysis} timeframe={timeframe} symbol={symbol}/></div>
-    <div className="panel decision-panel panel-glow"><h3><Activity size={18}/> Motor de anÃ¡lise</h3>
-      <div className="status-pill">{state.active?'ðŸŸ¢ ROBÃ” ATIVO':'âšª PAUSADO'}</div>
-      <p><b>Regime:</b> {analysis?.regime||'Carregando'}</p><p><b>AÃ§Ã£o:</b> {analysis?.action||'WAIT'}</p><p><b>Score:</b> {analysis?.score||0}</p><p><b>Motivo:</b> {analysis?.reason||'Aguardando candle'}</p>
-      <p><b>Suporte:</b> {analysis?.support?.toFixed?.(2)||'-'}</p><p><b>ResistÃªncia:</b> {analysis?.resistance?.toFixed?.(2)||'-'}</p>
-      <h4>Cesta atual</h4>{state.positions.length?state.positions.map(p=><p key={p.id}>{p.symbol}: {num(p.qty,8)} @ {p.avgPrice.toFixed(6)} Â· mÃ£o {p.ladderLevel||1} Â· saÃ­da {p.recoveryTarget?.toFixed?.(6)||'-'}</p>):<p className="muted">Sem posiÃ§Ã£o aberta.</p>}
+    <div className="panel decision-panel panel-glow"><h3><Activity size={18}/> Motor de análise</h3>
+      <div className="status-pill">{state.active?'ROBÔ ATIVO':'PAUSADO'}</div>
+      <p><b>Regime:</b> {analysis?.regime||'Carregando'}</p><p><b>Ação:</b> {analysis?.action||'WAIT'}</p><p><b>Score:</b> {analysis?.score||0}</p><p><b>Motivo:</b> {analysis?.reason||'Aguardando candle'}</p>
+      <p><b>Suporte:</b> {analysis?.support?.toFixed?.(2)||'-'}</p><p><b>Resistência:</b> {analysis?.resistance?.toFixed?.(2)||'-'}</p>
+      <h4>Cesta atual</h4>{state.positions.length?state.positions.map(p=><p key={p.id}>{p.symbol}: {num(p.qty,8)} @ {p.avgPrice.toFixed(6)} | mão {p.ladderLevel||1} | saída {p.recoveryTarget?.toFixed?.(6)||'-'}</p>):<p className="muted">Sem posição aberta.</p>}
     </div>
   </div>
 }
 
 function Scanner({radar,symbol,setSymbol,operateRecommended}){
-  return <div className="panel panel-glow"><h3><Sparkles size={18}/> Radar IA â€” Top moedas Binance</h3><p className="muted">O cliente pode selecionar a moeda, mas a IA recomenda a melhor oportunidade com score de entrada e Hold Recovery de 12 meses.</p><div className="scanner-grid">{radar.map(r=><div className={r.symbol===symbol?'scanner-card active':'scanner-card'} key={r.symbol}><strong>{r.symbol.replace('USDT','/USDT')}</strong><span>Score {r.score}/100</span><small>Hold {r.hold}/100 Â· Liquidez {r.liquidity}/100</small><button className="btn small ghost" onClick={()=>setSymbol(r.symbol)}>Selecionar</button></div>)}</div><button className="btn primary gold-btn" onClick={operateRecommended}>Operar melhor recomendaÃ§Ã£o</button></div>
+  return <div className="panel panel-glow"><h3><Sparkles size={18}/> Radar IA - Top moedas Binance</h3><p className="muted">O cliente pode selecionar a moeda, mas a IA recomenda a melhor oportunidade com score de entrada e Hold Recovery de 12 meses.</p><div className="scanner-grid">{radar.map(r=><div className={r.symbol===symbol?'scanner-card active':'scanner-card'} key={r.symbol}><strong>{r.symbol.replace('USDT','/USDT')}</strong><span>Score {r.score}/100</span><small>Hold {r.hold}/100 | Liquidez {r.liquidity}/100</small><button className="btn small ghost" onClick={()=>setSymbol(r.symbol)}>Selecionar</button></div>)}</div><button className="btn primary gold-btn" onClick={operateRecommended}>Operar melhor recomendação</button></div>
 }
 
 function Orders({orders}){return <div className="panel panel-glow"><h3><History size={18}/> Histórico de operações</h3><div className="table-wrap"><table><thead><tr><th>Hora</th><th>Side</th><th>Ativo</th><th>Preço</th><th>Valor</th><th>Lucro</th><th>Taxa ENV</th></tr></thead><tbody>{orders.map(o=><tr key={o.id}><td>{new Date(o.at).toLocaleString('pt-BR')}</td><td>{o.side}</td><td>{o.symbol}</td><td>{o.price.toFixed(2)}</td><td>{usd(o.valueUsd ?? o.valueBrl ?? 0)}</td><td>{o.profitUsd?usd(o.profitUsd):'-'}</td><td>{o.feeEnv?num(o.feeEnv,2):'-'}</td></tr>)}</tbody></table></div></div>}
@@ -496,6 +500,7 @@ function BinanceSettings({user,setState,setAccountMode}){
   function applyBinancePayload(payload){
     setState(s=>({
       ...s,
+      ...(payload.envBalance !== undefined ? { envBalance:Number(payload.envBalance || 0) } : {}),
       apiConnected:Boolean(payload.connected || payload.usdtFree || payload.canTrade || payload.credentialStatus === 'active' || payload.credentialStatus === 'review_required'),
       binancePending:Boolean(payload.connectorQueued || payload.credentialStatus === 'pending_connector_validation'),
       binanceCredentialStatus:payload.credentialStatus,
@@ -519,7 +524,7 @@ function BinanceSettings({user,setState,setAccountMode}){
         body:JSON.stringify({ manualUserId, manualEmail: user?.email || '', environment })
       });
       const payload = await response.json().catch(()=>({}));
-      if(!response.ok || !payload?.ok) throw new Error(payload.error || 'NÃ£o foi possÃ­vel consultar a API salva.');
+      if(!response.ok || !payload?.ok) throw new Error(payload.error || 'Não foi possível consultar a API salva.');
       if(payload.credentialStatus || payload.apiKeyMasked){
         setSavedApi(payload);
         setResult(payload);
@@ -550,10 +555,10 @@ function BinanceSettings({user,setState,setAccountMode}){
         body:JSON.stringify({ manualUserId, manualEmail: user?.email || '', environment })
       });
       const payload = await response.json().catch(()=>({}));
-      if(!response.ok || !payload?.ok) throw new Error(payload.error || 'NÃ£o foi possÃ­vel solicitar atualizaÃ§Ã£o na Binance.');
+      if(!response.ok || !payload?.ok) throw new Error(payload.error || 'Não foi possível solicitar atualização na Binance.');
       setResult(payload);
       applyBinancePayload(payload);
-      setError('AtualizaÃ§Ã£o enviada ao conector local. Assim que ele consultar a Binance, o saldo real aparece aqui.');
+      setError('Atualização enviada ao conector local. Assim que ele consultar a Binance, o saldo real aparece aqui.');
       setTimeout(()=>loadSavedApi(false), 5000);
     } catch(err){
       setError(String(err?.message || err));
@@ -582,7 +587,7 @@ function BinanceSettings({user,setState,setAccountMode}){
       const { data } = await supabase.auth.getSession();
       const token = data?.session?.access_token;
       const manualUserId = user?.manual_profile ? user.id : null;
-      if(!token && !manualUserId) throw new Error('SessÃ£o expirada. FaÃ§a login novamente.');
+      if(!token && !manualUserId) throw new Error('Sessão expirada. Faça login novamente.');
       const response = await fetch('/.netlify/functions/binance-test', {
         method:'POST',
         headers:{ 'content-type':'application/json', ...(token ? { authorization:`Bearer ${token}` } : {}) },
@@ -591,7 +596,7 @@ function BinanceSettings({user,setState,setAccountMode}){
       const payload = await response.json().catch(()=>({}));
       if(!response.ok) {
         const detail = payload.detail?.msg || payload.action || '';
-        throw new Error([payload.error || 'NÃ£o foi possÃ­vel validar a API Binance.', detail].filter(Boolean).join(' '));
+        throw new Error([payload.error || 'Não foi possível validar a API Binance.', detail].filter(Boolean).join(' '));
       }
       setResult(payload);
       setSavedApi(payload);
@@ -606,8 +611,8 @@ function BinanceSettings({user,setState,setAccountMode}){
   }
 
   return <div className="panel panel-glow">
-    <h3><KeyRound size={18}/> ConfiguraÃ§Ãµes Binance</h3>
-    <p className="muted">A chave Ã© criptografada no backend e salva no Supabase. Depois de salvar, nÃ£o precisa colar novamente para visualizar o saldo.</p>
+    <h3><KeyRound size={18}/> Configurações Binance</h3>
+    <p className="muted">A chave é criptografada no backend e salva no Supabase. Depois de salvar, não precisa colar novamente para visualizar o saldo.</p>
     {savedApi?.apiKeyMasked && <div className="alert">API salva: <b>{savedApi.apiKeyMasked}</b>. Saldo livre USDT: <b>{usdt(savedApi.usdtFree || 0)}</b>. Status: <b>{savedApi.credentialStatus || 'salva'}</b>.</div>}
     <label>Ambiente</label>
     <select value={environment} onChange={e=>setEnvironment(e.target.value)}><option value="live">Conta real Spot</option><option value="testnet">Testnet Spot</option></select>
@@ -621,7 +626,7 @@ function BinanceSettings({user,setState,setAccountMode}){
     </div>
     {error&&<div className="alert danger">{error}</div>}
     {result&&<div className="alert">API: {result.apiKeyMasked || savedApi?.apiKeyMasked}. Saldo livre USDT: <b>{usdt(result.usdtFree || 0)}</b>. Trade: <b>{result.canTrade?'habilitado':'somente leitura'}</b>.{result.warning&&<p>{result.warning}</p>}</div>}
-    <div className="alert">PermissÃµes recomendadas: leitura + spot trading. Saque deve ficar desativado para produÃ§Ã£o.</div>
+    <div className="alert">Permissões recomendadas: leitura + spot trading. Saque deve ficar desativado para produção.</div>
   </div>
 }
 
@@ -637,7 +642,7 @@ function OldBinanceSettings({user,setState,setAccountMode}){
     setError('');
     setResult(null);
     if(!hasSupabase){
-      setError('Entre com login real do Supabase para salvar chaves Binance. No modo demo local as chaves nÃ£o sÃ£o enviadas.');
+      setError('Entre com login real do Supabase para salvar chaves Binance. No modo demo local as chaves não são enviadas.');
       return;
     }
     if(apiKey.trim().length < 20 || apiSecret.trim().length < 20){
@@ -649,7 +654,7 @@ function OldBinanceSettings({user,setState,setAccountMode}){
       const { data } = await supabase.auth.getSession();
       const token = data?.session?.access_token;
       const manualUserId = user?.manual_profile ? user.id : null;
-      if(!token && !manualUserId) throw new Error('SessÃ£o expirada. FaÃ§a login novamente.');
+      if(!token && !manualUserId) throw new Error('Sessão expirada. Faça login novamente.');
       const response = await fetch('/.netlify/functions/binance-test', {
         method:'POST',
         headers:{ 'content-type':'application/json', ...(token ? { authorization:`Bearer ${token}` } : {}) },
@@ -658,7 +663,7 @@ function OldBinanceSettings({user,setState,setAccountMode}){
       const payload = await response.json().catch(()=>({}));
       if(!response.ok) {
         const detail = payload.detail?.msg || payload.action || '';
-        throw new Error([payload.error || 'NÃ£o foi possÃ­vel validar a API Binance.', detail].filter(Boolean).join(' '));
+        throw new Error([payload.error || 'Não foi possível validar a API Binance.', detail].filter(Boolean).join(' '));
       }
       setResult(payload);
       setState(s=>({
@@ -680,7 +685,7 @@ function OldBinanceSettings({user,setState,setAccountMode}){
     }
   }
 
-  return <div className="panel panel-glow"><h3><KeyRound size={18}/> ConfiguraÃ§Ãµes Binance</h3><p className="muted">A chave Ã© enviada somente para a Netlify Function, testada na Binance, criptografada no backend e salva no Supabase. O robÃ´ opera pares Spot contra USDT.</p><label>Ambiente</label><select value={environment} onChange={e=>setEnvironment(e.target.value)}><option value="testnet">Testnet Spot</option><option value="live">Conta real Spot</option></select><label>API Key</label><input value={apiKey} onChange={e=>setApiKey(e.target.value)} placeholder="Cole a API Key"/><label>Secret Key</label><input type="password" value={apiSecret} onChange={e=>setApiSecret(e.target.value)} placeholder="Cole a Secret Key"/><button className="btn primary gold-btn" type="button" onClick={testAndSave} disabled={loading}>{loading?'Testando...':'Testar conexÃ£o e salvar API'}</button>{error&&<div className="alert danger">{error}</div>}{result&&<div className="alert">API validada: {result.apiKeyMasked}. Saldo livre USDT: <b>{usdt(result.usdtFree)}</b>. Trade: <b>{result.canTrade?'habilitado':'somente leitura'}</b>.{result.warning&&<p>{result.warning}</p>}</div>}<div className="alert">PermissÃµes recomendadas: leitura + spot trading. Saque deve estar desativado. Valor BRL fica apenas para recarga, convertido pela cotaÃ§Ã£o do dÃ³lar/USDT.</div></div>
+  return <div className="panel panel-glow"><h3><KeyRound size={18}/> Configurações Binance</h3><p className="muted">A chave é enviada somente para a Netlify Function, testada na Binance, criptografada no backend e salva no Supabase. O robô opera pares Spot contra USDT.</p><label>Ambiente</label><select value={environment} onChange={e=>setEnvironment(e.target.value)}><option value="testnet">Testnet Spot</option><option value="live">Conta real Spot</option></select><label>API Key</label><input value={apiKey} onChange={e=>setApiKey(e.target.value)} placeholder="Cole a API Key"/><label>Secret Key</label><input type="password" value={apiSecret} onChange={e=>setApiSecret(e.target.value)} placeholder="Cole a Secret Key"/><button className="btn primary gold-btn" type="button" onClick={testAndSave} disabled={loading}>{loading?'Testando...':'Testar conexão e salvar API'}</button>{error&&<div className="alert danger">{error}</div>}{result&&<div className="alert">API validada: {result.apiKeyMasked}. Saldo livre USDT: <b>{usdt(result.usdtFree)}</b>. Trade: <b>{result.canTrade?'habilitado':'somente leitura'}</b>.{result.warning&&<p>{result.warning}</p>}</div>}<div className="alert">Permissões recomendadas: leitura + spot trading. Saque deve estar desativado. Valor BRL fica apenas para recarga, convertido pela cotação do dólar/USDT.</div></div>
 }
 
 function buildRadar(analysis, currentSymbol){

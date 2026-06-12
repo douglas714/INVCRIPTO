@@ -47,12 +47,24 @@ export async function handler(event) {
     .maybeSingle();
 
   if (error) return json(400, { error: error.message });
-  if (!credential) return json(200, { ok: true, connected: false, environment });
+  const { data: wallet } = await supabase
+    .from('inv_wallets')
+    .select('balance_inv')
+    .eq('user_id', manualUserId)
+    .maybeSingle();
+
+  if (!credential) return json(200, {
+    ok: true,
+    connected: false,
+    environment,
+    envBalance: Number(wallet?.balance_inv || 0)
+  });
 
   return json(200, {
     ok: true,
     connected: Boolean(credential.can_read),
     environment: credential.environment,
+    envBalance: Number(wallet?.balance_inv || 0),
     apiKeyMasked: credential.api_key_masked,
     credentialStatus: credential.status,
     canTrade: Boolean(credential.can_trade),

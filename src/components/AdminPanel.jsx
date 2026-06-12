@@ -7,7 +7,27 @@ const demoClients = [
   { id: 'demo-user-2', full_name: 'Maria Teste', email: 'maria@demo.com', phone: '(21) 99999-9999', cpf_masked: '***.***.***-11', inv: 10, status: 'blocked', lucro: 0, taxa: 0, mode: 'Paper' }
 ];
 
-export default function AdminPanel() {
+function mapClient(client) {
+  return {
+    id: client.user_id,
+    full_name: client.full_name,
+    email: client.email,
+    phone: client.phone,
+    cpf_masked: client.cpf_masked,
+    inv: Number(client.balance_inv ?? client.saldo_env ?? 0),
+    demoUsdt: Number(client.demo_usdt ?? client.saldo_demo_usdt ?? 0),
+    realUsdt: Number(client.real_usdt_free ?? client.saldo_real_usdt ?? 0),
+    binanceKey: client.binance_key ?? client.api_binance,
+    binanceCanTrade: client.binance_can_trade ?? client.pode_operar,
+    status: client.status,
+    lucro: Number(client.demo_profit_usdt ?? client.profit_today_brl ?? 0),
+    taxa: Number(client.fee_today_inv ?? 0),
+    mode: client.bot_mode || client.modo_robo || 'paper',
+    botStatus: client.bot_status || 'inactive'
+  };
+}
+
+export default function AdminPanel({ user }) {
   const [clients, setClients] = useState(demoClients);
   const [selected, setSelected] = useState(null);
   const [amount, setAmount] = useState('10');
@@ -25,23 +45,7 @@ export default function AdminPanel() {
       const response = await fetch('/.netlify/functions/admin-clients', { headers: { authorization: `Bearer ${token}` } }).catch(() => null);
       if (response?.ok) {
         const payload = await response.json();
-        setClients((payload.clients || []).map(client => ({
-          id: client.user_id,
-          full_name: client.full_name,
-          email: client.email,
-          phone: client.phone,
-          cpf_masked: client.cpf_masked,
-          inv: Number(client.balance_inv || 0),
-          demoUsdt: Number(client.demo_usdt || 0),
-          realUsdt: Number(client.real_usdt_free || 0),
-          binanceKey: client.binance_key,
-          binanceCanTrade: client.binance_can_trade,
-          status: client.status,
-          lucro: Number(client.demo_profit_usdt || 0),
-          taxa: Number(client.fee_today_inv || 0),
-          mode: client.bot_mode || 'paper',
-          botStatus: client.bot_status || 'inactive'
-        })));
+        setClients((payload.clients || []).map(mapClient));
         return;
       }
     }
@@ -56,22 +60,7 @@ export default function AdminPanel() {
       return;
     }
 
-    setClients((data || []).map(client => ({
-      id: client.user_id,
-      full_name: client.full_name,
-      email: client.email,
-      phone: client.phone,
-      cpf_masked: client.cpf_masked,
-      inv: Number(client.balance_inv || 0),
-      demoUsdt: Number(client.demo_usdt || 0),
-      realUsdt: Number(client.real_usdt_free || 0),
-      binanceKey: client.binance_key,
-      binanceCanTrade: client.binance_can_trade,
-      status: client.status,
-      lucro: Number(client.profit_today_brl || 0),
-      taxa: Number(client.fee_today_inv || 0),
-      mode: client.bot_mode || 'paper'
-    })));
+    setClients((data || []).map(mapClient));
   }
 
   useEffect(() => { loadClients(); }, []);
@@ -108,13 +97,30 @@ export default function AdminPanel() {
       return;
     }
 
-    const { error } = await supabase.rpc('admin_credit_inv', { p_user_id: userId, p_amount: value, p_description: 'Crédito manual pelo painel admin' });
-    if (error) {
-      setMsg(error.message);
+    const { data: sessionData } = await supabase.auth.getSession();
+    const token = sessionData?.session?.access_token;
+    const response = await fetch('/.netlify/functions/admin-credit-inv', {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        ...(token ? { authorization: `Bearer ${token}` } : {})
+      },
+      body: JSON.stringify({
+        user_id: userId,
+        amount_inv: value,
+        description: 'Crédito manual pelo painel admin',
+        manualAdminUserId: user?.manual_profile ? user.id : '',
+        manualAdminEmail: user?.manual_profile ? user.email : ''
+      })
+    });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok || !payload?.ok) {
+      setMsg(payload.error || 'Não foi possível adicionar ENV.');
       return;
     }
 
     await loadClients();
+    setSelected(current => current ? { ...current, inv: Number(payload.balance_inv ?? current.inv) } : current);
     setMsg(`Adicionado ${num(value, 2)} ENV.`);
   }
 
@@ -135,7 +141,7 @@ export default function AdminPanel() {
       <div className="card"><span>Lucro em USDT</span><strong>{usd(totalLucro)}</strong><small>Hoje</small></div>
       <div className="card"><span>Taxa ENV gerada</span><strong>{usd(totalTaxa)}</strong><small>Hoje</small></div>
     </div>
-    <div className="panel"><h3>Clientes</h3><div className="table-wrap"><table><thead><tr><th>Nome</th><th>E-mail</th><th>Telefone</th><th>CPF</th><th>ENV</th><th>Demo USDT</th><th>Real USDT</th><th>Binance</th><th>Status</th><th>Taxa</th><th></th></tr></thead><tbody>{clients.map((client, index) => <tr key={client.id || index}><td>{client.full_name || client.name}</td><td>{client.email}</td><td>{client.phone || '-'}</td><td>{client.cpf_masked || client.cpf}</td><td>{num(client.inv, 2)}</td><td>{usd(client.demoUsdt || 0)}</td><td>{usd(client.realUsdt || 0)}</td><td>{client.binanceKey ? `${client.binanceKey} ${client.binanceCanTrade?'trade':'read'}` : '-'}</td><td><span className={client.status === 'blocked' ? 'badge danger' : 'badge ok'}>{client.status === 'blocked' ? 'Bloqueado' : client.status || 'Ativo'}</span></td><td>{usd(client.taxa)}</td><td><button className="btn small" onClick={() => setSelected(client)}>Gerenciar</button></td></tr>)}</tbody></table></div></div>
+    <div className="panel"><h3>Clientes</h3><div className="table-wrap"><table><thead><tr><th>Nome</th><th>E-mail</th><th>Telefone</th><th>CPF</th><th>ENV</th><th>Demo USDT</th><th>Real USDT</th><th>Binance</th><th>Status</th><th>Taxa</th><th></th></tr></thead><tbody>{clients.map((client, index) => <tr key={client.id || index}><td>{client.full_name || client.name}</td><td>{client.email}</td><td>{client.phone || '-'}</td><td>{client.cpf_masked || client.cpf}</td><td>{num(client.inv, 2)}</td><td>{usd(client.demoUsdt || 0)}</td><td>{usd(client.realUsdt || 0)}</td><td>{client.binanceKey ? `${client.binanceKey} ${client.binanceCanTrade ? 'trade' : 'read'}` : '-'}</td><td><span className={client.status === 'blocked' ? 'badge danger' : 'badge ok'}>{client.status === 'blocked' ? 'Bloqueado' : client.status || 'Ativo'}</span></td><td>{usd(client.taxa)}</td><td><button className="btn small" onClick={() => setSelected(client)}>Gerenciar</button></td></tr>)}</tbody></table></div></div>
     {selected && <div className="panel"><h3>Gerenciar {selected.full_name || selected.name}</h3><div className="controls"><input style={{ maxWidth: 140 }} value={amount} onChange={event => setAmount(event.target.value)} placeholder="ENV"/><button className="btn primary" onClick={() => addInv(selected.id)}>Adicionar ENV manual</button>{selected.status === 'blocked' ? <button className="btn ghost" onClick={() => blockUser(selected.id, false)}>Desbloquear usuário</button> : <button className="btn danger" onClick={() => blockUser(selected.id, true)}>Bloquear usuário</button>}</div><p className="muted">Ao bloquear, o usuário fica com status bloqueado e todos os robôs dele são pausados. Cada ação entra em admin_actions.</p></div>}
   </div>;
 }

@@ -127,7 +127,7 @@ function MainRouter({ user }) {
         <small>Layout premium aplicado</small>
       </div>
     </aside>
-    <section className="content premium-content">{view === 'client' ? <ClientPanel user={user}/> : <AdminPanel/>}</section>
+    <section className="content premium-content">{view === 'client' ? <ClientPanel user={user}/> : <AdminPanel user={user}/>}</section>
   </main>;
 }
 

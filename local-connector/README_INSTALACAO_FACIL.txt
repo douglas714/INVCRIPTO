@@ -4,7 +4,21 @@ Para que serve:
 Este conector roda no seu Windows e consulta a Binance usando o IP da sua maquina.
 Ele resolve o bloqueio da Binance contra o IP da Netlify.
 
-Ordem de uso:
+Caminho mais simples:
+
+1. Clique em:
+   INSTALAR_E_EXECUTAR_CONNECTOR.bat
+
+2. Na primeira vez, ele pede:
+   SUPABASE_SERVICE_ROLE_KEY
+   APP_ENCRYPTION_KEY
+
+3. Depois ele salva tudo no .env, instala dependencias e inicia sozinho.
+
+4. Nas proximas vezes, basta clicar no mesmo arquivo:
+   INSTALAR_E_EXECUTAR_CONNECTOR.bat
+
+Ordem manual:
 
 1. No Supabase SQL Editor, rode:
    supabase/05_local_connector_schema.sql

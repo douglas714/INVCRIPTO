@@ -3,7 +3,7 @@ import { createTargetPreviewOrder, initialPaperState, runPaperDecision } from '.
 import { analyzeMarket, supportResistance } from '../lib/strategy.js';
 import { brl, usd, usdt, env, num } from '../lib/format.js';
 import { supabase, hasSupabase } from '../lib/supabase.js';
-import { Activity, BarChart3, Bot, Brain, CreditCard, Gauge, History, KeyRound, Pause, Play, Settings, ShieldCheck, SlidersHorizontal, Sparkles, StopCircle, TrendingUp, Wallet } from 'lucide-react';
+import { Activity, BarChart3, Bot, Brain, CreditCard, Gauge, History, KeyRound, Pause, Play, RefreshCw, Settings, ShieldCheck, SlidersHorizontal, Sparkles, StopCircle, TrendingUp, Wallet } from 'lucide-react';
 
 const allowedSymbols = ['BTCUSDT','ETHUSDT','BNBUSDT','SOLUSDT','XRPUSDT','ADAUSDT','AVAXUSDT','DOGEUSDT','LINKUSDT','DOTUSDT','LTCUSDT','TRXUSDT'];
 const MIN_REAL_ORDER_USDT = 6.5;
@@ -64,6 +64,7 @@ export default function ClientPanel({user}){
   const [liveTicker,setLiveTicker]=useState(null);
   const [marketStatus,setMarketStatus]=useState('Sincronizando mercado');
   const [analysisSplash,setAnalysisSplash]=useState(false);
+  const [balanceRefreshing,setBalanceRefreshing]=useState(false);
   const autoOrderRef = useRef('');
   const lastPrice=Number(liveTicker?.lastPrice || liveTicker?.price || candles.at(-1)?.close || 0);
   const analysis = useMemo(()=>analyzeMarket(candles),[candles]);
@@ -86,48 +87,60 @@ export default function ClientPanel({user}){
     const timer = setTimeout(()=>setAnalysisSplash(false), delay);
     return()=>clearTimeout(timer);
   },[analysisSplash,recommended?.symbol,candles.length]);
+  async function refreshAccountStatus(options = {}){
+    if(!hasSupabase || !user?.id) return;
+    const manual = Boolean(options.manual);
+    if(manual) setBalanceRefreshing(true);
+    try{
+      const { data } = await supabase.auth.getSession();
+      const token = data?.session?.access_token;
+      const manualUserId = user?.manual_profile ? user.id : null;
+      const response = await fetch('/.netlify/functions/binance-status', {
+        method:'POST',
+        headers:{ 'content-type':'application/json', ...(token ? { authorization:`Bearer ${token}` } : {}) },
+        body:JSON.stringify({ manualUserId, manualEmail: user?.email || '', environment:'live' })
+      });
+      const payload = await response.json().catch(()=>({}));
+      if(!response.ok || !payload?.ok) return;
+      if(payload.envBalance !== undefined){
+        setState(s=>({...s, envBalance:Number(payload.envBalance || 0)}));
+      }
+      if(payload.connected || payload.credentialStatus){
+        setState(s=>({
+          ...s,
+          ...(payload.envBalance !== undefined ? { envBalance:Number(payload.envBalance || 0) } : {}),
+          apiConnected:Boolean(payload.connected),
+          binancePending:payload.credentialStatus === 'pending_connector_validation',
+          binanceCredentialStatus:payload.credentialStatus,
+          binanceUsdtBalance:Number(payload.usdtFree || 0),
+          binanceUsdtLocked:Number(payload.usdtLocked || 0),
+          binanceCanTrade:Boolean(payload.canTrade),
+          accountMode:'live'
+        }));
+        setAccountMode('live');
+      }
+
+      const ordersResponse = await fetch('/.netlify/functions/binance-real-orders', {
+        method:'POST',
+        headers:{ 'content-type':'application/json', ...(token ? { authorization:`Bearer ${token}` } : {}) },
+        body:JSON.stringify({ manualUserId, manualEmail: user?.email || '', environment:'live', limit:80 })
+      });
+      const ordersPayload = await ordersResponse.json().catch(()=>({}));
+      if(ordersResponse.ok && ordersPayload?.ok && Array.isArray(ordersPayload.orders)){
+        setState(s=>({...s, orders: mergeRealOrders(s.orders, ordersPayload.orders)}));
+      }
+    } catch {
+    } finally {
+      if(manual) setBalanceRefreshing(false);
+    }
+  }
+
   useEffect(()=>{
     if(!hasSupabase || !user?.id) return;
     let closed = false;
     async function loadBinanceStatus(){
       try{
-        const { data } = await supabase.auth.getSession();
-        const token = data?.session?.access_token;
-        const manualUserId = user?.manual_profile ? user.id : null;
-        const response = await fetch('/.netlify/functions/binance-status', {
-          method:'POST',
-          headers:{ 'content-type':'application/json', ...(token ? { authorization:`Bearer ${token}` } : {}) },
-          body:JSON.stringify({ manualUserId, manualEmail: user?.email || '', environment:'live' })
-        });
-        const payload = await response.json().catch(()=>({}));
-        if(closed || !response.ok || !payload?.ok) return;
-        if(payload.envBalance !== undefined){
-          setState(s=>({...s, envBalance:Number(payload.envBalance || 0)}));
-        }
-        if(payload.connected || payload.credentialStatus){
-          setState(s=>({
-            ...s,
-            ...(payload.envBalance !== undefined ? { envBalance:Number(payload.envBalance || 0) } : {}),
-            apiConnected:Boolean(payload.connected),
-            binancePending:payload.credentialStatus === 'pending_connector_validation',
-            binanceCredentialStatus:payload.credentialStatus,
-            binanceUsdtBalance:Number(payload.usdtFree || 0),
-            binanceUsdtLocked:Number(payload.usdtLocked || 0),
-            binanceCanTrade:Boolean(payload.canTrade),
-            accountMode:'live'
-          }));
-          setAccountMode('live');
-        }
-
-        const ordersResponse = await fetch('/.netlify/functions/binance-real-orders', {
-          method:'POST',
-          headers:{ 'content-type':'application/json', ...(token ? { authorization:`Bearer ${token}` } : {}) },
-          body:JSON.stringify({ manualUserId, manualEmail: user?.email || '', environment:'live', limit:80 })
-        });
-        const ordersPayload = await ordersResponse.json().catch(()=>({}));
-        if(!closed && ordersResponse.ok && ordersPayload?.ok && Array.isArray(ordersPayload.orders)){
-          setState(s=>({...s, orders: mergeRealOrders(s.orders, ordersPayload.orders)}));
-        }
+        if(!closed) await refreshAccountStatus();
       } catch {}
     }
     loadBinanceStatus();
@@ -281,7 +294,7 @@ export default function ClientPanel({user}){
       <div className="live-badge"><span className="live-dot"/> {state.active?'LIVE - Bot ativo':'PAUSADO'}</div>
     </div>
 
-    <KpiStrip state={state} lastPrice={lastPrice} symbol={symbol} timeframe={timeframe} accountMode={accountMode} setAccountMode={setAccountMode}/>
+      <KpiStrip state={state} lastPrice={lastPrice} symbol={symbol} timeframe={timeframe} accountMode={accountMode} setAccountMode={setAccountMode} onRefreshBalance={()=>refreshAccountStatus({manual:true})} balanceRefreshing={balanceRefreshing}/>
 
     <div className="tabbar premium-tabs">{tabs.map(([k,l])=><button key={k} className={activeTab===k?'active':''} onClick={()=>setActiveTab(k)}>{l}</button>)}</div>
 
@@ -295,7 +308,7 @@ export default function ClientPanel({user}){
   </div>
 }
 
-function KpiStrip({state,lastPrice,symbol,timeframe,accountMode,setAccountMode}){
+function KpiStrip({state,lastPrice,symbol,timeframe,accountMode,setAccountMode,onRefreshBalance,balanceRefreshing}){
   const closedOrders = state.orders.filter(o=>String(o.side || '').startsWith('SELL'));
   const wins = closedOrders.filter(o=>Number(o.profitUsd || o.profitBrl || 0) > 0).length;
   const winRate = closedOrders.length ? Math.round((wins / closedOrders.length) * 100) : 78;
@@ -304,7 +317,7 @@ function KpiStrip({state,lastPrice,symbol,timeframe,accountMode,setAccountMode})
   const activeProfit = accountMode === 'live' ? realProfit : demoProfit;
   const activeFee = accountMode === 'live' ? Number(state.realFeesEnv ?? state.realFeesInv ?? 0) : Number(state.feesEnv ?? state.feesInv ?? 0);
   return <div className="kpi-strip">
-    <AccountBalanceKpi state={state} accountMode={accountMode} setAccountMode={setAccountMode}/>
+    <AccountBalanceKpi state={state} accountMode={accountMode} setAccountMode={setAccountMode} onRefreshBalance={onRefreshBalance} balanceRefreshing={balanceRefreshing}/>
     <MiniKpi icon={<CreditCard/>} label="ENV" value={`${num(state.envBalance ?? state.invBalance ?? 0,2)} ENV`} delta={accountMode==='live'?'cobra no lucro real':'demo não consome'}/>
     <MiniKpi icon={<ShieldCheck/>} label="Status Binance" value={state.binancePending?'Validando...':state.apiConnected?'Conectada':'Desconectada'} delta={state.binancePending?'conector local':accountMode==='live'?'conta real':'modo demo'}/>
     <MiniKpi icon={<TrendingUp/>} label={accountMode==='live'?'Lucro real ativo':'Lucro demo ativo'} value={usd(activeProfit)} delta={`${num(activeFee,2)} ENV taxa`}/>
@@ -317,15 +330,18 @@ function KpiStrip({state,lastPrice,symbol,timeframe,accountMode,setAccountMode})
   </div>
 }
 
-function AccountBalanceKpi({state,accountMode,setAccountMode}){
+function AccountBalanceKpi({state,accountMode,setAccountMode,onRefreshBalance,balanceRefreshing}){
   const isLive = accountMode === 'live';
   const value = isLive ? (state.binancePending ? 'Validando...' : state.apiConnected ? usdt(state.binanceUsdtBalance || 0) : 'Desconectado') : usd(state.balanceUsd ?? state.balanceBrl ?? 0);
   const delta = isLive ? (state.apiConnected ? 'saldo real Binance' : 'conecte a API') : 'saldo demo USDT';
   return <div className="mini-kpi account-balance-kpi">
     <div className="kpi-icon"><Wallet/></div>
+    <button className="kpi-refresh" type="button" onClick={onRefreshBalance} disabled={balanceRefreshing || accountMode !== 'live'} title="Atualizar saldo real">
+      <RefreshCw size={15}/>
+    </button>
     <span>Saldo da conta</span>
     <strong>{value}</strong>
-    <small>{delta}</small>
+    <small>{balanceRefreshing ? 'atualizando saldo...' : delta}</small>
     <div className="account-kpi-toggle">
       <button type="button" className={accountMode==='demo'?'active':''} onClick={()=>setAccountMode('demo')}>Demo</button>
       <button type="button" className={accountMode==='live'?'active':''} onClick={()=>setAccountMode('live')}>Real</button>

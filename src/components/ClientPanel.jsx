@@ -413,6 +413,122 @@ function BinanceSettings({user,setState,setAccountMode}){
   const [environment,setEnvironment]=useState('live');
   const [loading,setLoading]=useState(false);
   const [result,setResult]=useState(null);
+  const [savedApi,setSavedApi]=useState(null);
+  const [error,setError]=useState('');
+
+  function applyBinancePayload(payload){
+    setState(s=>({
+      ...s,
+      apiConnected:Boolean(payload.connected || payload.usdtFree || payload.canTrade || payload.credentialStatus === 'active' || payload.credentialStatus === 'review_required'),
+      binancePending:Boolean(payload.connectorQueued || payload.credentialStatus === 'pending_connector_validation'),
+      binanceCredentialStatus:payload.credentialStatus,
+      binanceUsdtBalance:Number(payload.usdtFree||0),
+      binanceUsdtLocked:Number(payload.usdtLocked||0),
+      binanceCanTrade:Boolean(payload.canTrade),
+      accountMode:payload.environment==='live'?'live':'demo'
+    }));
+    setAccountMode(payload.environment==='live'?'live':'demo');
+  }
+
+  async function loadSavedApi(showMessage=false){
+    if(!hasSupabase || !user?.id) return null;
+    try{
+      const { data } = await supabase.auth.getSession();
+      const token = data?.session?.access_token;
+      const manualUserId = user?.manual_profile ? user.id : null;
+      const response = await fetch('/.netlify/functions/binance-status', {
+        method:'POST',
+        headers:{ 'content-type':'application/json', ...(token ? { authorization:`Bearer ${token}` } : {}) },
+        body:JSON.stringify({ manualUserId, manualEmail: user?.email || '', environment })
+      });
+      const payload = await response.json().catch(()=>({}));
+      if(!response.ok || !payload?.ok) throw new Error(payload.error || 'Não foi possível consultar a API salva.');
+      if(payload.credentialStatus || payload.apiKeyMasked){
+        setSavedApi(payload);
+        setResult(payload);
+        applyBinancePayload(payload);
+        if(showMessage) setError('');
+      } else if(showMessage) {
+        setError('Nenhuma API salva para este ambiente.');
+      }
+      return payload;
+    } catch(err){
+      if(showMessage) setError(String(err?.message || err));
+      return null;
+    }
+  }
+
+  useEffect(()=>{ loadSavedApi(false); },[environment,user?.id]);
+
+  async function testAndSave(){
+    setError('');
+    setResult(null);
+    if(!hasSupabase){
+      setError('Entre com login real do Supabase para salvar chaves Binance.');
+      return;
+    }
+    if(!apiKey.trim() && !apiSecret.trim() && savedApi?.apiKeyMasked){
+      await loadSavedApi(true);
+      return;
+    }
+    if(apiKey.trim().length < 20 || apiSecret.trim().length < 20){
+      setError('Informe API Key e Secret Key completas para salvar ou substituir a API.');
+      return;
+    }
+    setLoading(true);
+    try{
+      const { data } = await supabase.auth.getSession();
+      const token = data?.session?.access_token;
+      const manualUserId = user?.manual_profile ? user.id : null;
+      if(!token && !manualUserId) throw new Error('Sessão expirada. Faça login novamente.');
+      const response = await fetch('/.netlify/functions/binance-test', {
+        method:'POST',
+        headers:{ 'content-type':'application/json', ...(token ? { authorization:`Bearer ${token}` } : {}) },
+        body:JSON.stringify({ apiKey, apiSecret, environment, manualUserId, manualEmail: user?.email || '' })
+      });
+      const payload = await response.json().catch(()=>({}));
+      if(!response.ok) {
+        const detail = payload.detail?.msg || payload.action || '';
+        throw new Error([payload.error || 'Não foi possível validar a API Binance.', detail].filter(Boolean).join(' '));
+      }
+      setResult(payload);
+      setSavedApi(payload);
+      applyBinancePayload(payload);
+      setApiSecret('');
+      setApiKey('');
+    } catch(err){
+      setError(String(err?.message || err));
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  return <div className="panel panel-glow">
+    <h3><KeyRound size={18}/> Configurações Binance</h3>
+    <p className="muted">A chave é criptografada no backend e salva no Supabase. Depois de salvar, não precisa colar novamente para visualizar o saldo.</p>
+    {savedApi?.apiKeyMasked && <div className="alert">API salva: <b>{savedApi.apiKeyMasked}</b>. Saldo livre USDT: <b>{usdt(savedApi.usdtFree || 0)}</b>. Status: <b>{savedApi.credentialStatus || 'salva'}</b>.</div>}
+    <label>Ambiente</label>
+    <select value={environment} onChange={e=>setEnvironment(e.target.value)}><option value="live">Conta real Spot</option><option value="testnet">Testnet Spot</option></select>
+    <label>API Key</label>
+    <input value={apiKey} onChange={e=>setApiKey(e.target.value)} placeholder={savedApi?.apiKeyMasked ? `API salva: ${savedApi.apiKeyMasked}` : 'Cole a API Key'}/>
+    <label>Secret Key</label>
+    <input type="password" value={apiSecret} onChange={e=>setApiSecret(e.target.value)} placeholder={savedApi?.apiKeyMasked ? 'Preencha somente para substituir a API salva' : 'Cole a Secret Key'}/>
+    <div className="controls">
+      <button className="btn primary gold-btn" type="button" onClick={testAndSave} disabled={loading}>{loading?'Processando...':savedApi?.apiKeyMasked && !apiKey && !apiSecret?'Atualizar saldo salvo':'Salvar API e validar'}</button>
+      {savedApi?.apiKeyMasked && <button className="btn ghost" type="button" onClick={()=>loadSavedApi(true)} disabled={loading}>Ver API salva</button>}
+    </div>
+    {error&&<div className="alert danger">{error}</div>}
+    {result&&<div className="alert">API: {result.apiKeyMasked || savedApi?.apiKeyMasked}. Saldo livre USDT: <b>{usdt(result.usdtFree || 0)}</b>. Trade: <b>{result.canTrade?'habilitado':'somente leitura'}</b>.{result.warning&&<p>{result.warning}</p>}</div>}
+    <div className="alert">Permissões recomendadas: leitura + spot trading. Saque deve ficar desativado para produção.</div>
+  </div>
+}
+
+function OldBinanceSettings({user,setState,setAccountMode}){
+  const [apiKey,setApiKey]=useState('');
+  const [apiSecret,setApiSecret]=useState('');
+  const [environment,setEnvironment]=useState('live');
+  const [loading,setLoading]=useState(false);
+  const [result,setResult]=useState(null);
   const [error,setError]=useState('');
 
   async function testAndSave(){

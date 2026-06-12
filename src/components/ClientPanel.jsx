@@ -6,6 +6,7 @@ import { supabase, hasSupabase } from '../lib/supabase.js';
 import { Activity, BarChart3, Bot, Brain, CreditCard, Gauge, History, KeyRound, Pause, Play, Settings, ShieldCheck, SlidersHorizontal, Sparkles, StopCircle, TrendingUp, Wallet } from 'lucide-react';
 
 const allowedSymbols = ['BTCUSDT','ETHUSDT','BNBUSDT','SOLUSDT','XRPUSDT','ADAUSDT','AVAXUSDT','DOGEUSDT','LINKUSDT','DOTUSDT','LTCUSDT','TRXUSDT'];
+const MIN_REAL_ORDER_USDT = 6.5;
 const radarSeed = {
   BTCUSDT:{hold:94,liquidity:96}, ETHUSDT:{hold:91,liquidity:94}, BNBUSDT:{hold:86,liquidity:88}, SOLUSDT:{hold:78,liquidity:90}, XRPUSDT:{hold:74,liquidity:86}, ADAUSDT:{hold:72,liquidity:78}, AVAXUSDT:{hold:70,liquidity:76}, DOGEUSDT:{hold:68,liquidity:82}, LINKUSDT:{hold:76,liquidity:74}, DOTUSDT:{hold:69,liquidity:70}, LTCUSDT:{hold:73,liquidity:72}, TRXUSDT:{hold:71,liquidity:73}
 };
@@ -166,8 +167,8 @@ export default function ClientPanel({user}){
     if(!state.apiConnected || !state.binanceCanTrade || Number(state.envBalance || 0) <= 0) return;
     const plan = analysis.orderPlan;
     const liveBalance = Number(state.binanceUsdtBalance || 0);
-    const quoteOrderQty = liveBalance > 0 ? Math.max(5, Math.min(10, liveBalance * 0.55)) : 0;
-    if(quoteOrderQty < 5) return;
+    const quoteOrderQty = liveBalance >= MIN_REAL_ORDER_USDT ? Math.min(10, Math.max(MIN_REAL_ORDER_USDT, liveBalance * 0.75)) : 0;
+    if(quoteOrderQty < MIN_REAL_ORDER_USDT) return;
     const setupKey = `${user?.id || 'user'}:${symbol}:${timeframe}:${Math.round(plan.entry * 1000000)}:${Math.round(plan.recoveryTarget * 1000000)}:${analysis.score}`;
     if(autoOrderRef.current === setupKey || state.lastAutoRealSetupKey === setupKey) return;
     autoOrderRef.current = setupKey;
@@ -204,6 +205,7 @@ export default function ClientPanel({user}){
             id: payload.connectorCommandId || crypto.randomUUID(),
             at: new Date().toISOString(),
             side:'REAL_QUEUED',
+            accountMode:'live',
             symbol,
             qty: quoteOrderQty / (plan.entry || lastPrice || 1),
             price: plan.entry || lastPrice || 0,
@@ -221,6 +223,7 @@ export default function ClientPanel({user}){
             id: crypto.randomUUID(),
             at: new Date().toISOString(),
             side:'REAL_ERROR',
+            accountMode:'live',
             symbol,
             qty:0,
             price:lastPrice || 0,
@@ -258,7 +261,7 @@ export default function ClientPanel({user}){
     {activeTab==='dashboard' && !analysisSplash && <Dashboard user={user} state={state} setState={setState} symbol={symbol} setSymbol={setSymbol} timeframe={timeframe} setTimeframe={setTimeframe} candles={candles} analysis={analysis} radar={radar} recommended={recommended} operateRecommended={operateRecommended} operateSelected={operateSelected} createTargetOrder={createTargetOrder} selectionMode={selectionMode} setSelectionMode={setSelectionMode} accountMode={accountMode} setAccountMode={setAccountMode} marketStatus={marketStatus} lastPrice={lastPrice} stopRobot={stopRobot}/>}    
     {activeTab==='analysis' && <LiveAnalysis symbol={symbol} setSymbol={setSymbol} timeframe={timeframe} setTimeframe={setTimeframe} candles={candles} state={state} analysis={analysis}/>}    
     {activeTab==='scanner' && <Scanner radar={radar} symbol={symbol} setSymbol={setSymbol} operateRecommended={operateRecommended}/>}    
-    {activeTab==='orders' && <Orders orders={state.orders}/>}    
+    {activeTab==='orders' && <Orders orders={state.orders} accountMode={accountMode}/>}    
     {activeTab==='inv' && <INV state={state}/>}    
     {activeTab==='settings' && <BinanceSettings user={user} setState={setState} setAccountMode={setAccountMode}/>}
   </div>
@@ -504,7 +507,7 @@ function TargetOrderPreview({state,symbol,timeframe,analysis,createTargetOrder,a
   }
   const demoBaseValue = Math.min(state.balanceUsd - 1000, Math.max(10, (state.balanceUsd - 1000) * 0.05));
   const liveBalance = Number(state.binanceUsdtBalance || 0);
-  const liveBaseValue = liveBalance > 0 ? Math.max(5, Math.min(10, liveBalance * 0.55)) : 0;
+  const liveBaseValue = liveBalance >= MIN_REAL_ORDER_USDT ? Math.min(10, Math.max(MIN_REAL_ORDER_USDT, liveBalance * 0.75)) : 0;
   const baseValue = accountMode === 'live' ? liveBaseValue : demoBaseValue;
   const view = order || {
     status:'PLANO',
@@ -538,7 +541,7 @@ function TargetOrderPreview({state,symbol,timeframe,analysis,createTargetOrder,a
       setMessage('API Binance precisa estar conectada com permissao de trading.');
       return;
     }
-    if(Number(view.valueUsd || 0) < 5){
+    if(Number(view.valueUsd || 0) < MIN_REAL_ORDER_USDT){
       setMessage('Saldo real insuficiente para criar compra protegida.');
       return;
     }
@@ -609,7 +612,13 @@ function Scanner({radar,symbol,setSymbol,operateRecommended}){
   return <div className="panel panel-glow"><h3><Sparkles size={18}/> Radar IA - Top moedas Binance</h3><p className="muted">O cliente pode selecionar a moeda, mas a IA recomenda a melhor oportunidade com score de entrada e Hold Recovery de 12 meses.</p><div className="scanner-grid">{radar.map(r=><div className={r.symbol===symbol?'scanner-card active':'scanner-card'} key={r.symbol}><strong>{r.symbol.replace('USDT','/USDT')}</strong><span>Score {r.score}/100</span><small>Hold {r.hold}/100 | Liquidez {r.liquidity}/100</small><button className="btn small ghost" onClick={()=>setSymbol(r.symbol)}>Selecionar</button></div>)}</div><button className="btn primary gold-btn" onClick={operateRecommended}>Operar melhor recomendação</button></div>
 }
 
-function Orders({orders}){return <div className="panel panel-glow"><h3><History size={18}/> Histórico de operações</h3><div className="table-wrap"><table><thead><tr><th>Hora</th><th>Side</th><th>Ativo</th><th>Preço</th><th>Valor</th><th>Lucro</th><th>Taxa ENV</th></tr></thead><tbody>{orders.map(o=><tr key={o.id}><td>{new Date(o.at).toLocaleString('pt-BR')}</td><td>{o.side}</td><td>{o.symbol}</td><td>{o.price.toFixed(2)}</td><td>{usd(o.valueUsd ?? o.valueBrl ?? 0)}</td><td>{o.profitUsd?usd(o.profitUsd):'-'}</td><td>{o.feeEnv?num(o.feeEnv,2):'-'}</td></tr>)}</tbody></table></div></div>}
+function Orders({orders,accountMode}){
+  const [mode,setMode]=useState(accountMode === 'live' ? 'real' : 'demo');
+  const realOrders = orders.filter(o=>String(o.side || '').startsWith('REAL_') || o.accountMode === 'live');
+  const demoOrders = orders.filter(o=>!String(o.side || '').startsWith('REAL_') && o.accountMode !== 'live');
+  const visible = mode === 'real' ? realOrders : demoOrders;
+  return <div className="panel panel-glow"><h3><History size={18}/> Histórico de operações</h3><div className="mode-buttons"><button className={mode==='demo'?'active':''} type="button" onClick={()=>setMode('demo')}>Demo</button><button className={mode==='real'?'active':''} type="button" onClick={()=>setMode('real')}>Real Binance</button></div><div className="table-wrap"><table><thead><tr><th>Hora</th><th>Side</th><th>Ativo</th><th>Preço</th><th>Valor</th><th>Lucro</th><th>Taxa ENV</th><th>Motivo</th></tr></thead><tbody>{visible.map(o=><tr key={o.id}><td>{new Date(o.at).toLocaleString('pt-BR')}</td><td>{o.side}</td><td>{o.symbol}</td><td>{Number(o.price || 0).toFixed(2)}</td><td>{usd(o.valueUsd ?? o.valueBrl ?? 0)}</td><td>{o.profitUsd?usd(o.profitUsd):'-'}</td><td>{o.feeEnv?num(o.feeEnv,2):'-'}</td><td>{o.reason || '-'}</td></tr>)}{!visible.length&&<tr><td colSpan="8" className="muted">Nenhuma operação {mode === 'real' ? 'real' : 'demo'} registrada neste painel.</td></tr>}</tbody></table></div></div>
+}
 function INV({state}){const envBalance=state.envBalance ?? state.invBalance ?? 0;return <div className="panel panel-glow"><h3><CreditCard size={18}/> Créditos ENV</h3><p>Saldo atual: <b>{num(envBalance,2)} ENV</b></p><p>1 ENV = US$ 1,00. O robô opera em USDT e desconta 10% apenas do lucro realizado em dólar.</p><p>No pagamento via Pix/cartão, o valor em reais será convertido pela cotação do dólar/USDT do momento para liberar ENV.</p><div className="alert">Quando o ENV zerar, o robô bloqueia novas entradas, encerra a cesta conforme segurança e solicita recarga.</div></div>}
 function BinanceSettings({user,setState,setAccountMode}){
   const [apiKey,setApiKey]=useState('');

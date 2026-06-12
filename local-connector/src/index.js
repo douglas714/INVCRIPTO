@@ -422,12 +422,27 @@ async function handleValidateApi(command) {
   };
 }
 
+async function refreshCredentialBalance(credential, apiKey, apiSecret, environment) {
+  const account = await signedAccount({ apiKey, apiSecret, environment });
+  if (!account.ok) return null;
+  const usdt = (account.payload?.balances || []).find(item => item.asset === 'USDT') || { free: '0', locked: '0' };
+  await updateRows('binance_api_credentials', {
+    real_usdt_free: Number(usdt.free || 0),
+    real_usdt_locked: Number(usdt.locked || 0),
+    last_test_at: new Date().toISOString()
+  }, [eqFilter('id', credential.id)]);
+  dashboard.lastUsdt = Number(usdt.free || 0);
+  dashboard.lastSync = new Date().toLocaleString('pt-BR');
+  return { free: Number(usdt.free || 0), locked: Number(usdt.locked || 0) };
+}
+
 async function handleProtectedSpotBuy(command) {
   const payload = command.payload || {};
   const environment = payload.environment === 'testnet' ? 'testnet' : 'live';
   const symbol = String(payload.symbol || 'BTCUSDT').toUpperCase();
   const requestedQuote = Number(payload.quoteOrderQty || payload.valueUsdt || 0);
   const targetPriceRaw = Number(payload.targetPrice || payload.recoveryTarget || 0);
+  const timeframe = String(payload.timeframe || '15m');
   const reason = String(payload.reason || 'Entrada protegida INVCRIPTO');
 
   if (!requestedQuote || requestedQuote <= 0) throw new Error('Valor USDT da compra nao informado.');
@@ -445,7 +460,9 @@ async function handleProtectedSpotBuy(command) {
 
   const usdt = (account.payload?.balances || []).find(item => item.asset === 'USDT');
   const availableUsdt = Number(usdt?.free || 0);
-  const safeMinimum = Math.max(filters.minNotional * 1.02, 5);
+  const estimatedTarget = Math.max(targetPriceRaw, Number(payload.entryPrice || 0), 1);
+  const roundingReserve = estimatedTarget * filters.stepSize * 1.35;
+  const safeMinimum = Math.max(filters.minNotional * 1.12 + roundingReserve, 6.25);
   const quoteOrderQty = Math.max(requestedQuote, safeMinimum);
   if (quoteOrderQty > availableUsdt) {
     throw new Error(`Saldo USDT insuficiente. Necessario ${quoteOrderQty.toFixed(2)} USDT, disponivel ${availableUsdt.toFixed(8)} USDT.`);
@@ -471,33 +488,6 @@ async function handleProtectedSpotBuy(command) {
   const executedQty = Number(buy.payload?.executedQty || 0);
   const cummulativeQuoteQty = Number(buy.payload?.cummulativeQuoteQty || quoteOrderQty);
   const avgPrice = executedQty > 0 ? cummulativeQuoteQty / executedQty : 0;
-  const sellPrice = ceilToStep(Math.max(targetPriceRaw, avgPrice * 1.005), filters.tickSize);
-  const freeBase = await currentFreeBalance({ apiKey, apiSecret, environment, asset: filters.baseAsset });
-  const sellQty = floorToStep(Math.min(executedQty, freeBase), filters.stepSize);
-  const sellNotional = sellQty * sellPrice;
-
-  if (sellQty < filters.minQty || sellNotional < filters.minNotional) {
-    throw new Error(`Compra executada, mas quantidade abaixo do minimo para venda. Qtd ${sellQty}, notional ${sellNotional.toFixed(8)}.`);
-  }
-
-  const sellClientOrderId = `INVSELL_${compactId.slice(0, 23)}`;
-  const sell = await signedOrder({
-    apiKey,
-    apiSecret,
-    environment,
-    params: {
-      symbol,
-      side: 'SELL',
-      type: 'LIMIT',
-      timeInForce: 'GTC',
-      quantity: formatDecimal(sellQty, filters.stepSize),
-      price: formatDecimal(sellPrice, filters.tickSize),
-      newClientOrderId: sellClientOrderId,
-      newOrderRespType: 'FULL'
-    }
-  });
-  if (!sell.ok) throw new Error(`Venda protegida Binance rejeitada: ${JSON.stringify(sell.payload)}`);
-
   const { data: buyRows, error: buyLogError } = await insertRows('real_orders', [
     {
       user_id: command.user_id,
@@ -521,6 +511,37 @@ async function handleProtectedSpotBuy(command) {
   ]);
   if (buyLogError) throw new Error(`Compra criada na Binance, mas falhou auditoria Supabase: ${buyLogError.message}`);
   const buyAuditId = Array.isArray(buyRows) ? buyRows[0]?.id : buyRows?.id;
+  await refreshCredentialBalance(credential, apiKey, apiSecret, environment).catch(() => null);
+
+  const sellPrice = ceilToStep(Math.max(targetPriceRaw, avgPrice * 1.005), filters.tickSize);
+  const freeBase = await currentFreeBalance({ apiKey, apiSecret, environment, asset: filters.baseAsset });
+  const sellQty = floorToStep(Math.min(executedQty, freeBase), filters.stepSize);
+  const sellNotional = sellQty * sellPrice;
+
+  if (sellQty < filters.minQty || sellNotional < filters.minNotional) {
+    throw new Error(`Compra executada e auditada, mas a venda ficou abaixo do minimo Binance. Qtd ${sellQty}, notional ${sellNotional.toFixed(8)}. Aumente o tamanho minimo da entrada.`);
+  }
+
+  const sellClientOrderId = `INVSELL_${compactId.slice(0, 23)}`;
+  const sell = await signedOrder({
+    apiKey,
+    apiSecret,
+    environment,
+    params: {
+      symbol,
+      side: 'SELL',
+      type: 'LIMIT',
+      timeInForce: 'GTC',
+      quantity: formatDecimal(sellQty, filters.stepSize),
+      price: formatDecimal(sellPrice, filters.tickSize),
+      newClientOrderId: sellClientOrderId,
+      newOrderRespType: 'FULL'
+    }
+  });
+  if (!sell.ok) {
+    await refreshCredentialBalance(credential, apiKey, apiSecret, environment).catch(() => null);
+    throw new Error(`Venda protegida Binance rejeitada: ${JSON.stringify(sell.payload)}`);
+  }
 
   const { error: sellLogError } = await insertRows('real_orders', [
     {
@@ -542,9 +563,10 @@ async function handleProtectedSpotBuy(command) {
     }
   ]);
   if (sellLogError) throw new Error(`Ordens criadas na Binance, mas falhou auditoria da venda Supabase: ${sellLogError.message}`);
+  const refreshedAfterSell = await refreshCredentialBalance(credential, apiKey, apiSecret, environment).catch(() => null);
 
   dashboard.lastProtectedOrder = `${symbol} BUY ${quoteOrderQty.toFixed(2)} -> SELL ${formatDecimal(sellQty, filters.stepSize)} @ ${formatDecimal(sellPrice, filters.tickSize)}`;
-  dashboard.lastUsdt = Math.max(0, availableUsdt - quoteOrderQty);
+  dashboard.lastUsdt = refreshedAfterSell?.free ?? Math.max(0, availableUsdt - quoteOrderQty);
   dashboard.lastSync = new Date().toLocaleString('pt-BR');
 
   return {
@@ -633,6 +655,104 @@ async function monitorProtectedSells() {
   }
 }
 
+async function recoverFailedProtectedBuys() {
+  const { data: failedCommands, error } = await selectRows('connector_commands', {
+    select: '*',
+    filters: [eqFilter('status', 'error'), eqFilter('command_type', 'EXECUTE_PROTECTED_SPOT_BUY')],
+    order: 'updated_at.desc',
+    limit: 10
+  });
+  if (error) return;
+  for (const command of failedCommands || []) {
+    const message = String(command.error_message || '');
+    if (!message.includes('Compra executada')) continue;
+    if (command.result?.recoveryAttempted) continue;
+    const payload = command.payload || {};
+    const environment = payload.environment === 'testnet' ? 'testnet' : 'live';
+    const symbol = String(payload.symbol || 'BTCUSDT').toUpperCase();
+    try {
+      const credential = await getCredential(command.user_id, environment);
+      const apiKey = decryptSecret(credential.api_key_encrypted);
+      const apiSecret = decryptSecret(credential.api_secret_encrypted);
+      const filters = await exchangeInfo(symbol, environment);
+      const freeBase = await currentFreeBalance({ apiKey, apiSecret, environment, asset: filters.baseAsset });
+      const targetPrice = ceilToStep(Number(payload.targetPrice || payload.recoveryTarget || 0), filters.tickSize);
+      const sellQty = floorToStep(freeBase, filters.stepSize);
+      const sellNotional = sellQty * targetPrice;
+      if (!targetPrice || sellQty < filters.minQty || sellNotional < filters.minNotional) {
+        await updateRows('connector_commands', {
+          result: {
+            ...(command.result || {}),
+            recoveryAttempted: true,
+            recoveryStatus: 'not_enough_sell_notional',
+            freeBase,
+            sellQty,
+            sellNotional,
+            minNotional: filters.minNotional
+          },
+          error_message: `${message} Recuperacao: quantidade atual ainda nao permite venda limite Binance acima do minimo.`
+        }, [eqFilter('id', command.id)]);
+        continue;
+      }
+
+      const compactId = command.id.replaceAll('-', '');
+      const sellClientOrderId = `INVREC_${compactId.slice(0, 24)}`;
+      const sell = await signedOrder({
+        apiKey,
+        apiSecret,
+        environment,
+        params: {
+          symbol,
+          side: 'SELL',
+          type: 'LIMIT',
+          timeInForce: 'GTC',
+          quantity: formatDecimal(sellQty, filters.stepSize),
+          price: formatDecimal(targetPrice, filters.tickSize),
+          newClientOrderId: sellClientOrderId,
+          newOrderRespType: 'FULL'
+        }
+      });
+      if (!sell.ok) throw new Error(`Venda de recuperacao rejeitada: ${JSON.stringify(sell.payload)}`);
+      await insertRows('real_orders', [{
+        user_id: command.user_id,
+        environment,
+        symbol,
+        side: 'SELL',
+        order_type: 'LIMIT',
+        status: String(sell.payload?.status || 'NEW').toLowerCase(),
+        protection_role: 'recovery_take_profit',
+        timeframe: String(payload.timeframe || '15m'),
+        client_order_id: sellClientOrderId,
+        binance_order_id: String(sell.payload?.orderId || ''),
+        quantity: sellQty,
+        price: targetPrice,
+        reason: 'Venda protegida de recuperacao apos compra executada',
+        raw_response: sell.payload
+      }]);
+      await refreshCredentialBalance(credential, apiKey, apiSecret, environment).catch(() => null);
+      await updateRows('connector_commands', {
+        status: 'done',
+        result: {
+          ...(command.result || {}),
+          recoveryAttempted: true,
+          recoveryStatus: 'sell_created',
+          recoverySellOrderId: sell.payload?.orderId,
+          sellQty,
+          targetPrice
+        },
+        error_message: null,
+        completed_at: new Date().toISOString()
+      }, [eqFilter('id', command.id)]);
+      await log('info', 'recovery_sell_created', `Venda de recuperacao criada para ${symbol}`, { sellQty, targetPrice }, command);
+    } catch (error) {
+      await updateRows('connector_commands', {
+        result: { ...(command.result || {}), recoveryAttempted: true, recoveryStatus: 'error', recoveryError: String(error?.message || error) }
+      }, [eqFilter('id', command.id)]).catch(() => null);
+      await log('warn', 'recovery_sell_error', String(error?.message || error), { commandId: command.id }, command);
+    }
+  }
+}
+
 async function executeCommand(command) {
   switch (String(command.command_type || '').toUpperCase()) {
     case 'VALIDATE_BINANCE_API':
@@ -690,6 +810,7 @@ async function processLoop() {
   try {
   await heartbeat('online', { pid: process.pid });
   await monitorProtectedSells();
+  await recoverFailedProtectedBuys();
   const command = await claimNextCommand();
   if (!command) {
     dashboard.lastCommand = 'Aguardando comandos';

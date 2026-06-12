@@ -1,6 +1,26 @@
-import 'dotenv/config';
+import fs from 'node:fs';
 import crypto from 'node:crypto';
 import { createClient } from '@supabase/supabase-js';
+
+function loadLocalEnv() {
+  if (!fs.existsSync('.env')) return;
+  const lines = fs.readFileSync('.env', 'utf8').split(/\r?\n/);
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith('#')) continue;
+    const idx = trimmed.indexOf('=');
+    if (idx <= 0) continue;
+    const key = trimmed.slice(0, idx).trim();
+    const value = trimmed.slice(idx + 1).trim();
+    if (!process.env[key]) process.env[key] = value;
+  }
+}
+
+loadLocalEnv();
+
+if (String(process.env.CONNECTOR_ALLOW_INSECURE_TLS || '').toLowerCase() === 'true') {
+  process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0';
+}
 
 const cfg = {
   supabaseUrl: process.env.SUPABASE_URL || '',
@@ -67,15 +87,17 @@ async function publicIp() {
 }
 
 async function log(level, event, message, data = {}, command = null) {
-  await supabase.from('connector_logs').insert({
-    node_key: cfg.nodeKey,
-    user_id: command?.user_id || null,
-    command_id: command?.id || null,
-    level,
-    event,
-    message,
-    data
-  }).catch(() => null);
+  try {
+    await supabase.from('connector_logs').insert({
+      node_key: cfg.nodeKey,
+      user_id: command?.user_id || null,
+      command_id: command?.id || null,
+      level,
+      event,
+      message,
+      data
+    });
+  } catch {}
   const prefix = level.toUpperCase().padEnd(5);
   console.log(`[${new Date().toISOString()}] ${prefix} ${event} - ${message}`);
 }

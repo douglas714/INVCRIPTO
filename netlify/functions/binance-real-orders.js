@@ -11,6 +11,25 @@ function json(statusCode, body) {
   return { statusCode, headers: jsonHeaders, body: JSON.stringify(body) };
 }
 
+function isSchemaCacheColumnError(error) {
+  return /schema cache|could not find .* column/i.test(String(error?.message || ''));
+}
+
+async function fetchRealOrders(supabase, userId, environment, limit) {
+  const fullSelect = 'id,created_at,environment,symbol,side,order_type,status,protection_role,timeframe,quantity,price,quote_order_qty,executed_qty,cummulative_quote_qty,reason,binance_order_id,linked_order_id';
+  const legacySelect = 'id,created_at,environment,symbol,side,order_type,status,quantity,price,quote_order_qty,executed_qty,cummulative_quote_qty,reason,binance_order_id';
+  const query = select => supabase
+    .from('real_orders')
+    .select(select)
+    .eq('user_id', userId)
+    .eq('environment', environment)
+    .order('created_at', { ascending: false })
+    .limit(limit);
+  const full = await query(fullSelect);
+  if (!full.error || !isSchemaCacheColumnError(full.error)) return full;
+  return query(legacySelect);
+}
+
 export async function handler(event) {
   if (event.httpMethod === 'OPTIONS') return { statusCode: 204, headers: jsonHeaders, body: '' };
   if (event.httpMethod !== 'POST') return json(405, { error: 'Method not allowed' });
@@ -45,13 +64,7 @@ export async function handler(event) {
   if (profileError || !profile || profile.status !== 'active') return json(401, { error: 'Perfil invalido ou bloqueado.' });
   if (manualEmail && String(profile.email || '').toLowerCase() !== manualEmail) return json(401, { error: 'Perfil nao confere com o e-mail.' });
 
-  const { data, error } = await supabase
-    .from('real_orders')
-    .select('id,created_at,environment,symbol,side,order_type,status,protection_role,timeframe,quantity,price,quote_order_qty,executed_qty,cummulative_quote_qty,reason,binance_order_id,linked_order_id')
-    .eq('user_id', userId)
-    .eq('environment', environment)
-    .order('created_at', { ascending: false })
-    .limit(limit);
+  const { data, error } = await fetchRealOrders(supabase, userId, environment, limit);
 
   if (error) return json(400, { error: error.message });
 

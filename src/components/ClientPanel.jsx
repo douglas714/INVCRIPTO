@@ -183,7 +183,12 @@ export default function ClientPanel({user}){
     }
     tick(); const t=setInterval(tick,2500); return()=>{closed=true;clearInterval(t)};
   },[symbol]);
-  useEffect(()=>{ if(state.active && candles.length){ const t=setInterval(()=>setState(s=>runPaperDecision({...s,symbol,accountMode},candles)),9000); return()=>clearInterval(t) }},[state.active,candles,symbol,accountMode]);
+  useEffect(()=>{
+    if(state.active && accountMode === 'demo' && candles.length){
+      const t=setInterval(()=>setState(s=>runPaperDecision({...s,symbol,accountMode:'demo'},candles)),9000);
+      return()=>clearInterval(t);
+    }
+  },[state.active,candles,symbol,accountMode]);
   useEffect(()=>{
     if(!hasSupabase || !state.active || accountMode !== 'live') return;
     if(!analysis?.orderPlan || analysis.action !== 'BUY' || Number(analysis.score || 0) < 78) return;

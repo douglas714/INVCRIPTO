@@ -104,6 +104,22 @@ async function insertRows(table, rows) {
   });
 }
 
+function isSchemaCacheColumnError(error) {
+  return /schema cache|could not find .* column/i.test(String(error?.message || ''));
+}
+
+function legacyRealOrderRow(row) {
+  const { protection_role, linked_order_id, timeframe, ...legacy } = row;
+  return legacy;
+}
+
+async function insertRealOrders(rows) {
+  const result = await insertRows('real_orders', rows);
+  if (!result.error || !isSchemaCacheColumnError(result.error)) return result;
+  await log('warn', 'real_orders_schema_fallback', `Supabase sem colunas novas em cache: ${result.error.message}`);
+  return insertRows('real_orders', rows.map(legacyRealOrderRow));
+}
+
 async function updateRows(table, values, filters = [], single = false) {
   const qs = filters.length ? `?${filters.join('&')}` : '';
   const result = await restRequest(`/${table}${qs}`, {
@@ -488,7 +504,7 @@ async function handleProtectedSpotBuy(command) {
   const executedQty = Number(buy.payload?.executedQty || 0);
   const cummulativeQuoteQty = Number(buy.payload?.cummulativeQuoteQty || quoteOrderQty);
   const avgPrice = executedQty > 0 ? cummulativeQuoteQty / executedQty : 0;
-  const { data: buyRows, error: buyLogError } = await insertRows('real_orders', [
+  const { data: buyRows, error: buyLogError } = await insertRealOrders([
     {
       user_id: command.user_id,
       environment,
@@ -509,8 +525,12 @@ async function handleProtectedSpotBuy(command) {
       raw_response: buy.payload
     }
   ]);
-  if (buyLogError) throw new Error(`Compra criada na Binance, mas falhou auditoria Supabase: ${buyLogError.message}`);
-  const buyAuditId = Array.isArray(buyRows) ? buyRows[0]?.id : buyRows?.id;
+  let auditWarning = '';
+  if (buyLogError) {
+    auditWarning = `Compra criada na Binance, mas falhou auditoria Supabase: ${buyLogError.message}`;
+    await log('warn', 'real_buy_audit_failed', auditWarning, { symbol, buyOrderId: buy.payload?.orderId }, command);
+  }
+  const buyAuditId = buyLogError ? null : (Array.isArray(buyRows) ? buyRows[0]?.id : buyRows?.id);
   await refreshCredentialBalance(credential, apiKey, apiSecret, environment).catch(() => null);
 
   const sellPrice = ceilToStep(Math.max(targetPriceRaw, avgPrice * 1.005), filters.tickSize);
@@ -543,7 +563,7 @@ async function handleProtectedSpotBuy(command) {
     throw new Error(`Venda protegida Binance rejeitada: ${JSON.stringify(sell.payload)}`);
   }
 
-  const { error: sellLogError } = await insertRows('real_orders', [
+  const { error: sellLogError } = await insertRealOrders([
     {
       user_id: command.user_id,
       environment,
@@ -562,7 +582,10 @@ async function handleProtectedSpotBuy(command) {
       raw_response: sell.payload
     }
   ]);
-  if (sellLogError) throw new Error(`Ordens criadas na Binance, mas falhou auditoria da venda Supabase: ${sellLogError.message}`);
+  if (sellLogError) {
+    auditWarning = [auditWarning, `Venda protegida criada na Binance, mas falhou auditoria Supabase: ${sellLogError.message}`].filter(Boolean).join(' | ');
+    await log('warn', 'real_sell_audit_failed', auditWarning, { symbol, sellOrderId: sell.payload?.orderId }, command);
+  }
   const refreshedAfterSell = await refreshCredentialBalance(credential, apiKey, apiSecret, environment).catch(() => null);
 
   dashboard.lastProtectedOrder = `${symbol} BUY ${quoteOrderQty.toFixed(2)} -> SELL ${formatDecimal(sellQty, filters.stepSize)} @ ${formatDecimal(sellPrice, filters.tickSize)}`;
@@ -582,7 +605,8 @@ async function handleProtectedSpotBuy(command) {
     minNotional: filters.minNotional,
     stepSize: filters.stepSize,
     tickSize: filters.tickSize,
-    protected: true
+    protected: true,
+    auditWarning: auditWarning || null
   };
 }
 
@@ -665,7 +689,7 @@ async function recoverFailedProtectedBuys() {
   if (error) return;
   for (const command of failedCommands || []) {
     const message = String(command.error_message || '');
-    if (!message.includes('Compra executada')) continue;
+    if (!message.includes('Compra executada') && !message.includes('Compra criada na Binance')) continue;
     if (command.result?.recoveryAttempted) continue;
     const payload = command.payload || {};
     const environment = payload.environment === 'testnet' ? 'testnet' : 'live';
@@ -713,7 +737,7 @@ async function recoverFailedProtectedBuys() {
         }
       });
       if (!sell.ok) throw new Error(`Venda de recuperacao rejeitada: ${JSON.stringify(sell.payload)}`);
-      await insertRows('real_orders', [{
+      await insertRealOrders([{
         user_id: command.user_id,
         environment,
         symbol,

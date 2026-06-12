@@ -460,6 +460,31 @@ function BinanceSettings({user,setState,setAccountMode}){
 
   useEffect(()=>{ loadSavedApi(false); },[environment,user?.id]);
 
+  async function refreshFromBinance(){
+    setError('');
+    setLoading(true);
+    try{
+      const { data } = await supabase.auth.getSession();
+      const token = data?.session?.access_token;
+      const manualUserId = user?.manual_profile ? user.id : null;
+      const response = await fetch('/.netlify/functions/binance-refresh', {
+        method:'POST',
+        headers:{ 'content-type':'application/json', ...(token ? { authorization:`Bearer ${token}` } : {}) },
+        body:JSON.stringify({ manualUserId, manualEmail: user?.email || '', environment })
+      });
+      const payload = await response.json().catch(()=>({}));
+      if(!response.ok || !payload?.ok) throw new Error(payload.error || 'Não foi possível solicitar atualização na Binance.');
+      setResult(payload);
+      applyBinancePayload(payload);
+      setError('Atualização enviada ao conector local. Assim que ele consultar a Binance, o saldo real aparece aqui.');
+      setTimeout(()=>loadSavedApi(false), 5000);
+    } catch(err){
+      setError(String(err?.message || err));
+    } finally {
+      setLoading(false);
+    }
+  }
+
   async function testAndSave(){
     setError('');
     setResult(null);
@@ -468,7 +493,7 @@ function BinanceSettings({user,setState,setAccountMode}){
       return;
     }
     if(!apiKey.trim() && !apiSecret.trim() && savedApi?.apiKeyMasked){
-      await loadSavedApi(true);
+      await refreshFromBinance();
       return;
     }
     if(apiKey.trim().length < 20 || apiSecret.trim().length < 20){
@@ -514,7 +539,7 @@ function BinanceSettings({user,setState,setAccountMode}){
     <label>Secret Key</label>
     <input type="password" value={apiSecret} onChange={e=>setApiSecret(e.target.value)} placeholder={savedApi?.apiKeyMasked ? 'Preencha somente para substituir a API salva' : 'Cole a Secret Key'}/>
     <div className="controls">
-      <button className="btn primary gold-btn" type="button" onClick={testAndSave} disabled={loading}>{loading?'Processando...':savedApi?.apiKeyMasked && !apiKey && !apiSecret?'Atualizar saldo salvo':'Salvar API e validar'}</button>
+      <button className="btn primary gold-btn" type="button" onClick={testAndSave} disabled={loading}>{loading?'Processando...':savedApi?.apiKeyMasked && !apiKey && !apiSecret?'Atualizar saldo na Binance':'Salvar API e validar'}</button>
       {savedApi?.apiKeyMasked && <button className="btn ghost" type="button" onClick={()=>loadSavedApi(true)} disabled={loading}>Ver API salva</button>}
     </div>
     {error&&<div className="alert danger">{error}</div>}

@@ -3,7 +3,7 @@ import { createTargetPreviewOrder, initialPaperState, runPaperDecision } from '.
 import { analyzeMarket, supportResistance } from '../lib/strategy.js';
 import { brl, usd, usdt, env, num } from '../lib/format.js';
 import { supabase, hasSupabase } from '../lib/supabase.js';
-import { Activity, BarChart3, Bot, Brain, CreditCard, Gauge, History, KeyRound, Pause, Play, RefreshCw, Settings, ShieldCheck, SlidersHorizontal, Sparkles, StopCircle, TrendingUp, Wallet } from 'lucide-react';
+import { Activity, BarChart3, Bot, Brain, CheckCircle2, CreditCard, Gauge, History, KeyRound, MonitorPlay, Pause, Play, RefreshCw, Settings, ShieldCheck, SlidersHorizontal, Sparkles, StopCircle, TrendingUp, Wallet } from 'lucide-react';
 
 const allowedSymbols = ['BTCUSDT','ETHUSDT','BNBUSDT','SOLUSDT','XRPUSDT','ADAUSDT','AVAXUSDT','DOGEUSDT','LINKUSDT','DOTUSDT','LTCUSDT','TRXUSDT'];
 const MIN_REAL_ORDER_USDT = 6.5;
@@ -283,7 +283,7 @@ export default function ClientPanel({user}){
   function stopRobot(){ setAnalysisSplash(false); autoOrderRef.current=''; setState(s=>({...s,active:false,lastAutoRealError:''})); }
   function createTargetOrder(){ setState(s=>createTargetPreviewOrder({...s,symbol},symbol,analysis,timeframe)); }
 
-  const tabs=[['dashboard','Dashboard'],['analysis','Análise ao vivo'],['scanner','Radar IA'],['orders','Operações'],['inv','Créditos ENV'],['settings','API Binance']];
+  const tabs=[['dashboard','Dashboard'],['analysis','Análise ao vivo'],['scanner','Radar IA'],['orders','Operações'],['inv','Créditos ENV'],['settings','API Binance'],['training','Treinamento']];
 
   return <div className="robot-dashboard">
     <div className="hero-row">
@@ -305,6 +305,7 @@ export default function ClientPanel({user}){
     {activeTab==='orders' && <Orders orders={state.orders} accountMode={accountMode}/>}    
     {activeTab==='inv' && <INV state={state}/>}    
     {activeTab==='settings' && <BinanceSettings user={user} setState={setState} setAccountMode={setAccountMode}/>}
+    {activeTab==='training' && <Training/>}
   </div>
 }
 
@@ -689,6 +690,62 @@ function Orders({orders,accountMode}){
   return <div className="panel panel-glow"><h3><History size={18}/> Histórico de operações</h3><div className="mode-buttons"><button className={mode==='demo'?'active':''} type="button" onClick={()=>setMode('demo')}>Demo</button><button className={mode==='real'?'active':''} type="button" onClick={()=>setMode('real')}>Real Binance</button></div><div className="table-wrap"><table><thead><tr><th>Hora</th><th>Side</th><th>Ativo</th><th>Preço</th><th>Valor</th><th>Lucro</th><th>Taxa ENV</th><th>Motivo</th></tr></thead><tbody>{visible.map(o=><tr key={o.id}><td>{new Date(o.at).toLocaleString('pt-BR')}</td><td>{o.side}</td><td>{o.symbol}</td><td>{Number(o.price || 0).toFixed(2)}</td><td>{usd(o.valueUsd ?? o.valueBrl ?? 0)}</td><td>{o.profitUsd?usd(o.profitUsd):'-'}</td><td>{o.feeEnv?num(o.feeEnv,2):'-'}</td><td>{o.reason || '-'}</td></tr>)}{!visible.length&&<tr><td colSpan="8" className="muted">Nenhuma operação {mode === 'real' ? 'real' : 'demo'} registrada neste painel.</td></tr>}</tbody></table></div></div>
 }
 function INV({state}){const envBalance=state.envBalance ?? state.invBalance ?? 0;return <div className="panel panel-glow"><h3><CreditCard size={18}/> Créditos ENV</h3><p>Saldo atual: <b>{num(envBalance,2)} ENV</b></p><p>1 ENV = US$ 1,00. O robô opera em USDT e desconta 10% apenas do lucro realizado em dólar.</p><p>No pagamento via Pix/cartão, o valor em reais será convertido pela cotação do dólar/USDT do momento para liberar ENV.</p><div className="alert">Quando o ENV zerar, o robô bloqueia novas entradas, encerra a cesta conforme segurança e solicita recarga.</div></div>}
+
+function Training(){
+  const steps=[
+    ['1','Baixar e extrair','Extraia o arquivo do conector em uma pasta simples, por exemplo Área de Trabalho ou Documentos. Ao abrir a pasta, deixe visível apenas o executor ENVCRIPTO.'],
+    ['2','Executar o ENVCRIPTO','Clique duas vezes no executor. Se o Windows perguntar, escolha executar mesmo assim. A janela preta deve ficar aberta com status Online.'],
+    ['3','Criar API na Binance','Na Binance, acesse Gerenciamento de API, crie uma chave, habilite leitura e Spot Trading. Saque deve ficar desativado.'],
+    ['4','Salvar API no painel','No site INVCRIPTO, entre em API Binance, cole API Key e Secret Key, selecione Conta real Spot e salve.'],
+    ['5','Atualizar saldo','No Dashboard, use o botão de refresh no card Saldo da conta. O saldo real em USDT deve aparecer.'],
+    ['6','Iniciar o robô','Escolha Conta real, selecione Operar recomendado pela IA e ligue Auto Trading. O robô analisa e só envia compra quando o score permite.'],
+    ['7','Conferir proteção','Depois da compra, confira Ordens abertas na Binance. Deve existir uma venda limite protegida para a posição/cesta.']
+  ];
+  return <div className="training panel panel-glow">
+    <div className="training-hero">
+      <div>
+        <p className="eyebrow">Treinamento operacional</p>
+        <h2>Instalar, conectar Binance e operar com o INVCRIPTO</h2>
+        <p className="muted">Siga a sequência abaixo para deixar o conector local rodando, salvar a API e iniciar o robô com saldo real.</p>
+      </div>
+      <div className="training-video-card">
+        <MonitorPlay size={44}/>
+        <strong>Guia visual</strong>
+        <span>Fluxo ilustrado de instalação até operação</span>
+      </div>
+    </div>
+    <div className="training-flow">
+      {steps.map(([num,title,body])=><div className="training-step" key={num}>
+        <div className="step-num">{num}</div>
+        <div>
+          <h3>{title}</h3>
+          <p>{body}</p>
+        </div>
+      </div>)}
+    </div>
+    <div className="training-grid">
+      <div className="training-card">
+        <h3><CheckCircle2 size={18}/> Permissões da API Binance</h3>
+        <p><b>Ativar:</b> leitura e Spot Trading.</p>
+        <p><b>Desativar:</b> saque/withdraw.</p>
+        <p><b>Observação:</b> se a Binance bloquear IP da Netlify, mantenha o conector local aberto para validar e executar pela sua máquina.</p>
+      </div>
+      <div className="training-card">
+        <h3><CheckCircle2 size={18}/> Como saber que está certo</h3>
+        <p>O conector mostra status Online.</p>
+        <p>O card Saldo da conta mostra USDT real.</p>
+        <p>Após compra, a Binance mostra venda limite em Ordens abertas.</p>
+      </div>
+      <div className="training-card">
+        <h3><CheckCircle2 size={18}/> Operação segura</h3>
+        <p>Não feche o conector durante a operação.</p>
+        <p>Não cancele vendas protegidas sem recalcular a cesta.</p>
+        <p>Se houver moeda comprada sem venda, o conector tenta criar proteção acima do preço médio estimado.</p>
+      </div>
+    </div>
+  </div>
+}
+
 function BinanceSettings({user,setState,setAccountMode}){
   const [apiKey,setApiKey]=useState('');
   const [apiSecret,setApiSecret]=useState('');

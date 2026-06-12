@@ -58,6 +58,11 @@ export default function ClientPanel({user}){
   useEffect(()=>{localStorage.setItem('df_paper_state',JSON.stringify({...state,symbol,accountMode}))},[state,symbol,accountMode]);
   useEffect(()=>{localStorage.setItem('df_account_mode',accountMode); setState(s=>({...s,accountMode}));},[accountMode]);
   useEffect(()=>{
+    if(selectionMode === 'recommended' && recommended.symbol && recommended.symbol !== symbol){
+      setSymbol(recommended.symbol);
+    }
+  },[selectionMode,recommended.symbol,symbol]);
+  useEffect(()=>{
     if(!hasSupabase || !user?.id) return;
     let closed = false;
     async function loadBinanceStatus(){
@@ -219,8 +224,8 @@ export default function ClientPanel({user}){
     return()=>{cancelled=true};
   },[state.active,accountMode,analysis,symbol,timeframe,state.apiConnected,state.binanceCanTrade,state.envBalance,state.binanceUsdtBalance,user?.id]);
 
-  function operateRecommended(){ setSymbol(recommended.symbol); setSelectionMode('recommended'); setState(s=>({...s,active:true,symbol:recommended.symbol,accountMode})); }
-  function operateSelected(){ setSelectionMode('manual_assisted'); setState(s=>({...s,active:true,symbol,accountMode})); }
+  function operateRecommended(){ setSymbol(recommended.symbol); setSelectionMode('recommended'); setState(s=>({...s,active:true,symbol:recommended.symbol,accountMode,selectionMode:'recommended'})); }
+  function operateSelected(){ setSelectionMode('manual_assisted'); setState(s=>({...s,active:true,symbol,accountMode,selectionMode:'manual_assisted'})); }
   function createTargetOrder(){ setState(s=>createTargetPreviewOrder({...s,symbol},symbol,analysis,timeframe)); }
 
   const tabs=[['dashboard','Dashboard'],['analysis','Análise ao vivo'],['scanner','Radar IA'],['orders','Operações'],['inv','Créditos ENV'],['settings','API Binance']];
@@ -426,12 +431,15 @@ function TradingChart({candles,analysis,timeframe,symbol}){
 function TradingControl({state,setState,symbol,setSymbol,analysis,recommended,operateRecommended,operateSelected,createTargetOrder,selectionMode,setSelectionMode,accountMode,setAccountMode}){
   const canPreview = Boolean(analysis?.orderPlan);
   const locked = Boolean(state.active);
+  const recommendedMode = selectionMode === 'recommended' || selectionMode === 'auto_ai';
+  const symbolLocked = locked || recommendedMode;
   return <div className="trade-control panel-glow">
     <h3><span/> Trading Control</h3>
     <label>Modo de escolha</label>
     <select value={selectionMode} onChange={e=>setSelectionMode(e.target.value)} disabled={locked}><option value="recommended">Operar recomendado pela IA</option><option value="manual_assisted">Manual assistido</option><option value="auto_ai">IA escolhe automático</option></select>
-    <label>Moeda selecionada</label>
-    <select value={symbol} onChange={e=>setSymbol(e.target.value)} disabled={locked}>{allowedSymbols.map(s=><option key={s}>{s}</option>)}</select>
+    <label>{recommendedMode ? 'Moeda operada pela IA' : 'Moeda selecionada'}</label>
+    <select value={symbol} onChange={e=>setSymbol(e.target.value)} disabled={symbolLocked}>{allowedSymbols.map(s=><option key={s}>{s}</option>)}</select>
+    <small className="sync">{recommendedMode ? 'A IA escolhe automaticamente a moeda com melhor score no Radar IA.' : 'Modo manual assistido: você escolhe a moeda, a IA valida o setup.'}</small>
     <label>Recomendação IA</label>
     <div className="recommend-line"><strong>{recommended.symbol?.replace('USDT','/USDT')}</strong><span>{recommended.score}/100</span></div>
     <label>Conta de operação</label>

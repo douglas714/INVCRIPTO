@@ -1,36 +1,32 @@
 # INVCRIPTO Connector Local
 
-O conector local permite manter o painel web no Netlify e usar o IP da sua própria máquina para consultar a Binance.
+O conector local permite manter o painel web no Netlify e usar o IP da sua propria maquina para consultar e operar na Binance.
 
 ## Como funciona
 
-1. O cliente acessa o painel web normalmente.
+1. O cliente acessa o painel web.
 2. O painel grava comandos no Supabase.
-3. Este conector roda na sua máquina.
-4. O conector lê comandos pendentes no Supabase.
-5. A chamada para Binance sai pela internet da sua máquina.
+3. Este conector roda no Windows.
+4. O conector le comandos pendentes no Supabase.
+5. A chamada para Binance sai pela internet da sua maquina.
 6. O resultado volta para o Supabase.
-7. O painel mostra o status para o cliente.
+7. O painel mostra saldo, status e ordens.
 
-## Instalação
+## Como iniciar
 
-Dentro da pasta `local-connector`:
+Use:
 
-```bash
-npm install
-copy .env.example .env
-npm start
+```bat
+INSTALAR_E_EXECUTAR_CONNECTOR.bat
 ```
 
-Preencha o `.env` com os dados reais do Supabase e a mesma chave de criptografia usada no Netlify.
+O BAT nao executa `npm install`. Ele usa as dependencias do projeto principal ou dependencias ja copiadas junto. Isso evita erro de certificado como `SELF_SIGNED_CERT_IN_CHAIN`.
 
-## Segurança
+Se aparecer "Dependencias nao encontradas", use o zip completo do projeto ou rode `npm install` apenas na pasta principal quando sua rede permitir.
 
-- Não publique o arquivo `.env`.
-- Não use chave Binance com saque habilitado.
-- A máquina precisa ficar ligada para o robô operar.
-- O painel web continua funcionando mesmo com o conector offline, mas não executa ações Binance.
+## Seguranca
 
-## Próxima evolução
-
-Depois de validar local, este mesmo conector pode ser levado para uma VPS com IP fixo.
+- Nao publique o arquivo `.env`.
+- Nao use chave Binance com saque habilitado.
+- A maquina precisa ficar ligada para executar comandos Binance.
+- A venda protegida fica salva na Binance depois que a compra real executa.

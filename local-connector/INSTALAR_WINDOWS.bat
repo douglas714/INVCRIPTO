@@ -24,11 +24,21 @@ if not exist .env (
   call CONFIGURAR_CONNECTOR.bat
 )
 
-echo Instalando dependencias...
-npm install
+if exist "..\node_modules\@supabase\supabase-js" (
+  echo Dependencias encontradas no projeto principal.
+) else if exist "node_modules\@supabase\supabase-js" (
+  echo Dependencias encontradas no conector.
+) else (
+  echo.
+  echo Dependencias nao encontradas.
+  echo Para evitar erro de certificado, este instalador NAO baixa pacotes automaticamente.
+  echo Use o zip completo do projeto ou rode npm install apenas na pasta principal quando sua rede permitir.
+  pause
+  exit /b 1
+)
 
 echo.
-echo Instalacao finalizada.
-echo Rode INICIAR_CONNECTOR.bat e deixe a janela aberta.
+echo Instalacao verificada.
+echo Rode INSTALAR_E_EXECUTAR_CONNECTOR.bat e deixe a janela aberta.
 echo.
 pause

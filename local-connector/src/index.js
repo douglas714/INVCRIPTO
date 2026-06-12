@@ -2,6 +2,10 @@ import fs from 'node:fs';
 import crypto from 'node:crypto';
 import { createClient } from '@supabase/supabase-js';
 
+process.stdout?.on?.('error', error => {
+  if (error?.code === 'EPIPE') process.exit(0);
+});
+
 function loadLocalEnv() {
   if (!fs.existsSync('.env')) return;
   const lines = fs.readFileSync('.env', 'utf8').split(/\r?\n/);

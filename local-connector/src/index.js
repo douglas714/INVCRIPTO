@@ -48,6 +48,70 @@ const supabase = createClient(cfg.supabaseUrl, cfg.supabaseKey, {
   auth: { persistSession: false }
 });
 
+const dashboard = {
+  status: 'Iniciando',
+  startedAt: new Date(),
+  loopRunning: false,
+  publicIp: '-',
+  lastHeartbeat: null,
+  pending: 0,
+  processed: 0,
+  errors: 0,
+  lastCommand: 'Nenhum',
+  lastMessage: 'Inicializando conector',
+  lastUsdt: null,
+  canTrade: null,
+  canWithdraw: null,
+  credentialStatus: null,
+  lastSync: null,
+  events: []
+};
+
+function money(value) {
+  if (value === null || value === undefined) return '-';
+  return `${Number(value).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 8 })} USDT`;
+}
+
+function renderDashboard() {
+  console.clear();
+  console.log('============================================================');
+  console.log(' INVCRIPTO CONNECTOR LOCAL');
+  console.log('============================================================');
+  console.log(` Status       : ${dashboard.status}`);
+  console.log(` Node         : ${cfg.nodeKey}`);
+  console.log(` IP publico   : ${dashboard.publicIp || '-'}`);
+  console.log(` Iniciado em  : ${dashboard.startedAt.toLocaleString('pt-BR')}`);
+  console.log(` Intervalo    : ${cfg.intervalMs}ms`);
+  console.log('------------------------------------------------------------');
+  console.log(` Fila pendente: ${dashboard.pending}`);
+  console.log(` Processados  : ${dashboard.processed}`);
+  console.log(` Erros        : ${dashboard.errors}`);
+  console.log(` Ultimo cmd   : ${dashboard.lastCommand}`);
+  console.log(` Ultima msg   : ${dashboard.lastMessage}`);
+  console.log('------------------------------------------------------------');
+  console.log(` Saldo USDT   : ${money(dashboard.lastUsdt)}`);
+  console.log(` Trading      : ${dashboard.canTrade === null ? '-' : dashboard.canTrade ? 'habilitado' : 'somente leitura'}`);
+  console.log(` Saque        : ${dashboard.canWithdraw === null ? '-' : dashboard.canWithdraw ? 'habilitado (revise)' : 'desativado'}`);
+  console.log(` API status   : ${dashboard.credentialStatus || '-'}`);
+  console.log(` Ultimo sync  : ${dashboard.lastSync || '-'}`);
+  console.log('------------------------------------------------------------');
+  console.log(' Eventos recentes');
+  if (!dashboard.events.length) {
+    console.log('  - Aguardando primeiro evento');
+  } else {
+    for (const item of dashboard.events.slice(-6)) console.log(`  - ${item}`);
+  }
+  console.log('------------------------------------------------------------');
+  console.log(' Deixe esta janela aberta. Ctrl+C para parar.');
+  console.log('============================================================');
+}
+
+function pushEvent(level, event, message) {
+  const prefix = `${new Date().toLocaleTimeString('pt-BR')} ${level.toUpperCase()} ${event}`;
+  dashboard.events.push(`${prefix}: ${message}`);
+  if (dashboard.events.length > 20) dashboard.events.shift();
+}
+
 function keyBuffer() {
   return crypto.createHash('sha256').update(cfg.encryptionKey).digest();
 }
@@ -98,12 +162,16 @@ async function log(level, event, message, data = {}, command = null) {
       data
     });
   } catch {}
-  const prefix = level.toUpperCase().padEnd(5);
-  console.log(`[${new Date().toISOString()}] ${prefix} ${event} - ${message}`);
+  dashboard.lastMessage = message;
+  pushEvent(level, event, message);
+  renderDashboard();
 }
 
 async function heartbeat(status = 'online', metadata = {}) {
   const ip = await publicIp().catch(() => null);
+  dashboard.status = status;
+  dashboard.publicIp = ip;
+  dashboard.lastHeartbeat = new Date().toLocaleString('pt-BR');
   const row = {
     node_key: cfg.nodeKey,
     name: cfg.nodeName,
@@ -220,6 +288,12 @@ async function executeCommand(command) {
 }
 
 async function claimNextCommand() {
+  const pendingCount = await supabase
+    .from('connector_commands')
+    .select('id', { count: 'exact', head: true })
+    .eq('status', 'pending');
+  if (!pendingCount.error) dashboard.pending = Number(pendingCount.count || 0);
+
   const { data, error } = await supabase
     .from('connector_commands')
     .select('*')
@@ -247,13 +321,39 @@ async function claimNextCommand() {
 }
 
 async function processLoop() {
+  if (dashboard.loopRunning) return;
+  dashboard.loopRunning = true;
+  dashboard.status = 'Sincronizando';
+  renderDashboard();
+
+  try {
   await heartbeat('online', { pid: process.pid });
   const command = await claimNextCommand();
-  if (!command) return;
+  if (!command) {
+    dashboard.lastCommand = 'Aguardando comandos';
+    dashboard.lastMessage = 'Conector online, sem comandos pendentes';
+    dashboard.status = 'Online';
+    renderDashboard();
+    return;
+  }
 
+  dashboard.status = 'Processando comando';
+  dashboard.lastCommand = command.command_type;
+  dashboard.lastMessage = `Processando ${command.command_type}`;
+  renderDashboard();
   await log('info', 'command_started', `Processando ${command.command_type}`, {}, command);
   try {
     const result = await executeCommand(command);
+    dashboard.processed += 1;
+    dashboard.lastCommand = command.command_type;
+    dashboard.lastMessage = `Comando ${command.command_type} finalizado`;
+    if (Object.prototype.hasOwnProperty.call(result || {}, 'usdtFree')) {
+      dashboard.lastUsdt = Number(result.usdtFree || 0);
+      dashboard.canTrade = Boolean(result.canTrade);
+      dashboard.canWithdraw = Boolean(result.canWithdraw);
+      dashboard.credentialStatus = result.credentialStatus || null;
+      dashboard.lastSync = new Date().toLocaleString('pt-BR');
+    }
     await supabase
       .from('connector_commands')
       .update({
@@ -265,6 +365,9 @@ async function processLoop() {
       .eq('id', command.id);
     await log('info', 'command_done', `Comando ${command.command_type} finalizado`, { result }, command);
   } catch (error) {
+    dashboard.errors += 1;
+    dashboard.lastCommand = command.command_type;
+    dashboard.lastMessage = String(error?.message || error);
     await supabase
       .from('connector_commands')
       .update({
@@ -275,21 +378,35 @@ async function processLoop() {
       .eq('id', command.id);
     await log('error', 'command_error', String(error?.message || error), {}, command);
   }
+  dashboard.status = 'Online';
+  renderDashboard();
+  } finally {
+    dashboard.loopRunning = false;
+  }
 }
 
 async function main() {
-  console.log('==============================================');
-  console.log(' INVCRIPTO CONNECTOR LOCAL');
-  console.log('==============================================');
-  console.log(`Node: ${cfg.nodeKey}`);
-  console.log(`Intervalo: ${cfg.intervalMs}ms`);
-  console.log('Pressione Ctrl+C para parar.');
+  renderDashboard();
   await log('info', 'connector_started', 'Conector local iniciado');
   await heartbeat('online');
+  renderDashboard();
+
+  processLoop().catch(async error => {
+    dashboard.errors += 1;
+    dashboard.status = 'Erro';
+    dashboard.lastMessage = String(error?.message || error);
+    pushEvent('error', 'loop_error', dashboard.lastMessage);
+    renderDashboard();
+    await heartbeat('error', { error: String(error?.message || error) }).catch(() => null);
+  });
 
   setInterval(() => {
     processLoop().catch(async error => {
-      console.error('Erro no loop:', error);
+      dashboard.errors += 1;
+      dashboard.status = 'Erro';
+      dashboard.lastMessage = String(error?.message || error);
+      pushEvent('error', 'loop_error', dashboard.lastMessage);
+      renderDashboard();
       await heartbeat('error', { error: String(error?.message || error) }).catch(() => null);
     });
   }, cfg.intervalMs);

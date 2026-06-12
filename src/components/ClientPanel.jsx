@@ -134,7 +134,7 @@ export default function ClientPanel({user}){
           });
         }
       } catch(e){
-        if(!closed) setMarketStatus('Usando Ãºltimo candle disponÃ­vel');
+        if(!closed) setMarketStatus('Usando último candle disponível');
       }
     }
     tick(); const t=setInterval(tick,2500); return()=>{closed=true;clearInterval(t)};
@@ -145,18 +145,18 @@ export default function ClientPanel({user}){
   function operateSelected(){ setSelectionMode('manual_assisted'); setState(s=>({...s,active:true,symbol,accountMode})); }
   function createTargetOrder(){ setState(s=>createTargetPreviewOrder({...s,symbol},symbol,analysis,timeframe)); }
 
-  const tabs=[['dashboard','Dashboard'],['analysis','AnÃ¡lise ao vivo'],['scanner','Radar IA'],['orders','OperaÃ§Ãµes'],['inv','CrÃ©ditos ENV'],['settings','API Binance']];
+  const tabs=[['dashboard','Dashboard'],['analysis','Análise ao vivo'],['scanner','Radar IA'],['orders','Operações'],['inv','Créditos ENV'],['settings','API Binance']];
 
   return <div className="robot-dashboard">
     <div className="hero-row">
       <div className="brand-title">
         <img src="/favicon.png" alt="INVCRIPTO"/>
-        <div><h1>INVCRIPTO IA</h1><p>Crypto Trading Robot â€” grÃ¡fico real, paper trade, radar IA e crÃ©ditos ENV em dÃ³lar.</p></div>
+        <div><h1>INVCRIPTO IA</h1><p>Crypto Trading Robot - gráfico real, paper trade, radar IA e créditos ENV em dólar.</p></div>
       </div>
-      <div className="live-badge"><span className="live-dot"/> {state.active?'LIVE Â· Bot Active':'PAUSADO'}</div>
+      <div className="live-badge"><span className="live-dot"/> {state.active?'LIVE - Bot ativo':'PAUSADO'}</div>
     </div>
 
-    <KpiStrip state={state} lastPrice={lastPrice} symbol={symbol} timeframe={timeframe} accountMode={accountMode}/>
+    <KpiStrip state={state} lastPrice={lastPrice} symbol={symbol} timeframe={timeframe} accountMode={accountMode} setAccountMode={setAccountMode}/>
 
     <div className="tabbar premium-tabs">{tabs.map(([k,l])=><button key={k} className={activeTab===k?'active':''} onClick={()=>setActiveTab(k)}>{l}</button>)}</div>
 
@@ -169,17 +169,41 @@ export default function ClientPanel({user}){
   </div>
 }
 
-function KpiStrip({state,lastPrice,symbol,timeframe,accountMode}){
-  const winRate = state.orders.length ? Math.round((state.orders.filter(o=>Number(o.profitUsd||o.profitBrl||0)>0).length / Math.max(1,state.orders.filter(o=>o.side==='SELL').length))*100) : 78;
+function KpiStrip({state,lastPrice,symbol,timeframe,accountMode,setAccountMode}){
+  const closedOrders = state.orders.filter(o=>String(o.side || '').startsWith('SELL'));
+  const wins = closedOrders.filter(o=>Number(o.profitUsd || o.profitBrl || 0) > 0).length;
+  const winRate = closedOrders.length ? Math.round((wins / closedOrders.length) * 100) : 78;
+  const demoProfit = Number(state.realizedProfitUsd ?? state.realizedProfitBrl ?? 0);
+  const realProfit = Number(state.realizedRealProfitUsd ?? state.realizedRealProfitBrl ?? 0);
+  const activeProfit = accountMode === 'live' ? realProfit : demoProfit;
+  const activeFee = accountMode === 'live' ? Number(state.realFeesEnv ?? state.realFeesInv ?? 0) : Number(state.feesEnv ?? state.feesInv ?? 0);
   return <div className="kpi-strip">
-    <MiniKpi icon={<Wallet/>} label="Saldo Demo" value={usd(state.balanceUsd ?? state.balanceBrl ?? 0)} delta="simulaÃ§Ã£o USDT"/>
-    <MiniKpi icon={<CreditCard/>} label="ENV" value={`${num(state.envBalance ?? state.invBalance ?? 0,2)} ENV`} delta={accountMode==='live'?'cobra no lucro real':'demo nÃ£o consome'}/>
-    <MiniKpi icon={<ShieldCheck/>} label="USDT Binance" value={state.binancePending?'Validando...':state.apiConnected?usdt(state.binanceUsdtBalance || 0):'Desconectado'} delta={state.binancePending?'conector local':accountMode==='live'?'conta real':'conecte a API'}/>
-    <MiniKpi icon={<TrendingUp/>} label="Lucro total" value={usd(state.realizedProfitUsd ?? state.realizedProfitBrl ?? 0)} delta={`${num(state.feesEnv ?? state.feesInv ?? 0,2)} ENV taxa`}/>
+    <AccountBalanceKpi state={state} accountMode={accountMode} setAccountMode={setAccountMode}/>
+    <MiniKpi icon={<CreditCard/>} label="ENV" value={`${num(state.envBalance ?? state.invBalance ?? 0,2)} ENV`} delta={accountMode==='live'?'cobra no lucro real':'demo não consome'}/>
+    <MiniKpi icon={<ShieldCheck/>} label="Status Binance" value={state.binancePending?'Validando...':state.apiConnected?'Conectada':'Desconectada'} delta={state.binancePending?'conector local':accountMode==='live'?'conta real':'modo demo'}/>
+    <MiniKpi icon={<TrendingUp/>} label={accountMode==='live'?'Lucro real ativo':'Lucro demo ativo'} value={usd(activeProfit)} delta={`${num(activeFee,2)} ENV taxa`}/>
+    <MiniKpi icon={<TrendingUp/>} label="Lucro demo" value={usd(demoProfit)} delta={`${num(state.feesEnv ?? state.feesInv ?? 0,2)} ENV taxa`}/>
+    <MiniKpi icon={<TrendingUp/>} label="Lucro real" value={usd(realProfit)} delta={`${num(state.realFeesEnv ?? state.realFeesInv ?? 0,2)} ENV taxa`}/>
     <MiniKpi icon={<Gauge/>} label="Win Rate" value={`${winRate||0}%`} delta="estimado"/>
     <MiniKpi icon={<BarChart3/>} label="Par ativo" value={symbol.replace('USDT','/USDT')} delta={lastPrice?`$ ${lastPrice.toFixed(2)}`:'carregando'}/>
-    <MiniKpi icon={<Activity/>} label="Timeframe" value={timeframe.toUpperCase()} delta="janela de operaÃ§Ã£o"/>
-    <div className="kpi-live"><img src="/favicon.png"/><strong>{state.active?'ROBÃ” ATIVO':'AGUARDANDO'}</strong><span>{state.active?'Ãšltimo sync agora':'Clique em iniciar'}</span></div>
+    <MiniKpi icon={<Activity/>} label="Timeframe" value={timeframe.toUpperCase()} delta="janela de operação"/>
+    <div className="kpi-live"><img src="/favicon.png"/><strong>{state.active?'ROBÔ ATIVO':'AGUARDANDO'}</strong><span>{state.active?'Último sync agora':'Clique em iniciar'}</span></div>
+  </div>
+}
+
+function AccountBalanceKpi({state,accountMode,setAccountMode}){
+  const isLive = accountMode === 'live';
+  const value = isLive ? (state.binancePending ? 'Validando...' : state.apiConnected ? usdt(state.binanceUsdtBalance || 0) : 'Desconectado') : usd(state.balanceUsd ?? state.balanceBrl ?? 0);
+  const delta = isLive ? (state.apiConnected ? 'saldo real Binance' : 'conecte a API') : 'saldo demo USDT';
+  return <div className="mini-kpi account-balance-kpi">
+    <div className="kpi-icon"><Wallet/></div>
+    <span>Saldo da conta</span>
+    <strong>{value}</strong>
+    <small>{delta}</small>
+    <div className="account-kpi-toggle">
+      <button type="button" className={accountMode==='demo'?'active':''} onClick={()=>setAccountMode('demo')}>Demo</button>
+      <button type="button" className={accountMode==='live'?'active':''} onClick={()=>setAccountMode('live')}>Real</button>
+    </div>
   </div>
 }
 function MiniKpi({icon,label,value,delta}){return <div className="mini-kpi"><div className="kpi-icon">{icon}</div><span>{label}</span><strong>{value}</strong><small>{delta}</small></div>}
@@ -202,13 +226,13 @@ function Dashboard({user,state,setState,symbol,setSymbol,timeframe,setTimeframe,
 
 function RobotStatusBar({state,analysis,accountMode,marketStatus,lastPrice}){
   const operating = state.positions?.length > 0;
-  const status = operating ? 'ROBÃ” OPERANDO' : analysis?.orderPlan ? 'OPORTUNIDADE ENCONTRADA' : state.active ? 'ROBÃ” ANALISANDO' : 'ROBÃ” EM ESPERA';
+  const status = operating ? 'ROBÔ OPERANDO' : analysis?.orderPlan ? 'OPORTUNIDADE ENCONTRADA' : state.active ? 'ROBÔ ANALISANDO' : 'ROBÔ EM ESPERA';
   const detail = operating
-    ? `Cesta aberta na mÃ£o ${state.positions[0]?.ladderLevel || 1}; buscando saÃ­da com +0,5% sobre preÃ§o mÃ©dio.`
+    ? `Cesta aberta na mão ${state.positions[0]?.ladderLevel || 1}; buscando saída com +0,5% sobre preço médio.`
     : analysis?.orderPlan
       ? `Setup monitorado: ${analysis.reason}. Confira entrada, alvo e martingale controlado.`
-      : `${marketStatus}. Aguardando confirmaÃ§Ã£o de score, volume e tendÃªncia.`;
-  return <div className="alert"><b>{status}</b><p>{detail}</p><p><span>Modo:</span> <b>{accountMode==='live'?'Conta real':'Conta demo'}</b> Â· <span>PreÃ§o:</span> <b>{lastPrice?lastPrice.toFixed(6):'...'}</b> Â· <span>Score:</span> <b>{analysis?.score || 0}/100</b></p></div>
+      : `${marketStatus}. Aguardando confirmação de score, volume e tendência.`;
+  return <div className="alert"><b>{status}</b><p>{detail}</p><p><span>Modo:</span> <b>{accountMode==='live'?'Conta real':'Conta demo'}</b> - <span>Preço:</span> <b>{lastPrice?lastPrice.toFixed(6):'...'}</b> - <span>Score:</span> <b>{analysis?.score || 0}/100</b></p></div>
 }
 
 function ChartHeader({symbol,setSymbol,timeframe,setTimeframe,analysis}){
@@ -351,7 +375,7 @@ function TargetOrderPreview({state,symbol,timeframe,analysis,createTargetOrder,a
   if(!order && !plan){
     return <div className="info-card panel-glow"><h3>Ordem alvo 1</h3><p className="muted">A IA ainda nao encontrou setup de compra com risco/retorno suficiente para criar uma ordem de visualizacao.</p><p><b>Acao:</b> {analysis?.action || 'WAIT'}</p><p><b>Score:</b> {analysis?.score || 0}/100</p></div>
   }
-  const demoBaseValue = Math.min(state.balanceUsd ?? 1000, Math.max(10, (state.balanceUsd ?? 1000) * 0.05));
+  const demoBaseValue = Math.min(state.balanceUsd - 1000, Math.max(10, (state.balanceUsd - 1000) * 0.05));
   const liveBalance = Number(state.binanceUsdtBalance || 0);
   const liveBaseValue = liveBalance > 0 ? Math.max(5, Math.min(10, liveBalance * 0.55)) : 0;
   const baseValue = accountMode === 'live' ? liveBaseValue : demoBaseValue;
@@ -431,7 +455,7 @@ function RecommendedCard({recommended,symbol,analysis,setSymbol,operateRecommend
 function RecentTrades({orders}){
   const items = orders.slice(0,4);
   const fallback=[['BTC/USDT','LONG','+1.28%','2m'],['ETH/USDT','LONG','+2.15%','18m'],['SOL/USDT','LONG','+0.94%','35m'],['BNB/USDT','WAIT','0.00%','1h']];
-  return <div className="info-card panel-glow"><h3>Recent Trades</h3>{items.length?items.map(o=><div className="trade-line" key={o.id}><span>{o.symbol.replace('USDT','/USDT')}</span><b className={o.side==='BUY'?'green':'gold'}>{o.side}</b><small>{o.profitUsd?usd(o.profitUsd):usd(o.valueUsd ?? o.valueBrl ?? 0)}</small></div>):fallback.map((x,i)=><div className="trade-line" key={i}><span>{x[0]}</span><b className={x[1]==='WAIT'?'gold':'green'}>{x[1]}</b><small>{x[2]} Â· {x[3]}</small></div>)}</div>
+  return <div className="info-card panel-glow"><h3>Trades recentes</h3>{items.length?items.map(o=><div className="trade-line" key={o.id}><span>{o.symbol.replace('USDT','/USDT')}</span><b className={o.side==='BUY'?'green':'gold'}>{o.side}</b><small>{o.profitUsd?usd(o.profitUsd):usd(o.valueUsd ?? o.valueBrl ?? 0)}</small></div>):fallback.map((x,i)=><div className="trade-line" key={i}><span>{x[0]}</span><b className={x[1]==='WAIT'?'gold':'green'}>{x[1]}</b><small>{x[2]} - {x[3]}</small></div>)}</div>
 }
 
 function MarketAI({analysis,radar}){
@@ -439,7 +463,7 @@ function MarketAI({analysis,radar}){
   const score=radar[0]?.score||0;
   return <div className="ai-card panel-glow"><h3>AI Market Analysis</h3><div className="ai-orb"><Brain size={38}/><span>AI</span></div><p>Sentimento atual</p><strong>{sentiment}</strong><small>{analysis?.reason||'RobÃ´ aguardando confirmaÃ§Ã£o de entrada.'}</small><div className="progress"><i style={{width:`${score}%`}}/></div><b>{score}%</b></div>
 }
-function SystemPerformance({state}){return <div className="info-card panel-glow"><h3>System Performance</h3><Metric label="Bot status" value={state.active?'Running':'Paused'} pct={state.active?88:35}/><Metric label="API latency" value="112ms" pct={42}/><Metric label="ENV" value={`${num(state.envBalance ?? state.invBalance ?? 0,2)}`} pct={Math.min(100,(state.envBalance ?? state.invBalance ?? 0)*10)}/><Metric label="Uptime" value="online" pct={91}/></div>}
+function SystemPerformance({state}){const envBalance=Number(state.envBalance ?? state.invBalance ?? 0);return <div className="info-card panel-glow"><h3>Performance do sistema</h3><Metric label="Bot status" value={state.active?'Rodando':'Pausado'} pct={state.active?88:35}/><Metric label="API latency" value="112ms" pct={42}/><Metric label="ENV" value={`${num(envBalance,2)}`} pct={Math.min(100,envBalance*10)}/><Metric label="Uptime" value="online" pct={91}/></div>}
 function Metric({label,value,pct}){return <p className="metric"><span>{label}</span><i><b style={{width:`${pct}%`}}/></i><strong>{value}</strong></p>}
 
 function LiveAnalysis({symbol,setSymbol,timeframe,setTimeframe,candles,state,analysis}){
@@ -458,8 +482,8 @@ function Scanner({radar,symbol,setSymbol,operateRecommended}){
   return <div className="panel panel-glow"><h3><Sparkles size={18}/> Radar IA â€” Top moedas Binance</h3><p className="muted">O cliente pode selecionar a moeda, mas a IA recomenda a melhor oportunidade com score de entrada e Hold Recovery de 12 meses.</p><div className="scanner-grid">{radar.map(r=><div className={r.symbol===symbol?'scanner-card active':'scanner-card'} key={r.symbol}><strong>{r.symbol.replace('USDT','/USDT')}</strong><span>Score {r.score}/100</span><small>Hold {r.hold}/100 Â· Liquidez {r.liquidity}/100</small><button className="btn small ghost" onClick={()=>setSymbol(r.symbol)}>Selecionar</button></div>)}</div><button className="btn primary gold-btn" onClick={operateRecommended}>Operar melhor recomendaÃ§Ã£o</button></div>
 }
 
-function Orders({orders}){return <div className="panel panel-glow"><h3><History size={18}/> HistÃ³rico de operaÃ§Ãµes</h3><div className="table-wrap"><table><thead><tr><th>Hora</th><th>Side</th><th>Ativo</th><th>PreÃ§o</th><th>Valor</th><th>Lucro</th><th>Taxa ENV</th></tr></thead><tbody>{orders.map(o=><tr key={o.id}><td>{new Date(o.at).toLocaleString('pt-BR')}</td><td>{o.side}</td><td>{o.symbol}</td><td>{o.price.toFixed(2)}</td><td>{usd(o.valueUsd ?? o.valueBrl ?? 0)}</td><td>{o.profitUsd?usd(o.profitUsd):'-'}</td><td>{o.feeEnv?num(o.feeEnv,2):'-'}</td></tr>)}</tbody></table></div></div>}
-function INV({state}){const envBalance=state.envBalance ?? state.invBalance ?? 0;return <div className="panel panel-glow"><h3><CreditCard size={18}/> CrÃ©ditos ENV</h3><p>Saldo atual: <b>{num(envBalance,2)} ENV</b></p><p>1 ENV = US$ 1,00. O robÃ´ opera em USDT e desconta 10% apenas do lucro realizado em dÃ³lar.</p><p>No pagamento via Pix/cartÃ£o, o valor em reais serÃ¡ convertido pela cotaÃ§Ã£o do dÃ³lar/USDT do momento para liberar ENV.</p><div className="alert">Quando o ENV zerar, o robÃ´ bloqueia novas entradas, encerra a cesta conforme seguranÃ§a e solicita recarga.</div></div>}
+function Orders({orders}){return <div className="panel panel-glow"><h3><History size={18}/> Histórico de operações</h3><div className="table-wrap"><table><thead><tr><th>Hora</th><th>Side</th><th>Ativo</th><th>Preço</th><th>Valor</th><th>Lucro</th><th>Taxa ENV</th></tr></thead><tbody>{orders.map(o=><tr key={o.id}><td>{new Date(o.at).toLocaleString('pt-BR')}</td><td>{o.side}</td><td>{o.symbol}</td><td>{o.price.toFixed(2)}</td><td>{usd(o.valueUsd ?? o.valueBrl ?? 0)}</td><td>{o.profitUsd?usd(o.profitUsd):'-'}</td><td>{o.feeEnv?num(o.feeEnv,2):'-'}</td></tr>)}</tbody></table></div></div>}
+function INV({state}){const envBalance=state.envBalance ?? state.invBalance ?? 0;return <div className="panel panel-glow"><h3><CreditCard size={18}/> Créditos ENV</h3><p>Saldo atual: <b>{num(envBalance,2)} ENV</b></p><p>1 ENV = US$ 1,00. O robô opera em USDT e desconta 10% apenas do lucro realizado em dólar.</p><p>No pagamento via Pix/cartão, o valor em reais será convertido pela cotação do dólar/USDT do momento para liberar ENV.</p><div className="alert">Quando o ENV zerar, o robô bloqueia novas entradas, encerra a cesta conforme segurança e solicita recarga.</div></div>}
 function BinanceSettings({user,setState,setAccountMode}){
   const [apiKey,setApiKey]=useState('');
   const [apiSecret,setApiSecret]=useState('');

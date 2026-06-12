@@ -9,7 +9,9 @@ export function initialPaperState(balanceUsd=1000) {
     targetOrders: [],
     decisions: [],
     realizedProfitUsd: 0,
+    realizedRealProfitUsd: 0,
     feesEnv: 0,
+    realFeesEnv: 0,
     active: false,
     symbol: 'BTCUSDT',
     mode: 'paper',
@@ -23,8 +25,10 @@ function normalizeState(state){
   const n = { ...state };
   if (n.balanceUsd == null) n.balanceUsd = Number(n.balanceBrl || 1000);
   if (n.realizedProfitUsd == null) n.realizedProfitUsd = Number(n.realizedProfitBrl || 0);
+  if (n.realizedRealProfitUsd == null) n.realizedRealProfitUsd = Number(n.realizedRealProfitBrl || 0);
   if (n.envBalance == null) n.envBalance = Number(n.invBalance || 10);
   if (n.feesEnv == null) n.feesEnv = Number(n.feesInv || 0);
+  if (n.realFeesEnv == null) n.realFeesEnv = Number(n.realFeesInv || 0);
   if (n.binanceUsdtBalance == null) n.binanceUsdtBalance = 0;
   if (!n.accountMode) n.accountMode = 'demo';
   if (!Array.isArray(n.targetOrders)) n.targetOrders = [];

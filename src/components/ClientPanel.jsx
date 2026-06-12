@@ -283,7 +283,7 @@ export default function ClientPanel({user}){
   function stopRobot(){ setAnalysisSplash(false); autoOrderRef.current=''; setState(s=>({...s,active:false,lastAutoRealError:''})); }
   function createTargetOrder(){ setState(s=>createTargetPreviewOrder({...s,symbol},symbol,analysis,timeframe)); }
 
-  const tabs=[['dashboard','Dashboard'],['analysis','Análise ao vivo'],['scanner','Radar IA'],['orders','Operações'],['inv','Créditos ENV'],['settings','API Binance'],['training','Treinamento']];
+  const tabs=[['dashboard','Dashboard'],['analysis','Análise ao vivo'],['scanner','Radar IA'],['orders','Operações'],['inv','Créditos ENV'],['settings','API Binance'],['training','Guia de instalação']];
 
   return <div className="robot-dashboard">
     <div className="hero-row">
@@ -704,7 +704,7 @@ function Training(){
   return <div className="training panel panel-glow">
     <div className="training-hero">
       <div>
-        <p className="eyebrow">Treinamento operacional</p>
+        <p className="eyebrow">Guia de instalação</p>
         <h2>Instalar, conectar Binance e operar com o INVCRIPTO</h2>
         <p className="muted">Siga a sequência abaixo para deixar o conector local rodando, salvar a API e iniciar o robô com saldo real.</p>
       </div>
@@ -956,4 +956,5 @@ function buildRadar(analysis){
   });
   return base.sort((a,b)=>b.score-a.score);
 }
+
 

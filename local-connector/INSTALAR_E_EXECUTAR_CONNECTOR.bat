@@ -22,7 +22,19 @@ if errorlevel 1 (
 set "SUPABASE_URL=https://pxczyddzqagzijsipche.supabase.co"
 
 if exist ".env" (
-  echo .env encontrado. Usando configuracao salva.
+  echo .env encontrado. Verificando configuracao salva.
+  findstr /c:"COLE_A_MESMA_APP_ENCRYPTION_KEY_DO_NETLIFY" ".env" >nul 2>nul
+  if not errorlevel 1 (
+    echo.
+    echo Falta preencher a APP_ENCRYPTION_KEY igual ao Netlify.
+    set /p APP_ENCRYPTION_KEY=APP_ENCRYPTION_KEY igual ao Netlify: 
+    if "%APP_ENCRYPTION_KEY%"=="" (
+      echo APP_ENCRYPTION_KEY obrigatorio.
+      pause
+      exit /b 1
+    )
+    powershell -NoProfile -ExecutionPolicy Bypass -Command "(Get-Content '.env') -replace 'APP_ENCRYPTION_KEY=COLE_A_MESMA_APP_ENCRYPTION_KEY_DO_NETLIFY', ('APP_ENCRYPTION_KEY=' + $env:APP_ENCRYPTION_KEY) | Set-Content '.env' -Encoding UTF8"
+  )
 ) else (
   echo Criando .env do conector.
   echo.

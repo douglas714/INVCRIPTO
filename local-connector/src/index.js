@@ -63,6 +63,7 @@ const dashboard = {
   canTrade: null,
   canWithdraw: null,
   credentialStatus: null,
+  lastProtectedOrder: null,
   lastSync: null,
   events: []
 };
@@ -93,6 +94,7 @@ function renderDashboard() {
   console.log(` Trading      : ${dashboard.canTrade === null ? '-' : dashboard.canTrade ? 'habilitado' : 'somente leitura'}`);
   console.log(` Saque        : ${dashboard.canWithdraw === null ? '-' : dashboard.canWithdraw ? 'habilitado (revise)' : 'desativado'}`);
   console.log(` API status   : ${dashboard.credentialStatus || '-'}`);
+  console.log(` Ordem real   : ${dashboard.lastProtectedOrder || '-'}`);
   console.log(` Ultimo sync  : ${dashboard.lastSync || '-'}`);
   console.log('------------------------------------------------------------');
   console.log(' Eventos recentes');
@@ -212,6 +214,73 @@ async function signedAccount({ apiKey, apiSecret, environment }) {
   return { ok: response.ok, status: response.status, payload };
 }
 
+function decimalPlaces(value) {
+  const text = String(value);
+  if (!text.includes('.')) return 0;
+  return text.replace(/0+$/, '').split('.')[1]?.length || 0;
+}
+
+function floorToStep(value, step) {
+  const places = decimalPlaces(step);
+  const stepped = Math.floor((Number(value) + Number.EPSILON) / Number(step)) * Number(step);
+  return Number(stepped.toFixed(places));
+}
+
+function ceilToStep(value, step) {
+  const places = decimalPlaces(step);
+  const stepped = Math.ceil((Number(value) - Number.EPSILON) / Number(step)) * Number(step);
+  return Number(stepped.toFixed(places));
+}
+
+function formatDecimal(value, step) {
+  return Number(value).toFixed(decimalPlaces(step));
+}
+
+async function exchangeInfo(symbol, environment) {
+  const response = await fetch(`${binanceBase(environment)}/api/v3/exchangeInfo?symbol=${encodeURIComponent(symbol)}`);
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(`Falha exchangeInfo ${symbol}: ${JSON.stringify(payload)}`);
+  const info = payload?.symbols?.[0];
+  if (!info) throw new Error(`Par ${symbol} não encontrado na Binance.`);
+  const filters = Object.fromEntries((info.filters || []).map(filter => [filter.filterType, filter]));
+  return {
+    symbol: info.symbol,
+    status: info.status,
+    baseAsset: info.baseAsset,
+    quoteAsset: info.quoteAsset,
+    stepSize: Number(filters.LOT_SIZE?.stepSize || '0.00000001'),
+    minQty: Number(filters.LOT_SIZE?.minQty || '0'),
+    tickSize: Number(filters.PRICE_FILTER?.tickSize || '0.00000001'),
+    minPrice: Number(filters.PRICE_FILTER?.minPrice || '0'),
+    minNotional: Number(filters.NOTIONAL?.minNotional || filters.MIN_NOTIONAL?.minNotional || '5')
+  };
+}
+
+async function signedOrder({ apiKey, apiSecret, environment, params }) {
+  const query = new URLSearchParams({
+    ...params,
+    timestamp: String(Date.now()),
+    recvWindow: '5000'
+  }).toString();
+  const signature = sign(query, apiSecret);
+  const url = `${binanceBase(environment)}/api/v3/order?${query}&signature=${signature}`;
+  const response = await fetch(url, {
+    method: 'POST',
+    headers: { 'X-MBX-APIKEY': apiKey }
+  });
+  const text = await response.text();
+  let payload;
+  try { payload = JSON.parse(text); } catch { payload = { raw: text }; }
+  return { ok: response.ok, status: response.status, payload };
+}
+
+async function currentFreeBalance({ apiKey, apiSecret, environment, asset }) {
+  const account = await signedAccount({ apiKey, apiSecret, environment });
+  if (!account.ok) throw new Error(`Falha ao consultar saldo: ${JSON.stringify(account.payload)}`);
+  const row = (account.payload?.balances || []).find(item => item.asset === asset);
+  return Number(row?.free || 0);
+}
+
 async function ticker(symbol) {
   const response = await fetch(`${cfg.spotUrl}/api/v3/ticker/24hr?symbol=${encodeURIComponent(symbol)}`);
   const payload = await response.json().catch(() => ({}));
@@ -268,6 +337,138 @@ async function handleValidateApi(command) {
   };
 }
 
+async function handleProtectedSpotBuy(command) {
+  const payload = command.payload || {};
+  const environment = payload.environment === 'testnet' ? 'testnet' : 'live';
+  const symbol = String(payload.symbol || 'BTCUSDT').toUpperCase();
+  const requestedQuote = Number(payload.quoteOrderQty || payload.valueUsdt || 0);
+  const targetPriceRaw = Number(payload.targetPrice || payload.recoveryTarget || 0);
+  const reason = String(payload.reason || 'Entrada protegida INVCRIPTO');
+
+  if (!requestedQuote || requestedQuote <= 0) throw new Error('Valor USDT da compra nao informado.');
+  if (!targetPriceRaw || targetPriceRaw <= 0) throw new Error('Preco de venda alvo nao informado.');
+
+  const credential = await getCredential(command.user_id, environment);
+  const apiKey = decryptSecret(credential.api_key_encrypted);
+  const apiSecret = decryptSecret(credential.api_secret_encrypted);
+  const account = await signedAccount({ apiKey, apiSecret, environment });
+  if (!account.ok) throw new Error(`Binance rejeitou conta: ${JSON.stringify(account.payload)}`);
+  if (!account.payload?.canTrade) throw new Error('API Binance esta sem permissao de trading.');
+
+  const filters = await exchangeInfo(symbol, environment);
+  if (filters.status !== 'TRADING') throw new Error(`Par ${symbol} nao esta liberado para trading.`);
+
+  const usdt = (account.payload?.balances || []).find(item => item.asset === 'USDT');
+  const availableUsdt = Number(usdt?.free || 0);
+  const safeMinimum = Math.max(filters.minNotional * 1.02, 5);
+  const quoteOrderQty = Math.max(requestedQuote, safeMinimum);
+  if (quoteOrderQty > availableUsdt) {
+    throw new Error(`Saldo USDT insuficiente. Necessario ${quoteOrderQty.toFixed(2)} USDT, disponivel ${availableUsdt.toFixed(8)} USDT.`);
+  }
+
+  const compactId = command.id.replaceAll('-', '');
+  const buyClientOrderId = `INVBUY_${compactId.slice(0, 24)}`;
+  const buy = await signedOrder({
+    apiKey,
+    apiSecret,
+    environment,
+    params: {
+      symbol,
+      side: 'BUY',
+      type: 'MARKET',
+      quoteOrderQty: quoteOrderQty.toFixed(2),
+      newClientOrderId: buyClientOrderId,
+      newOrderRespType: 'FULL'
+    }
+  });
+  if (!buy.ok) throw new Error(`Compra Binance rejeitada: ${JSON.stringify(buy.payload)}`);
+
+  const executedQty = Number(buy.payload?.executedQty || 0);
+  const cummulativeQuoteQty = Number(buy.payload?.cummulativeQuoteQty || quoteOrderQty);
+  const avgPrice = executedQty > 0 ? cummulativeQuoteQty / executedQty : 0;
+  const sellPrice = ceilToStep(Math.max(targetPriceRaw, avgPrice * 1.005), filters.tickSize);
+  const freeBase = await currentFreeBalance({ apiKey, apiSecret, environment, asset: filters.baseAsset });
+  const sellQty = floorToStep(Math.min(executedQty, freeBase), filters.stepSize);
+  const sellNotional = sellQty * sellPrice;
+
+  if (sellQty < filters.minQty || sellNotional < filters.minNotional) {
+    throw new Error(`Compra executada, mas quantidade abaixo do minimo para venda. Qtd ${sellQty}, notional ${sellNotional.toFixed(8)}.`);
+  }
+
+  const sellClientOrderId = `INVSELL_${compactId.slice(0, 23)}`;
+  const sell = await signedOrder({
+    apiKey,
+    apiSecret,
+    environment,
+    params: {
+      symbol,
+      side: 'SELL',
+      type: 'LIMIT',
+      timeInForce: 'GTC',
+      quantity: formatDecimal(sellQty, filters.stepSize),
+      price: formatDecimal(sellPrice, filters.tickSize),
+      newClientOrderId: sellClientOrderId,
+      newOrderRespType: 'FULL'
+    }
+  });
+  if (!sell.ok) throw new Error(`Venda protegida Binance rejeitada: ${JSON.stringify(sell.payload)}`);
+
+  const { error: orderLogError } = await supabase.from('real_orders').insert([
+    {
+      user_id: command.user_id,
+      environment,
+      symbol,
+      side: 'BUY',
+      order_type: 'MARKET',
+      status: String(buy.payload?.status || 'FILLED').toLowerCase(),
+      client_order_id: buyClientOrderId,
+      binance_order_id: String(buy.payload?.orderId || ''),
+      quote_order_qty: quoteOrderQty,
+      quantity: executedQty,
+      price: avgPrice,
+      executed_qty: executedQty,
+      cummulative_quote_qty: cummulativeQuoteQty,
+      reason,
+      raw_response: buy.payload
+    },
+    {
+      user_id: command.user_id,
+      environment,
+      symbol,
+      side: 'SELL',
+      order_type: 'LIMIT',
+      status: String(sell.payload?.status || 'NEW').toLowerCase(),
+      client_order_id: sellClientOrderId,
+      binance_order_id: String(sell.payload?.orderId || ''),
+      quantity: sellQty,
+      price: sellPrice,
+      reason: 'Venda protegida criada imediatamente apos compra',
+      raw_response: sell.payload
+    }
+  ]);
+  if (orderLogError) throw new Error(`Ordens criadas na Binance, mas falhou auditoria Supabase: ${orderLogError.message}`);
+
+  dashboard.lastProtectedOrder = `${symbol} BUY ${quoteOrderQty.toFixed(2)} -> SELL ${formatDecimal(sellQty, filters.stepSize)} @ ${formatDecimal(sellPrice, filters.tickSize)}`;
+  dashboard.lastUsdt = Math.max(0, availableUsdt - quoteOrderQty);
+  dashboard.lastSync = new Date().toLocaleString('pt-BR');
+
+  return {
+    environment,
+    symbol,
+    buyOrderId: buy.payload?.orderId,
+    sellOrderId: sell.payload?.orderId,
+    quoteOrderQty,
+    executedQty,
+    avgPrice,
+    sellQty,
+    sellPrice,
+    minNotional: filters.minNotional,
+    stepSize: filters.stepSize,
+    tickSize: filters.tickSize,
+    protected: true
+  };
+}
+
 async function executeCommand(command) {
   switch (String(command.command_type || '').toUpperCase()) {
     case 'VALIDATE_BINANCE_API':
@@ -282,6 +483,8 @@ async function executeCommand(command) {
       const limit = Number(command.payload?.limit || 320);
       return klines(symbol, interval, limit);
     }
+    case 'EXECUTE_PROTECTED_SPOT_BUY':
+      return handleProtectedSpotBuy(command);
     default:
       throw new Error(`Comando não suportado: ${command.command_type}`);
   }

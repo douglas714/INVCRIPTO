@@ -34,17 +34,24 @@ export async function handler(event) {
   const score = Number(body.score || 0);
   const reason = String(body.reason || 'Entrada protegida INVCRIPTO').slice(0, 500);
 
-  if (!manualUserId) return json(400, { error: 'Usuario nao informado.' });
   if (!allowedSymbols.has(symbol)) return json(400, { error: 'Par nao permitido para operacao real.' });
   if (!quoteOrderQty || quoteOrderQty <= 0) return json(400, { error: 'Valor da compra em USDT obrigatorio.' });
   if (!targetPrice || targetPrice <= 0) return json(400, { error: 'Preco alvo de venda obrigatorio.' });
   if (environment === 'live' && score < 78) return json(400, { error: 'Score insuficiente para conta real.' });
 
   const supabase = createClient(supabaseUrl, serviceKey, { auth: { persistSession: false } });
+  const token = (event.headers.authorization || event.headers.Authorization || '').replace(/^Bearer\s+/i, '');
+  let userId = manualUserId;
+  if (!userId && token) {
+    const { data: authData } = await supabase.auth.getUser(token);
+    userId = authData?.user?.id || '';
+  }
+  if (!userId) return json(400, { error: 'Usuario nao informado.' });
+
   const { data: profile, error: profileError } = await supabase
     .from('profiles')
     .select('id,email,status')
-    .eq('id', manualUserId)
+    .eq('id', userId)
     .maybeSingle();
 
   if (profileError || !profile || profile.status !== 'active') return json(401, { error: 'Perfil manual invalido ou bloqueado.' });
@@ -53,7 +60,7 @@ export async function handler(event) {
   const { data: credential, error: credentialError } = await supabase
     .from('binance_api_credentials')
     .select('id,can_trade,status,real_usdt_free')
-    .eq('user_id', manualUserId)
+    .eq('user_id', userId)
     .eq('environment', environment)
     .order('updated_at', { ascending: false })
     .limit(1)
@@ -66,7 +73,7 @@ export async function handler(event) {
   const { data: command, error: commandError } = await supabase
     .from('connector_commands')
     .insert({
-      user_id: manualUserId,
+      user_id: userId,
       command_type: 'EXECUTE_PROTECTED_SPOT_BUY',
       payload: {
         environment,

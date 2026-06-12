@@ -346,6 +346,22 @@ async function signedOrder({ apiKey, apiSecret, environment, params }) {
   return { ok: response.ok, status: response.status, payload };
 }
 
+async function signedGetOrder({ apiKey, apiSecret, environment, symbol, orderId }) {
+  const query = new URLSearchParams({
+    symbol,
+    orderId: String(orderId),
+    timestamp: String(Date.now()),
+    recvWindow: '5000'
+  }).toString();
+  const signature = sign(query, apiSecret);
+  const url = `${binanceBase(environment)}/api/v3/order?${query}&signature=${signature}`;
+  const response = await fetch(url, { headers: { 'X-MBX-APIKEY': apiKey } });
+  const text = await response.text();
+  let payload;
+  try { payload = JSON.parse(text); } catch { payload = { raw: text }; }
+  return { ok: response.ok, status: response.status, payload };
+}
+
 async function currentFreeBalance({ apiKey, apiSecret, environment, asset }) {
   const account = await signedAccount({ apiKey, apiSecret, environment });
   if (!account.ok) throw new Error(`Falha ao consultar saldo: ${JSON.stringify(account.payload)}`);
@@ -482,7 +498,7 @@ async function handleProtectedSpotBuy(command) {
   });
   if (!sell.ok) throw new Error(`Venda protegida Binance rejeitada: ${JSON.stringify(sell.payload)}`);
 
-  const { error: orderLogError } = await insertRows('real_orders', [
+  const { data: buyRows, error: buyLogError } = await insertRows('real_orders', [
     {
       user_id: command.user_id,
       environment,
@@ -490,6 +506,8 @@ async function handleProtectedSpotBuy(command) {
       side: 'BUY',
       order_type: 'MARKET',
       status: String(buy.payload?.status || 'FILLED').toLowerCase(),
+      protection_role: 'entry',
+      timeframe,
       client_order_id: buyClientOrderId,
       binance_order_id: String(buy.payload?.orderId || ''),
       quote_order_qty: quoteOrderQty,
@@ -499,7 +517,12 @@ async function handleProtectedSpotBuy(command) {
       cummulative_quote_qty: cummulativeQuoteQty,
       reason,
       raw_response: buy.payload
-    },
+    }
+  ]);
+  if (buyLogError) throw new Error(`Compra criada na Binance, mas falhou auditoria Supabase: ${buyLogError.message}`);
+  const buyAuditId = Array.isArray(buyRows) ? buyRows[0]?.id : buyRows?.id;
+
+  const { error: sellLogError } = await insertRows('real_orders', [
     {
       user_id: command.user_id,
       environment,
@@ -507,6 +530,9 @@ async function handleProtectedSpotBuy(command) {
       side: 'SELL',
       order_type: 'LIMIT',
       status: String(sell.payload?.status || 'NEW').toLowerCase(),
+      linked_order_id: buyAuditId || null,
+      protection_role: 'take_profit',
+      timeframe,
       client_order_id: sellClientOrderId,
       binance_order_id: String(sell.payload?.orderId || ''),
       quantity: sellQty,
@@ -515,7 +541,7 @@ async function handleProtectedSpotBuy(command) {
       raw_response: sell.payload
     }
   ]);
-  if (orderLogError) throw new Error(`Ordens criadas na Binance, mas falhou auditoria Supabase: ${orderLogError.message}`);
+  if (sellLogError) throw new Error(`Ordens criadas na Binance, mas falhou auditoria da venda Supabase: ${sellLogError.message}`);
 
   dashboard.lastProtectedOrder = `${symbol} BUY ${quoteOrderQty.toFixed(2)} -> SELL ${formatDecimal(sellQty, filters.stepSize)} @ ${formatDecimal(sellPrice, filters.tickSize)}`;
   dashboard.lastUsdt = Math.max(0, availableUsdt - quoteOrderQty);
@@ -536,6 +562,75 @@ async function handleProtectedSpotBuy(command) {
     tickSize: filters.tickSize,
     protected: true
   };
+}
+
+async function monitorProtectedSells() {
+  const { data: sellOrders, error } = await selectRows('real_orders', {
+    select: '*',
+    filters: ['side=eq.SELL', 'status=in.(new,open,partially_filled)'],
+    order: 'created_at.asc',
+    limit: 20
+  });
+  if (error) {
+    await log('warn', 'monitor_real_orders_skip', `Monitor de ordens reais aguardando schema: ${error.message}`);
+    return;
+  }
+  for (const sellOrder of sellOrders || []) {
+    try {
+      const environment = sellOrder.environment === 'testnet' ? 'testnet' : 'live';
+      const credential = await getCredential(sellOrder.user_id, environment);
+      const apiKey = decryptSecret(credential.api_key_encrypted);
+      const apiSecret = decryptSecret(credential.api_secret_encrypted);
+      const remote = await signedGetOrder({
+        apiKey,
+        apiSecret,
+        environment,
+        symbol: sellOrder.symbol,
+        orderId: sellOrder.binance_order_id
+      });
+      if (!remote.ok) throw new Error(`Consulta ordem Binance falhou: ${JSON.stringify(remote.payload)}`);
+      const status = String(remote.payload?.status || sellOrder.status || '').toLowerCase();
+      const executedQty = Number(remote.payload?.executedQty || sellOrder.executed_qty || 0);
+      const quoteFilled = Number(remote.payload?.cummulativeQuoteQty || 0);
+      await updateRows('real_orders', {
+        status,
+        executed_qty: executedQty,
+        cummulative_quote_qty: quoteFilled,
+        raw_response: remote.payload
+      }, [eqFilter('id', sellOrder.id)]);
+
+      if (status !== 'filled') continue;
+      let entry = null;
+      if (sellOrder.linked_order_id) {
+        const found = await maybeSingle('real_orders', { filters: [eqFilter('id', sellOrder.linked_order_id)] });
+        entry = found.data;
+      }
+      const cost = Number(entry?.cummulative_quote_qty || entry?.quote_order_qty || 0);
+      const profitUsdt = quoteFilled - cost;
+      const feeEnv = Math.max(0, profitUsdt * 0.10);
+      if (profitUsdt > 0) {
+        const wallet = await maybeSingle('inv_wallets', { filters: [eqFilter('user_id', sellOrder.user_id)] });
+        const currentEnv = Number(wallet.data?.balance_inv || 0);
+        await insertRows('profit_events', [{
+          user_id: sellOrder.user_id,
+          symbol: sellOrder.symbol,
+          profit_usdt: profitUsdt,
+          profit_brl: profitUsdt,
+          fee_percent: 10,
+          fee_inv: feeEnv,
+          inv_charged: true
+        }]);
+        await updateRows('inv_wallets', {
+          balance_inv: Math.max(0, currentEnv - feeEnv)
+        }, [eqFilter('user_id', sellOrder.user_id)]).catch(() => null);
+      }
+      dashboard.lastMessage = `Venda fechada ${sellOrder.symbol}: lucro ${profitUsdt.toFixed(4)} USDT`;
+      dashboard.lastSync = new Date().toLocaleString('pt-BR');
+      pushEvent('info', 'real_order_closed', dashboard.lastMessage);
+    } catch (error) {
+      await log('warn', 'monitor_real_order_error', String(error?.message || error), { orderId: sellOrder.id });
+    }
+  }
 }
 
 async function executeCommand(command) {
@@ -594,6 +689,7 @@ async function processLoop() {
 
   try {
   await heartbeat('online', { pid: process.pid });
+  await monitorProtectedSells();
   const command = await claimNextCommand();
   if (!command) {
     dashboard.lastCommand = 'Aguardando comandos';

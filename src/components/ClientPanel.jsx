@@ -49,6 +49,7 @@ export default function ClientPanel({user}){
   const [accountMode,setAccountMode]=useState(()=>localStorage.getItem('df_account_mode') || state.accountMode || 'demo');
   const [liveTicker,setLiveTicker]=useState(null);
   const [marketStatus,setMarketStatus]=useState('Sincronizando mercado');
+  const autoOrderRef = useRef('');
   const lastPrice=Number(liveTicker?.lastPrice || liveTicker?.price || candles.at(-1)?.close || 0);
   const analysis = useMemo(()=>analyzeMarket(candles),[candles]);
   const radar = useMemo(()=>buildRadar(analysis, symbol),[analysis, symbol]);
@@ -144,6 +145,79 @@ export default function ClientPanel({user}){
     tick(); const t=setInterval(tick,2500); return()=>{closed=true;clearInterval(t)};
   },[symbol]);
   useEffect(()=>{ if(state.active && candles.length){ const t=setInterval(()=>setState(s=>runPaperDecision({...s,symbol,accountMode},candles)),9000); return()=>clearInterval(t) }},[state.active,candles,symbol,accountMode]);
+  useEffect(()=>{
+    if(!hasSupabase || !state.active || accountMode !== 'live') return;
+    if(!analysis?.orderPlan || analysis.action !== 'BUY' || Number(analysis.score || 0) < 78) return;
+    if(!state.apiConnected || !state.binanceCanTrade || Number(state.envBalance || 0) <= 0) return;
+    const plan = analysis.orderPlan;
+    const liveBalance = Number(state.binanceUsdtBalance || 0);
+    const quoteOrderQty = liveBalance > 0 ? Math.max(5, Math.min(10, liveBalance * 0.55)) : 0;
+    if(quoteOrderQty < 5) return;
+    const setupKey = `${user?.id || 'user'}:${symbol}:${timeframe}:${Math.round(plan.entry * 1000000)}:${Math.round(plan.recoveryTarget * 1000000)}:${analysis.score}`;
+    if(autoOrderRef.current === setupKey || state.lastAutoRealSetupKey === setupKey) return;
+    autoOrderRef.current = setupKey;
+
+    let cancelled = false;
+    async function queueAutoOrder(){
+      try{
+        const { data } = await supabase.auth.getSession();
+        const token = data?.session?.access_token;
+        const manualUserId = user?.manual_profile ? user.id : null;
+        const response = await fetch('/.netlify/functions/binance-protected-order', {
+          method:'POST',
+          headers:{ 'content-type':'application/json', ...(token ? { authorization:`Bearer ${token}` } : {}) },
+          body:JSON.stringify({
+            manualUserId,
+            manualEmail:user?.email || '',
+            environment:'live',
+            symbol,
+            quoteOrderQty,
+            targetPrice:plan.recoveryTarget,
+            timeframe,
+            score:Number(analysis.score || 0),
+            reason:`Auto Trading INVCRIPTO: ${analysis.reason || 'setup BUY confirmado'}`
+          })
+        });
+        const payload = await response.json().catch(()=>({}));
+        if(cancelled) return;
+        if(!response.ok || !payload?.ok) throw new Error(payload.error || 'Falha ao enfileirar ordem real.');
+        setState(s=>({
+          ...s,
+          lastAutoRealSetupKey: setupKey,
+          lastAutoRealCommandId: payload.connectorCommandId,
+          orders: [{
+            id: payload.connectorCommandId || crypto.randomUUID(),
+            at: new Date().toISOString(),
+            side:'REAL_QUEUED',
+            symbol,
+            qty: quoteOrderQty / (plan.entry || lastPrice || 1),
+            price: plan.entry || lastPrice || 0,
+            valueUsd: quoteOrderQty,
+            reason:'Compra real + venda protegida enviadas ao conector local'
+          }, ...s.orders].slice(0,80)
+        }));
+      } catch(err) {
+        if(cancelled) return;
+        setState(s=>({
+          ...s,
+          lastAutoRealSetupKey: setupKey,
+          lastAutoRealError: String(err?.message || err),
+          orders: [{
+            id: crypto.randomUUID(),
+            at: new Date().toISOString(),
+            side:'REAL_ERROR',
+            symbol,
+            qty:0,
+            price:lastPrice || 0,
+            valueUsd:0,
+            reason:String(err?.message || err)
+          }, ...s.orders].slice(0,80)
+        }));
+      }
+    }
+    queueAutoOrder();
+    return()=>{cancelled=true};
+  },[state.active,accountMode,analysis,symbol,timeframe,state.apiConnected,state.binanceCanTrade,state.envBalance,state.binanceUsdtBalance,user?.id]);
 
   function operateRecommended(){ setSymbol(recommended.symbol); setSelectionMode('recommended'); setState(s=>({...s,active:true,symbol:recommended.symbol,accountMode})); }
   function operateSelected(){ setSelectionMode('manual_assisted'); setState(s=>({...s,active:true,symbol,accountMode})); }
@@ -362,7 +436,7 @@ function TradingControl({state,setState,symbol,setSymbol,analysis,recommended,op
     <div className="recommend-line"><strong>{recommended.symbol?.replace('USDT','/USDT')}</strong><span>{recommended.score}/100</span></div>
     <label>Conta de operação</label>
     <div className="mode-buttons"><button className={accountMode==='demo'?'active':''} type="button" onClick={()=>setAccountMode('demo')} disabled={locked}>Demo</button><button className={accountMode==='live'?'active':''} type="button" onClick={()=>setAccountMode('live')} disabled={locked}>Real Spot</button></div>
-    <small className="sync">{locked?'Pause o robô para alterar estratégia, moeda ou conta.':accountMode==='demo'?'Conta demo não consome ENV.':'Conta real consome ENV somente sobre lucro realizado.'}</small>
+    <small className="sync">{locked?'Robô ativo: estratégia travada. Em conta real, oportunidades com score >= 78 enviam compra + venda automaticamente.':accountMode==='demo'?'Conta demo não consome ENV.':'Conta real consome ENV somente sobre lucro realizado.'}</small>
     <div className="switch-row"><span>Auto Trading</span><button className={state.active?'switch on':'switch'} onClick={()=>setState(s=>({...s,active:!s.active}))}/></div>
     <button className="btn ghost" type="button" onClick={createTargetOrder} disabled={locked || !canPreview}><TrendingUp size={16}/> Criar ordem alvo 1</button>
     <button className="btn primary gold-btn" onClick={operateRecommended} disabled={locked}><Play size={16}/> Operar recomendado</button>
@@ -450,7 +524,7 @@ function TargetOrderPreview({state,symbol,timeframe,analysis,createTargetOrder,a
     }
   }
 
-  return <div className="info-card panel-glow"><h3>Ordem alvo 1</h3><div className="pair-row"><span className="badge ok">{view.status}</span><strong>{symbol.replace('USDT','/USDT')}</strong></div><p><span>Timeframe:</span><b>{String(view.timeframe || '15m').toUpperCase()}</b></p><p><span>Tipo:</span><b>{accountMode==='live'?'Compra mercado + venda limite Binance':'Compra limite paper'}</b></p><p><span>Entrada mão 1:</span><b>{view.price.toFixed(6)}</b></p><p><span>Quantidade estimada:</span><b>{num(view.qty,8)}</b></p><p><span>Valor mão 1:</span><b>{usd(view.valueUsd)}</b></p><p><span>Stop estrutural:</span><b>{view.stopLoss.toFixed(6)}</b></p><p><span>Alvo 1:</span><b>{view.target1.toFixed(6)}</b></p><p><span>Venda protegida:</span><b>{view.recoveryTarget?.toFixed?.(6) || '-'}</b></p><p><span>Risco / ganho alvo 1:</span><b>{usd(view.riskUsd)} / {usd(view.potentialProfitUsd)}</b></p><p><span>R/R:</span><b>{num(view.riskReward,2)}</b></p><p><span>Confiança:</span><b>{view.confidence}/100</b></p>{view.ladder?.length&&<div><h4>Martingale controlado</h4>{view.ladder.map(hand=><p key={hand.level}><span>{hand.label} x{hand.multiplier}:</span><b>{hand.entry.toFixed(6)}</b></p>)}</div>}<button className="btn primary small" type="button" onClick={createTargetOrder}>Salvar prévia alvo 1</button>{accountMode==='live'&&<button className="btn danger small" type="button" onClick={sendProtectedOrder} disabled={sending}>{sending?'Enviando...':'Enviar compra protegida real'}</button>}{message&&<div className="alert">{message}</div>}</div>
+  return <div className="info-card panel-glow"><h3>Ordem alvo 1</h3><div className="pair-row"><span className="badge ok">{view.status}</span><strong>{symbol.replace('USDT','/USDT')}</strong></div><p><span>Timeframe:</span><b>{String(view.timeframe || '15m').toUpperCase()}</b></p><p><span>Tipo:</span><b>{accountMode==='live'?'Compra mercado + venda limite Binance':'Compra limite paper'}</b></p><p><span>Entrada mão 1:</span><b>{view.price.toFixed(6)}</b></p><p><span>Quantidade estimada:</span><b>{num(view.qty,8)}</b></p><p><span>Valor mão 1:</span><b>{usd(view.valueUsd)}</b></p><p><span>Stop estrutural:</span><b>{view.stopLoss.toFixed(6)}</b></p><p><span>Alvo 1:</span><b>{view.target1.toFixed(6)}</b></p><p><span>Venda protegida:</span><b>{view.recoveryTarget?.toFixed?.(6) || '-'}</b></p><p><span>Risco / ganho alvo 1:</span><b>{usd(view.riskUsd)} / {usd(view.potentialProfitUsd)}</b></p><p><span>R/R:</span><b>{num(view.riskReward,2)}</b></p><p><span>Confiança:</span><b>{view.confidence}/100</b></p>{view.ladder?.length&&<div><h4>Martingale controlado</h4>{view.ladder.map(hand=><p key={hand.level}><span>{hand.label} x{hand.multiplier}:</span><b>{hand.entry.toFixed(6)}</b></p>)}</div>}<button className="btn primary small" type="button" onClick={createTargetOrder}>Salvar prévia alvo 1</button>{accountMode==='live'&&<button className="btn danger small" type="button" onClick={sendProtectedOrder} disabled={sending || state.active}>{sending?'Enviando...':state.active?'Envio automático ativo':'Enviar compra agora (manual)'}</button>}{message&&<div className="alert">{message}</div>}</div>
 }
 function RecommendedCard({recommended,symbol,analysis,setSymbol,operateRecommended}){
   const isCurrent = recommended.symbol === symbol;

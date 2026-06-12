@@ -53,16 +53,19 @@ export default function ClientPanel({user}){
   const autoOrderRef = useRef('');
   const lastPrice=Number(liveTicker?.lastPrice || liveTicker?.price || candles.at(-1)?.close || 0);
   const analysis = useMemo(()=>analyzeMarket(candles),[candles]);
-  const radar = useMemo(()=>buildRadar(analysis, symbol),[analysis, symbol]);
+  const radar = useMemo(()=>buildRadar(analysis),[analysis]);
   const recommended = radar[0] || {symbol:'BTCUSDT',score:0,hold:0};
 
   useEffect(()=>{localStorage.setItem('df_paper_state',JSON.stringify({...state,symbol,accountMode}))},[state,symbol,accountMode]);
   useEffect(()=>{localStorage.setItem('df_account_mode',accountMode); setState(s=>({...s,accountMode}));},[accountMode]);
   useEffect(()=>{
-    if(selectionMode === 'recommended' && recommended.symbol && recommended.symbol !== symbol){
+    if(state.active && selectionMode === 'recommended' && recommended.symbol && recommended.symbol !== symbol){
       setSymbol(recommended.symbol);
     }
-  },[selectionMode,recommended.symbol,symbol]);
+  },[state.active,selectionMode,recommended.symbol,symbol]);
+  useEffect(()=>{
+    if(!state.active && analysisSplash) setAnalysisSplash(false);
+  },[state.active,analysisSplash]);
   useEffect(()=>{
     if(!analysisSplash) return;
     const delay = recommended?.symbol && candles.length ? 3600 : 5200;
@@ -232,7 +235,8 @@ export default function ClientPanel({user}){
   },[state.active,accountMode,analysis,symbol,timeframe,state.apiConnected,state.binanceCanTrade,state.envBalance,state.binanceUsdtBalance,user?.id]);
 
   function operateRecommended(){ setAnalysisSplash(true); setActiveTab('dashboard'); setSymbol(recommended.symbol); setSelectionMode('recommended'); setState(s=>({...s,active:true,symbol:recommended.symbol,accountMode,selectionMode:'recommended'})); }
-  function operateSelected(){ setSelectionMode('manual_assisted'); setState(s=>({...s,active:true,symbol,accountMode,selectionMode:'manual_assisted'})); }
+  function operateSelected(){ setAnalysisSplash(false); setSelectionMode('manual_assisted'); setState(s=>({...s,active:true,symbol,accountMode,selectionMode:'manual_assisted'})); }
+  function stopRobot(){ setAnalysisSplash(false); autoOrderRef.current=''; setState(s=>({...s,active:false,lastAutoRealError:''})); }
   function createTargetOrder(){ setState(s=>createTargetPreviewOrder({...s,symbol},symbol,analysis,timeframe)); }
 
   const tabs=[['dashboard','Dashboard'],['analysis','Análise ao vivo'],['scanner','Radar IA'],['orders','Operações'],['inv','Créditos ENV'],['settings','API Binance']];
@@ -251,7 +255,7 @@ export default function ClientPanel({user}){
     <div className="tabbar premium-tabs">{tabs.map(([k,l])=><button key={k} className={activeTab===k?'active':''} onClick={()=>setActiveTab(k)}>{l}</button>)}</div>
 
     {activeTab==='dashboard' && analysisSplash && <AnalysisSplash radar={radar} recommended={recommended} timeframe={timeframe} accountMode={accountMode} onDone={()=>setAnalysisSplash(false)}/>}
-    {activeTab==='dashboard' && !analysisSplash && <Dashboard user={user} state={state} setState={setState} symbol={symbol} setSymbol={setSymbol} timeframe={timeframe} setTimeframe={setTimeframe} candles={candles} analysis={analysis} radar={radar} recommended={recommended} operateRecommended={operateRecommended} operateSelected={operateSelected} createTargetOrder={createTargetOrder} selectionMode={selectionMode} setSelectionMode={setSelectionMode} accountMode={accountMode} setAccountMode={setAccountMode} marketStatus={marketStatus} lastPrice={lastPrice}/>}    
+    {activeTab==='dashboard' && !analysisSplash && <Dashboard user={user} state={state} setState={setState} symbol={symbol} setSymbol={setSymbol} timeframe={timeframe} setTimeframe={setTimeframe} candles={candles} analysis={analysis} radar={radar} recommended={recommended} operateRecommended={operateRecommended} operateSelected={operateSelected} createTargetOrder={createTargetOrder} selectionMode={selectionMode} setSelectionMode={setSelectionMode} accountMode={accountMode} setAccountMode={setAccountMode} marketStatus={marketStatus} lastPrice={lastPrice} stopRobot={stopRobot}/>}    
     {activeTab==='analysis' && <LiveAnalysis symbol={symbol} setSymbol={setSymbol} timeframe={timeframe} setTimeframe={setTimeframe} candles={candles} state={state} analysis={analysis}/>}    
     {activeTab==='scanner' && <Scanner radar={radar} symbol={symbol} setSymbol={setSymbol} operateRecommended={operateRecommended}/>}    
     {activeTab==='orders' && <Orders orders={state.orders}/>}    
@@ -327,14 +331,14 @@ function AnalysisSplash({radar,recommended,timeframe,accountMode,onDone}){
   </div>
 }
 
-function Dashboard({user,state,setState,symbol,setSymbol,timeframe,setTimeframe,candles,analysis,radar,recommended,operateRecommended,operateSelected,createTargetOrder,selectionMode,setSelectionMode,accountMode,setAccountMode,marketStatus,lastPrice}){
+function Dashboard({user,state,setState,symbol,setSymbol,timeframe,setTimeframe,candles,analysis,radar,recommended,operateRecommended,operateSelected,createTargetOrder,selectionMode,setSelectionMode,accountMode,setAccountMode,marketStatus,lastPrice,stopRobot}){
   return <div className="terminal-layout">
     <div className="chart-zone panel-glow">
       <RobotStatusBar state={state} analysis={analysis} accountMode={accountMode} marketStatus={marketStatus} lastPrice={lastPrice}/>
       <ChartHeader symbol={symbol} setSymbol={setSymbol} timeframe={timeframe} setTimeframe={setTimeframe} analysis={analysis}/>
       <TradingChart candles={candles} analysis={analysis} timeframe={timeframe} symbol={symbol}/>
     </div>
-    <TradingControl state={state} setState={setState} symbol={symbol} setSymbol={setSymbol} analysis={analysis} recommended={recommended} operateRecommended={operateRecommended} operateSelected={operateSelected} createTargetOrder={createTargetOrder} selectionMode={selectionMode} setSelectionMode={setSelectionMode} accountMode={accountMode} setAccountMode={setAccountMode}/>
+    <TradingControl state={state} setState={setState} symbol={symbol} setSymbol={setSymbol} analysis={analysis} recommended={recommended} operateRecommended={operateRecommended} operateSelected={operateSelected} createTargetOrder={createTargetOrder} selectionMode={selectionMode} setSelectionMode={setSelectionMode} accountMode={accountMode} setAccountMode={setAccountMode} stopRobot={stopRobot}/>
     <TargetOrderPreview state={state} symbol={symbol} timeframe={timeframe} analysis={analysis} createTargetOrder={createTargetOrder} accountMode={accountMode} user={user}/>
     <RecommendedCard recommended={recommended} symbol={symbol} analysis={analysis} setSymbol={setSymbol} operateRecommended={operateRecommended}/>
     <RecentTrades orders={state.orders}/>
@@ -464,7 +468,7 @@ function TradingChart({candles,analysis,timeframe,symbol}){
   </div>
 }
 
-function TradingControl({state,setState,symbol,setSymbol,analysis,recommended,operateRecommended,operateSelected,createTargetOrder,selectionMode,setSelectionMode,accountMode,setAccountMode}){
+function TradingControl({state,setState,symbol,setSymbol,analysis,recommended,operateRecommended,operateSelected,createTargetOrder,selectionMode,setSelectionMode,accountMode,setAccountMode,stopRobot}){
   const canPreview = Boolean(analysis?.orderPlan);
   const locked = Boolean(state.active);
   const recommendedMode = selectionMode === 'recommended' || selectionMode === 'auto_ai';
@@ -485,7 +489,7 @@ function TradingControl({state,setState,symbol,setSymbol,analysis,recommended,op
     <button className="btn ghost" type="button" onClick={createTargetOrder} disabled={locked || !canPreview}><TrendingUp size={16}/> Criar ordem alvo 1</button>
     <button className="btn primary gold-btn" onClick={operateRecommended} disabled={locked}><Play size={16}/> Operar recomendado</button>
     <button className="btn ghost" onClick={operateSelected} disabled={locked}><ShieldCheck size={16}/> Operar moeda selecionada</button>
-    <button className="btn danger full" onClick={()=>setState(s=>({...s,active:false}))}><StopCircle size={16}/> Parar robô</button>
+    <button className="btn danger full" onClick={stopRobot}><StopCircle size={16}/> Parar robô</button>
     <small className="sync"><span className="live-dot"/> Last sync: 2 sec ago</small>
   </div>
 }
@@ -807,11 +811,12 @@ function OldBinanceSettings({user,setState,setAccountMode}){
   return <div className="panel panel-glow"><h3><KeyRound size={18}/> Configurações Binance</h3><p className="muted">A chave é enviada somente para a Netlify Function, testada na Binance, criptografada no backend e salva no Supabase. O robô opera pares Spot contra USDT.</p><label>Ambiente</label><select value={environment} onChange={e=>setEnvironment(e.target.value)}><option value="testnet">Testnet Spot</option><option value="live">Conta real Spot</option></select><label>API Key</label><input value={apiKey} onChange={e=>setApiKey(e.target.value)} placeholder="Cole a API Key"/><label>Secret Key</label><input type="password" value={apiSecret} onChange={e=>setApiSecret(e.target.value)} placeholder="Cole a Secret Key"/><button className="btn primary gold-btn" type="button" onClick={testAndSave} disabled={loading}>{loading?'Testando...':'Testar conexão e salvar API'}</button>{error&&<div className="alert danger">{error}</div>}{result&&<div className="alert">API validada: {result.apiKeyMasked}. Saldo livre USDT: <b>{usdt(result.usdtFree)}</b>. Trade: <b>{result.canTrade?'habilitado':'somente leitura'}</b>.{result.warning&&<p>{result.warning}</p>}</div>}<div className="alert">Permissões recomendadas: leitura + spot trading. Saque deve estar desativado. Valor BRL fica apenas para recarga, convertido pela cotação do dólar/USDT.</div></div>
 }
 
-function buildRadar(analysis, currentSymbol){
+function buildRadar(analysis){
   const base = allowedSymbols.map((s,idx)=>{
     const seed=radarSeed[s]||{hold:65,liquidity:65};
-    const trendBonus = currentSymbol===s ? Math.min(25, Math.max(0, Number(analysis.score||0)-55)) : Math.max(0, 16-idx);
-    const score = Math.min(96, Math.round(seed.hold*0.22 + seed.liquidity*0.22 + 34 + trendBonus));
+    const marketBonus = Math.min(18, Math.max(0, Number(analysis.score || 0) - 55));
+    const rankBonus = Math.max(0, 18 - idx);
+    const score = Math.min(96, Math.round(seed.hold*0.22 + seed.liquidity*0.22 + 30 + rankBonus + marketBonus * 0.35));
     return {symbol:s, score, hold:seed.hold, liquidity:seed.liquidity};
   });
   return base.sort((a,b)=>b.score-a.score);

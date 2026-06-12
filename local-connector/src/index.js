@@ -1,6 +1,5 @@
 import fs from 'node:fs';
 import crypto from 'node:crypto';
-import { createClient } from '@supabase/supabase-js';
 
 process.stdout?.on?.('error', error => {
   if (error?.code === 'EPIPE') process.exit(0);
@@ -48,9 +47,84 @@ function validateConfig() {
 
 validateConfig();
 
-const supabase = createClient(cfg.supabaseUrl, cfg.supabaseKey, {
-  auth: { persistSession: false }
-});
+const restBaseUrl = `${cfg.supabaseUrl.replace(/\/$/, '')}/rest/v1`;
+
+function restHeaders(extra = {}) {
+  return {
+    apikey: cfg.supabaseKey,
+    authorization: `Bearer ${cfg.supabaseKey}`,
+    'content-type': 'application/json',
+    ...extra
+  };
+}
+
+async function restRequest(path, options = {}) {
+  const response = await fetch(`${restBaseUrl}${path}`, {
+    method: options.method || 'GET',
+    headers: restHeaders(options.headers),
+    body: options.body === undefined ? undefined : JSON.stringify(options.body)
+  });
+  const text = await response.text();
+  const payload = text ? JSON.parse(text) : null;
+  if (!response.ok) {
+    return { data: null, error: { message: payload?.message || payload?.error || text || `HTTP ${response.status}` }, count: null };
+  }
+  const countHeader = response.headers.get('content-range');
+  const count = countHeader?.includes('/') ? Number(countHeader.split('/').pop()) : null;
+  return { data: payload, error: null, count };
+}
+
+function eqFilter(column, value) {
+  return `${encodeURIComponent(column)}=eq.${encodeURIComponent(String(value))}`;
+}
+
+async function selectRows(table, { select = '*', filters = [], order = '', limit = '', count = false } = {}) {
+  const qs = new URLSearchParams({ select });
+  for (const filter of filters) {
+    const [key, ...rest] = filter.split('=');
+    qs.append(key, rest.join('='));
+  }
+  if (order) qs.set('order', order);
+  if (limit) qs.set('limit', String(limit));
+  const headers = count ? { Prefer: 'count=exact' } : {};
+  return restRequest(`/${table}?${qs.toString()}`, { headers });
+}
+
+async function maybeSingle(table, options) {
+  const { data, error } = await selectRows(table, { ...options, limit: 1 });
+  if (error) return { data: null, error };
+  return { data: Array.isArray(data) ? data[0] || null : data || null, error: null };
+}
+
+async function insertRows(table, rows) {
+  return restRequest(`/${table}`, {
+    method: 'POST',
+    headers: { Prefer: 'return=representation' },
+    body: rows
+  });
+}
+
+async function updateRows(table, values, filters = [], single = false) {
+  const qs = filters.length ? `?${filters.join('&')}` : '';
+  const result = await restRequest(`/${table}${qs}`, {
+    method: 'PATCH',
+    headers: { Prefer: 'return=representation' },
+    body: values
+  });
+  if (single && !result.error) {
+    result.data = Array.isArray(result.data) ? result.data[0] || null : result.data;
+  }
+  return result;
+}
+
+async function upsertRow(table, row, onConflict) {
+  const qs = onConflict ? `?on_conflict=${encodeURIComponent(onConflict)}` : '';
+  return restRequest(`/${table}${qs}`, {
+    method: 'POST',
+    headers: { Prefer: 'resolution=merge-duplicates,return=minimal' },
+    body: row
+  });
+}
 
 const dashboard = {
   status: 'Iniciando',
@@ -158,7 +232,7 @@ async function publicIp() {
 
 async function log(level, event, message, data = {}, command = null) {
   try {
-    await supabase.from('connector_logs').insert({
+    await insertRows('connector_logs', {
       node_key: cfg.nodeKey,
       user_id: command?.user_id || null,
       command_id: command?.id || null,
@@ -187,21 +261,15 @@ async function heartbeat(status = 'online', metadata = {}) {
     last_seen_at: new Date().toISOString(),
     metadata
   };
-  const { error } = await supabase
-    .from('connector_nodes')
-    .upsert(row, { onConflict: 'node_key' });
+  const { error } = await upsertRow('connector_nodes', row, 'node_key');
   if (error) console.error('Falha heartbeat:', error.message);
 }
 
 async function getCredential(userId, environment) {
-  const { data, error } = await supabase
-    .from('binance_api_credentials')
-    .select('*')
-    .eq('user_id', userId)
-    .eq('environment', environment)
-    .order('updated_at', { ascending: false })
-    .limit(1)
-    .maybeSingle();
+  const { data, error } = await maybeSingle('binance_api_credentials', {
+    filters: [eqFilter('user_id', userId), eqFilter('environment', environment)],
+    order: 'updated_at.desc'
+  });
   if (error) throw new Error(error.message);
   if (!data) throw new Error(`Nenhuma API Binance salva para ${environment}.`);
   return data;
@@ -316,9 +384,7 @@ async function handleValidateApi(command) {
   const hasSpot = permissions.length ? permissions.includes('SPOT') : true;
   const credentialStatus = canTrade && hasSpot && !canWithdraw ? 'active' : 'review_required';
 
-  await supabase
-    .from('binance_api_credentials')
-    .update({
+  await updateRows('binance_api_credentials', {
       can_read: true,
       can_trade: canTrade,
       can_withdraw: canWithdraw,
@@ -326,8 +392,7 @@ async function handleValidateApi(command) {
       last_test_at: new Date().toISOString(),
       real_usdt_free: Number(usdt.free || 0),
       real_usdt_locked: Number(usdt.locked || 0)
-    })
-    .eq('id', credential.id);
+    }, [eqFilter('id', credential.id)]);
 
   return {
     environment,
@@ -417,7 +482,7 @@ async function handleProtectedSpotBuy(command) {
   });
   if (!sell.ok) throw new Error(`Venda protegida Binance rejeitada: ${JSON.stringify(sell.payload)}`);
 
-  const { error: orderLogError } = await supabase.from('real_orders').insert([
+  const { error: orderLogError } = await insertRows('real_orders', [
     {
       user_id: command.user_id,
       environment,
@@ -495,34 +560,28 @@ async function executeCommand(command) {
 }
 
 async function claimNextCommand() {
-  const pendingCount = await supabase
-    .from('connector_commands')
-    .select('id', { count: 'exact', head: true })
-    .eq('status', 'pending');
+  const pendingCount = await selectRows('connector_commands', {
+    select: 'id',
+    filters: [eqFilter('status', 'pending')],
+    count: true
+  });
   if (!pendingCount.error) dashboard.pending = Number(pendingCount.count || 0);
 
-  const { data, error } = await supabase
-    .from('connector_commands')
-    .select('*')
-    .eq('status', 'pending')
-    .order('created_at', { ascending: true })
-    .limit(1);
+  const { data, error } = await selectRows('connector_commands', {
+    filters: [eqFilter('status', 'pending')],
+    order: 'created_at.asc',
+    limit: 1
+  });
   if (error) throw new Error(error.message);
   const command = data?.[0];
   if (!command) return null;
 
-  const { data: updated, error: updateError } = await supabase
-    .from('connector_commands')
-    .update({
+  const { data: updated, error: updateError } = await updateRows('connector_commands', {
       status: 'running',
       attempts: Number(command.attempts || 0) + 1,
       locked_by: cfg.nodeKey,
       locked_at: new Date().toISOString()
-    })
-    .eq('id', command.id)
-    .eq('status', 'pending')
-    .select('*')
-    .maybeSingle();
+    }, [eqFilter('id', command.id), eqFilter('status', 'pending')], true);
   if (updateError) throw new Error(updateError.message);
   return updated;
 }
@@ -561,28 +620,22 @@ async function processLoop() {
       dashboard.credentialStatus = result.credentialStatus || null;
       dashboard.lastSync = new Date().toLocaleString('pt-BR');
     }
-    await supabase
-      .from('connector_commands')
-      .update({
+    await updateRows('connector_commands', {
         status: 'done',
         result,
         completed_at: new Date().toISOString(),
         error_message: null
-      })
-      .eq('id', command.id);
+      }, [eqFilter('id', command.id)]);
     await log('info', 'command_done', `Comando ${command.command_type} finalizado`, { result }, command);
   } catch (error) {
     dashboard.errors += 1;
     dashboard.lastCommand = command.command_type;
     dashboard.lastMessage = String(error?.message || error);
-    await supabase
-      .from('connector_commands')
-      .update({
+    await updateRows('connector_commands', {
         status: 'error',
         error_message: String(error?.message || error),
         completed_at: new Date().toISOString()
-      })
-      .eq('id', command.id);
+      }, [eqFilter('id', command.id)]);
     await log('error', 'command_error', String(error?.message || error), {}, command);
   }
   dashboard.status = 'Online';

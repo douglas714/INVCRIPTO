@@ -81,19 +81,7 @@ if exist ".env" (
   echo .env criado. As APIs Binance continuam sendo salvas pelo painel do site.
 )
 
-if exist "..\node_modules\@supabase\supabase-js" (
-  echo Dependencias encontradas no projeto principal.
-  set "NODE_PATH=%~dp0..\node_modules"
-) else if exist "node_modules\@supabase\supabase-js" (
-  echo Dependencias encontradas no conector.
-) else (
-  echo.
-  echo Dependencias nao encontradas.
-  echo Rode npm install na pasta principal do projeto ou copie node_modules junto.
-  echo Para evitar travamento, este BAT nao vai baixar pacotes automaticamente.
-  pause
-  exit /b 1
-)
+echo Conector sem dependencias externas. Nenhum npm install necessario.
 
 echo.
 echo Iniciando conector local...

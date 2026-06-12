@@ -15,14 +15,7 @@ if not exist .env (
   exit /b 1
 )
 
-if exist "..\node_modules\@supabase\supabase-js" (
-  set "NODE_PATH=%~dp0..\node_modules"
-) else if not exist "node_modules\@supabase\supabase-js" (
-  echo Dependencias nao encontradas.
-  echo Use o zip completo do projeto ou rode npm install na pasta principal quando sua rede permitir.
-  pause
-  exit /b 1
-)
+echo Conector sem dependencias externas. Nenhum npm install necessario.
 
 node src\index.js
 pause

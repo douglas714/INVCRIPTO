@@ -20,9 +20,7 @@ Use:
 INSTALAR_E_EXECUTAR_CONNECTOR.bat
 ```
 
-O BAT nao executa `npm install`. Ele usa as dependencias do projeto principal ou dependencias ja copiadas junto. Isso evita erro de certificado como `SELF_SIGNED_CERT_IN_CHAIN`.
-
-Se aparecer "Dependencias nao encontradas", use o zip completo do projeto ou rode `npm install` apenas na pasta principal quando sua rede permitir.
+O BAT nao executa `npm install` e nao precisa de `node_modules`. O conector usa apenas recursos nativos do Node.js. Isso evita erro de certificado como `SELF_SIGNED_CERT_IN_CHAIN`.
 
 ## Seguranca
 

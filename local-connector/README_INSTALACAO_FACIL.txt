@@ -11,14 +11,10 @@ Caminho mais simples:
 
 2. Na primeira vez, ele cria ou verifica o .env.
 
-3. Ele NAO baixa dependencias pelo npm.
+3. Ele NAO baixa dependencias pelo npm e nao precisa de node_modules.
    Isso evita o erro SELF_SIGNED_CERT_IN_CHAIN.
 
 4. Deixe a janela aberta.
-
-Se aparecer "Dependencias nao encontradas":
-- Use o zip completo do projeto, porque ele ja tem o node_modules do projeto principal.
-- Ou rode npm install apenas na pasta principal do projeto quando sua rede permitir.
 
 Como testar:
 - Entre no painel do site.

@@ -339,8 +339,8 @@ function TradingChart({candles,analysis,timeframe,symbol}){
       </svg>
       <div className="chart-controls-overlay">
         <button onClick={(e)=>{e.stopPropagation();pan(18)}} title="Voltar no histórico">&lt;</button>
-        <button onClick={(e)=>{e.stopPropagation();zoom('in')}} title="Aproximar">ï¼‹</button>
-        <button onClick={(e)=>{e.stopPropagation();zoom('out')}} title="Afastar">ï¼</button>
+        <button onClick={(e)=>{e.stopPropagation();zoom('in')}} title="Aproximar">+</button>
+        <button onClick={(e)=>{e.stopPropagation();zoom('out')}} title="Afastar">-</button>
         <button onClick={(e)=>{e.stopPropagation();resetLive()}} title="Voltar ao candle atual">LIVE</button>
         <button onClick={(e)=>{e.stopPropagation();pan(-18)}} title="Avançar">&gt;</button>
       </div>
@@ -351,21 +351,22 @@ function TradingChart({candles,analysis,timeframe,symbol}){
 
 function TradingControl({state,setState,symbol,setSymbol,analysis,recommended,operateRecommended,operateSelected,createTargetOrder,selectionMode,setSelectionMode,accountMode,setAccountMode}){
   const canPreview = Boolean(analysis?.orderPlan);
+  const locked = Boolean(state.active);
   return <div className="trade-control panel-glow">
     <h3><span/> Trading Control</h3>
     <label>Modo de escolha</label>
-    <select value={selectionMode} onChange={e=>setSelectionMode(e.target.value)}><option value="recommended">Operar recomendado pela IA</option><option value="manual_assisted">Manual assistido</option><option value="auto_ai">IA escolhe automático</option></select>
+    <select value={selectionMode} onChange={e=>setSelectionMode(e.target.value)} disabled={locked}><option value="recommended">Operar recomendado pela IA</option><option value="manual_assisted">Manual assistido</option><option value="auto_ai">IA escolhe automático</option></select>
     <label>Moeda selecionada</label>
-    <select value={symbol} onChange={e=>setSymbol(e.target.value)}>{allowedSymbols.map(s=><option key={s}>{s}</option>)}</select>
+    <select value={symbol} onChange={e=>setSymbol(e.target.value)} disabled={locked}>{allowedSymbols.map(s=><option key={s}>{s}</option>)}</select>
     <label>Recomendação IA</label>
     <div className="recommend-line"><strong>{recommended.symbol?.replace('USDT','/USDT')}</strong><span>{recommended.score}/100</span></div>
     <label>Conta de operação</label>
-    <div className="mode-buttons"><button className={accountMode==='demo'?'active':''} type="button" onClick={()=>setAccountMode('demo')}>Demo</button><button className={accountMode==='live'?'active':''} type="button" onClick={()=>setAccountMode('live')}>Real Spot</button></div>
-    <small className="sync">{accountMode==='demo'?'Conta demo não consome ENV.':'Conta real consome ENV somente sobre lucro realizado.'}</small>
+    <div className="mode-buttons"><button className={accountMode==='demo'?'active':''} type="button" onClick={()=>setAccountMode('demo')} disabled={locked}>Demo</button><button className={accountMode==='live'?'active':''} type="button" onClick={()=>setAccountMode('live')} disabled={locked}>Real Spot</button></div>
+    <small className="sync">{locked?'Pause o robô para alterar estratégia, moeda ou conta.':accountMode==='demo'?'Conta demo não consome ENV.':'Conta real consome ENV somente sobre lucro realizado.'}</small>
     <div className="switch-row"><span>Auto Trading</span><button className={state.active?'switch on':'switch'} onClick={()=>setState(s=>({...s,active:!s.active}))}/></div>
-    <button className="btn ghost" type="button" onClick={createTargetOrder} disabled={!canPreview}><TrendingUp size={16}/> Criar ordem alvo 1</button>
-    <button className="btn primary gold-btn" onClick={operateRecommended}><Play size={16}/> Operar recomendado</button>
-    <button className="btn ghost" onClick={operateSelected}><ShieldCheck size={16}/> Operar moeda selecionada</button>
+    <button className="btn ghost" type="button" onClick={createTargetOrder} disabled={locked || !canPreview}><TrendingUp size={16}/> Criar ordem alvo 1</button>
+    <button className="btn primary gold-btn" onClick={operateRecommended} disabled={locked}><Play size={16}/> Operar recomendado</button>
+    <button className="btn ghost" onClick={operateSelected} disabled={locked}><ShieldCheck size={16}/> Operar moeda selecionada</button>
     <button className="btn danger full" onClick={()=>setState(s=>({...s,active:false}))}><StopCircle size={16}/> Parar robô</button>
     <small className="sync"><span className="live-dot"/> Last sync: 2 sec ago</small>
   </div>

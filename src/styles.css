@@ -52,3 +52,5 @@ button,input,select{font:inherit}.app-shell{min-height:100vh}.topbar{height:72px
 .chart-controls-overlay button:hover{border-color:#16c957;color:#16c957;box-shadow:0 0 12px rgba(22,201,87,.16)}
 .chart-help{position:absolute;left:14px;bottom:10px;z-index:3;color:rgba(245,235,200,.72);font-size:12px;background:rgba(2,8,5,.62);border:1px solid rgba(216,178,74,.16);border-radius:999px;padding:6px 10px;pointer-events:none}
 .timeframes button:hover{border-color:rgba(216,178,74,.38);color:#fff;background:rgba(216,178,74,.08)}
+button:disabled,select:disabled{opacity:.58;cursor:not-allowed;filter:grayscale(.35)}
+.trade-control button:disabled,.trade-control select:disabled{box-shadow:none}

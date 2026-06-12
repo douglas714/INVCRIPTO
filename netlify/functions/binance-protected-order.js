@@ -70,6 +70,27 @@ export async function handler(event) {
   if (!credential) return json(404, { error: 'Nenhuma API Binance salva para este ambiente.' });
   if (!credential.can_trade) return json(400, { error: 'API Binance salva esta sem permissao de trading.' });
 
+  const { data: recentCommands, error: recentError } = await supabase
+    .from('connector_commands')
+    .select('id,payload,status,created_at')
+    .eq('user_id', userId)
+    .eq('command_type', 'EXECUTE_PROTECTED_SPOT_BUY')
+    .in('status', ['pending', 'running'])
+    .order('created_at', { ascending: false })
+    .limit(20);
+
+  if (recentError) return json(400, { error: recentError.message });
+  const duplicated = (recentCommands || []).find(command =>
+    String(command.payload?.environment || 'live') === environment &&
+    String(command.payload?.symbol || '').toUpperCase() === symbol
+  );
+  if (duplicated) {
+    return json(409, {
+      error: 'Ja existe compra real pendente para este par. O robo vai aguardar a cesta atual antes de abrir outra.',
+      connectorCommandId: duplicated.id
+    });
+  }
+
   const { data: command, error: commandError } = await supabase
     .from('connector_commands')
     .insert({

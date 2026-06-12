@@ -36,6 +36,8 @@ const cfg = {
   testnetUrl: process.env.BINANCE_TESTNET_BASE_URL || 'https://testnet.binance.vision'
 };
 
+const allowedSymbols = ['BTCUSDT','ETHUSDT','BNBUSDT','SOLUSDT','XRPUSDT','ADAUSDT','AVAXUSDT','DOGEUSDT','LINKUSDT','DOTUSDT','LTCUSDT','TRXUSDT'];
+
 function validateConfig() {
   const missing = [];
   if (!cfg.supabaseUrl) missing.push('SUPABASE_URL');
@@ -378,6 +380,35 @@ async function signedGetOrder({ apiKey, apiSecret, environment, symbol, orderId 
   return { ok: response.ok, status: response.status, payload };
 }
 
+async function signedOpenOrders({ apiKey, apiSecret, environment, symbol }) {
+  const params = { timestamp: String(Date.now()), recvWindow: '5000' };
+  if (symbol) params.symbol = symbol;
+  const query = new URLSearchParams(params).toString();
+  const signature = sign(query, apiSecret);
+  const url = `${binanceBase(environment)}/api/v3/openOrders?${query}&signature=${signature}`;
+  const response = await fetch(url, { headers: { 'X-MBX-APIKEY': apiKey } });
+  const text = await response.text();
+  let payload;
+  try { payload = JSON.parse(text); } catch { payload = { raw: text }; }
+  return { ok: response.ok, status: response.status, payload };
+}
+
+async function signedMyTrades({ apiKey, apiSecret, environment, symbol, limit = 100 }) {
+  const query = new URLSearchParams({
+    symbol,
+    limit: String(limit),
+    timestamp: String(Date.now()),
+    recvWindow: '5000'
+  }).toString();
+  const signature = sign(query, apiSecret);
+  const url = `${binanceBase(environment)}/api/v3/myTrades?${query}&signature=${signature}`;
+  const response = await fetch(url, { headers: { 'X-MBX-APIKEY': apiKey } });
+  const text = await response.text();
+  let payload;
+  try { payload = JSON.parse(text); } catch { payload = { raw: text }; }
+  return { ok: response.ok, status: response.status, payload };
+}
+
 async function currentFreeBalance({ apiKey, apiSecret, environment, asset }) {
   const account = await signedAccount({ apiKey, apiSecret, environment });
   if (!account.ok) throw new Error(`Falha ao consultar saldo: ${JSON.stringify(account.payload)}`);
@@ -395,6 +426,65 @@ async function klines(symbol, interval = '15m', limit = 320) {
   const response = await fetch(`${cfg.spotUrl}/api/v3/klines?symbol=${encodeURIComponent(symbol)}&interval=${encodeURIComponent(interval)}&limit=${Number(limit || 320)}`);
   const payload = await response.json().catch(() => []);
   return { ok: response.ok, status: response.status, payload };
+}
+
+function baseAssetFromSymbol(symbol) {
+  return String(symbol || '').replace(/USDT$/i, '');
+}
+
+function hasOpenSellOrder(openOrdersPayload, symbol) {
+  const rows = Array.isArray(openOrdersPayload) ? openOrdersPayload : [];
+  return rows.some(order =>
+    String(order.symbol || '').toUpperCase() === symbol &&
+    String(order.side || '').toUpperCase() === 'SELL' &&
+    Number(order.origQty || 0) > Number(order.executedQty || 0)
+  );
+}
+
+async function estimateAverageBuyPrice({ apiKey, apiSecret, environment, symbol, neededQty }) {
+  const trades = await signedMyTrades({ apiKey, apiSecret, environment, symbol, limit: 100 });
+  if (!trades.ok || !Array.isArray(trades.payload)) return 0;
+  let qty = 0;
+  let quote = 0;
+  const sorted = [...trades.payload].sort((a,b)=>Number(b.time || 0) - Number(a.time || 0));
+  for (const trade of sorted) {
+    if (!trade.isBuyer) continue;
+    const tradeQty = Number(trade.qty || 0);
+    const tradeQuote = Number(trade.quoteQty || 0) || tradeQty * Number(trade.price || 0);
+    if (tradeQty <= 0 || tradeQuote <= 0) continue;
+    const remaining = Math.max(0, Number(neededQty || 0) - qty);
+    const usedQty = remaining > 0 ? Math.min(tradeQty, remaining) : tradeQty;
+    const ratio = usedQty / tradeQty;
+    qty += usedQty;
+    quote += tradeQuote * ratio;
+    if (neededQty && qty >= Number(neededQty)) break;
+  }
+  return qty > 0 ? quote / qty : 0;
+}
+
+async function symbolsTouchedByBot(userId, environment) {
+  const touched = new Set();
+  const { data: orders } = await selectRows('real_orders', {
+    select: 'symbol',
+    filters: [eqFilter('user_id', userId), eqFilter('environment', environment), 'side=eq.BUY'],
+    order: 'created_at.desc',
+    limit: 100
+  });
+  for (const row of orders || []) {
+    const symbol = String(row.symbol || '').toUpperCase();
+    if (allowedSymbols.includes(symbol)) touched.add(symbol);
+  }
+  const { data: commands } = await selectRows('connector_commands', {
+    select: 'payload,command_type,status',
+    filters: [eqFilter('user_id', userId), eqFilter('command_type', 'EXECUTE_PROTECTED_SPOT_BUY')],
+    order: 'created_at.desc',
+    limit: 100
+  });
+  for (const command of commands || []) {
+    const symbol = String(command.payload?.symbol || '').toUpperCase();
+    if (allowedSymbols.includes(symbol)) touched.add(symbol);
+  }
+  return [...touched];
 }
 
 async function handleValidateApi(command) {
@@ -473,6 +563,11 @@ async function handleProtectedSpotBuy(command) {
 
   const filters = await exchangeInfo(symbol, environment);
   if (filters.status !== 'TRADING') throw new Error(`Par ${symbol} nao esta liberado para trading.`);
+
+  const openOrders = await signedOpenOrders({ apiKey, apiSecret, environment, symbol });
+  if (openOrders.ok && hasOpenSellOrder(openOrders.payload, symbol)) {
+    throw new Error(`Cesta ativa detectada em ${symbol}. Ja existe venda aberta na Binance; nova compra M1 bloqueada para evitar ordens repetidas.`);
+  }
 
   const usdt = (account.payload?.balances || []).find(item => item.asset === 'USDT');
   const availableUsdt = Number(usdt?.free || 0);
@@ -777,6 +872,94 @@ async function recoverFailedProtectedBuys() {
   }
 }
 
+async function recoverUnprotectedBotBalances() {
+  const { data: credentials, error } = await selectRows('binance_api_credentials', {
+    select: '*',
+    filters: ['environment=eq.live', 'can_trade=eq.true'],
+    order: 'updated_at.desc',
+    limit: 50
+  });
+  if (error) return;
+  for (const credential of credentials || []) {
+    const environment = credential.environment === 'testnet' ? 'testnet' : 'live';
+    const userId = credential.user_id;
+    if (!userId) continue;
+    try {
+      const symbols = await symbolsTouchedByBot(userId, environment);
+      if (!symbols.length) continue;
+      const apiKey = decryptSecret(credential.api_key_encrypted);
+      const apiSecret = decryptSecret(credential.api_secret_encrypted);
+      const account = await signedAccount({ apiKey, apiSecret, environment });
+      if (!account.ok) continue;
+      const balances = Array.isArray(account.payload?.balances) ? account.payload.balances : [];
+
+      for (const symbol of symbols) {
+        const filters = await exchangeInfo(symbol, environment).catch(() => null);
+        if (!filters || filters.status !== 'TRADING') continue;
+        const baseAsset = baseAssetFromSymbol(symbol);
+        const balance = balances.find(item => item.asset === baseAsset);
+        const freeBase = Number(balance?.free || 0);
+        if (freeBase <= 0) continue;
+
+        const openOrders = await signedOpenOrders({ apiKey, apiSecret, environment, symbol });
+        if (openOrders.ok && hasOpenSellOrder(openOrders.payload, symbol)) continue;
+
+        const pricePayload = await ticker(symbol);
+        const lastPrice = Number(pricePayload.payload?.lastPrice || pricePayload.payload?.weightedAvgPrice || 0);
+        if (!lastPrice || lastPrice <= 0) continue;
+
+        const sellQty = floorToStep(freeBase, filters.stepSize);
+        const avgBuy = await estimateAverageBuyPrice({ apiKey, apiSecret, environment, symbol, neededQty: sellQty }).catch(() => 0);
+        const targetBase = Math.max(avgBuy || 0, lastPrice);
+        const sellPrice = ceilToStep(targetBase * 1.006, filters.tickSize);
+        const sellNotional = sellQty * sellPrice;
+        if (sellQty < filters.minQty || sellNotional < filters.minNotional) continue;
+
+        const clientOrderId = `INVPROTECT_${Date.now().toString(36)}_${symbol.slice(0, 5)}`;
+        const sell = await signedOrder({
+          apiKey,
+          apiSecret,
+          environment,
+          params: {
+            symbol,
+            side: 'SELL',
+            type: 'LIMIT',
+            timeInForce: 'GTC',
+            quantity: formatDecimal(sellQty, filters.stepSize),
+            price: formatDecimal(sellPrice, filters.tickSize),
+            newClientOrderId: clientOrderId.slice(0, 36),
+            newOrderRespType: 'FULL'
+          }
+        });
+        if (!sell.ok) {
+          await log('warn', 'free_balance_sell_rejected', `Venda de protecao rejeitada para ${symbol}: ${JSON.stringify(sell.payload)}`, { sellQty, sellPrice }, { user_id: userId });
+          continue;
+        }
+        await insertRealOrders([{
+          user_id: userId,
+          environment,
+          symbol,
+          side: 'SELL',
+          order_type: 'LIMIT',
+          status: String(sell.payload?.status || 'NEW').toLowerCase(),
+          protection_role: 'recovery_take_profit',
+          timeframe: 'auto',
+          client_order_id: clientOrderId.slice(0, 36),
+          binance_order_id: String(sell.payload?.orderId || ''),
+          quantity: sellQty,
+          price: sellPrice,
+          reason: `Venda protegida automatica para saldo livre. Media ${avgBuy ? avgBuy.toFixed(8) : 'nao estimada'} + alvo 0.6%.`,
+          raw_response: sell.payload
+        }]);
+        await refreshCredentialBalance(credential, apiKey, apiSecret, environment).catch(() => null);
+        await log('info', 'free_balance_sell_created', `Venda protegida criada para saldo livre ${symbol}`, { sellQty, sellPrice, avgBuy, lastPrice }, { user_id: userId });
+      }
+    } catch (error) {
+      await log('warn', 'free_balance_recovery_error', String(error?.message || error), { credentialId: credential.id }, { user_id: userId });
+    }
+  }
+}
+
 async function executeCommand(command) {
   switch (String(command.command_type || '').toUpperCase()) {
     case 'VALIDATE_BINANCE_API':
@@ -835,6 +1018,7 @@ async function processLoop() {
   await heartbeat('online', { pid: process.pid });
   await monitorProtectedSells();
   await recoverFailedProtectedBuys();
+  await recoverUnprotectedBotBalances();
   const command = await claimNextCommand();
   if (!command) {
     dashboard.lastCommand = 'Aguardando comandos';

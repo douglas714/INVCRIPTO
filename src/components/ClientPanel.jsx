@@ -57,6 +57,40 @@ export default function ClientPanel({user}){
   useEffect(()=>{localStorage.setItem('df_paper_state',JSON.stringify({...state,symbol,accountMode}))},[state,symbol,accountMode]);
   useEffect(()=>{localStorage.setItem('df_account_mode',accountMode); setState(s=>({...s,accountMode}));},[accountMode]);
   useEffect(()=>{
+    if(!hasSupabase || !user?.id) return;
+    let closed = false;
+    async function loadBinanceStatus(){
+      try{
+        const { data } = await supabase.auth.getSession();
+        const token = data?.session?.access_token;
+        const manualUserId = user?.manual_profile ? user.id : null;
+        const response = await fetch('/.netlify/functions/binance-status', {
+          method:'POST',
+          headers:{ 'content-type':'application/json', ...(token ? { authorization:`Bearer ${token}` } : {}) },
+          body:JSON.stringify({ manualUserId, manualEmail: user?.email || '', environment:'live' })
+        });
+        const payload = await response.json().catch(()=>({}));
+        if(closed || !response.ok || !payload?.ok) return;
+        if(payload.connected || payload.credentialStatus){
+          setState(s=>({
+            ...s,
+            apiConnected:Boolean(payload.connected),
+            binancePending:payload.credentialStatus === 'pending_connector_validation',
+            binanceCredentialStatus:payload.credentialStatus,
+            binanceUsdtBalance:Number(payload.usdtFree || 0),
+            binanceUsdtLocked:Number(payload.usdtLocked || 0),
+            binanceCanTrade:Boolean(payload.canTrade),
+            accountMode:'live'
+          }));
+          setAccountMode('live');
+        }
+      } catch {}
+    }
+    loadBinanceStatus();
+    const t=setInterval(loadBinanceStatus,15000);
+    return()=>{closed=true;clearInterval(t)};
+  },[user?.id]);
+  useEffect(()=>{
     let closed=false;
     async function load(){
       try{
@@ -140,7 +174,7 @@ function KpiStrip({state,lastPrice,symbol,timeframe,accountMode}){
   return <div className="kpi-strip">
     <MiniKpi icon={<Wallet/>} label="Saldo Demo" value={usd(state.balanceUsd ?? state.balanceBrl ?? 0)} delta="simulação USDT"/>
     <MiniKpi icon={<CreditCard/>} label="ENV" value={`${num(state.envBalance ?? state.invBalance ?? 0,2)} ENV`} delta={accountMode==='live'?'cobra no lucro real':'demo não consome'}/>
-    <MiniKpi icon={<ShieldCheck/>} label="USDT Binance" value={state.apiConnected?usdt(state.binanceUsdtBalance || 0):'Desconectado'} delta={accountMode==='live'?'conta real':'conecte a API'}/>
+    <MiniKpi icon={<ShieldCheck/>} label="USDT Binance" value={state.binancePending?'Validando...':state.apiConnected?usdt(state.binanceUsdtBalance || 0):'Desconectado'} delta={state.binancePending?'conector local':accountMode==='live'?'conta real':'conecte a API'}/>
     <MiniKpi icon={<TrendingUp/>} label="Lucro total" value={usd(state.realizedProfitUsd ?? state.realizedProfitBrl ?? 0)} delta={`${num(state.feesEnv ?? state.feesInv ?? 0,2)} ENV taxa`}/>
     <MiniKpi icon={<Gauge/>} label="Win Rate" value={`${winRate||0}%`} delta="estimado"/>
     <MiniKpi icon={<BarChart3/>} label="Par ativo" value={symbol.replace('USDT','/USDT')} delta={lastPrice?`$ ${lastPrice.toFixed(2)}`:'carregando'}/>
@@ -376,7 +410,7 @@ function INV({state}){const envBalance=state.envBalance ?? state.invBalance ?? 0
 function BinanceSettings({user,setState,setAccountMode}){
   const [apiKey,setApiKey]=useState('');
   const [apiSecret,setApiSecret]=useState('');
-  const [environment,setEnvironment]=useState('testnet');
+  const [environment,setEnvironment]=useState('live');
   const [loading,setLoading]=useState(false);
   const [result,setResult]=useState(null);
   const [error,setError]=useState('');
@@ -409,7 +443,16 @@ function BinanceSettings({user,setState,setAccountMode}){
         throw new Error([payload.error || 'Não foi possível validar a API Binance.', detail].filter(Boolean).join(' '));
       }
       setResult(payload);
-      setState(s=>({...s,apiConnected:true,binanceUsdtBalance:Number(payload.usdtFree||0),accountMode:payload.environment==='live'?'live':'demo'}));
+      setState(s=>({
+        ...s,
+        apiConnected:Boolean(payload.usdtFree || payload.canTrade || payload.credentialStatus === 'active'),
+        binancePending:Boolean(payload.connectorQueued || payload.credentialStatus === 'pending_connector_validation'),
+        binanceCredentialStatus:payload.credentialStatus,
+        binanceUsdtBalance:Number(payload.usdtFree||0),
+        binanceUsdtLocked:Number(payload.usdtLocked||0),
+        binanceCanTrade:Boolean(payload.canTrade),
+        accountMode:payload.environment==='live'?'live':'demo'
+      }));
       setAccountMode(payload.environment==='live'?'live':'demo');
       setApiSecret('');
     } catch(err){

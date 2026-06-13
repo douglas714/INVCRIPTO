@@ -207,6 +207,14 @@ export default function ClientPanel({user}){
     if(!analysis?.orderPlan || analysis.action !== 'BUY' || Number(analysis.score || 0) < 78) return;
     if(!state.apiConnected || !state.binanceCanTrade || Number(state.envBalance || 0) <= 0) return;
     const plan = analysis.orderPlan;
+    const entryZoneLimit = Number(plan.entry || 0) * 1.004;
+    if(Number(lastPrice || 0) > entryZoneLimit) {
+      setState(s=>({
+        ...s,
+        lastAutoRealStatus: `Setup aprovado em ${symbol}, aguardando pullback no suporte. Entrada ate ${entryZoneLimit.toFixed(6)}; preco atual ${Number(lastPrice || 0).toFixed(6)}.`
+      }));
+      return;
+    }
     const liveBalance = Number(state.binanceUsdtBalance || 0);
     const quoteOrderQty = liveBalance >= MIN_REAL_ORDER_USDT ? Math.min(10, Math.max(MIN_REAL_ORDER_USDT, liveBalance * 0.75)) : 0;
     if(quoteOrderQty < MIN_REAL_ORDER_USDT) return;

@@ -64,7 +64,7 @@ export function supportResistance(candles, lookback = 40) {
 function orderPlan({ action, price, support, resistance, atrValue, score }) {
   if (action === 'SELL' || !price || !support || !resistance) return null;
   const volatility = Math.max(price * 0.0025, atrValue || price * 0.004);
-  const entry = price;
+  const entry = Math.min(price, support + volatility * 0.35);
   const stopLoss = Math.max(0, entry - volatility * 1.4);
   const target1 = Math.max(entry + volatility * 1.35, Math.min(resistance, entry + volatility * 2));
   const target2 = Math.max(target1 + volatility * 0.9, resistance);
@@ -127,8 +127,9 @@ export function analyzeMarket(candles) {
   const trendUp = shortTrend && longTrend && macroTrend;
   const trendDown = ema9[i] < ema21[i] && ema21[i] < ema50[i] && last.close < ema50[i];
   const range = Math.max(1e-9, last.high - last.low);
-  const volumeOk = volumes[i] >= (volSma20[i] || volumes[i]) * 0.85;
-  const volumeModerate = volumes[i] >= (volSma20[i] || volumes[i]) * 0.45;
+  const effectiveVolume = Math.max(volumes[i] || 0, volumes[i - 1] || 0);
+  const volumeOk = effectiveVolume >= (volSma20[i] || effectiveVolume) * 0.85;
+  const volumeModerate = effectiveVolume >= (volSma20[i] || effectiveVolume) * 0.45;
   const momentumOk = rsi14[i] >= 48 && rsi14[i] <= 68;
   const rsiRecovering = rsi14[i] > rsi14[i - 1] && rsi14[i - 1] < 55;
   const candleStrength = last.close > last.open && (last.close - last.low) / range > 0.58;

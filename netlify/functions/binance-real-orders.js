@@ -12,7 +12,7 @@ function json(statusCode, body) {
 }
 
 function isSchemaCacheColumnError(error) {
-  return /schema cache|could not find .* column/i.test(String(error?.message || ''));
+  return /schema cache|could not find .* column|column .* does not exist/i.test(String(error?.message || ''));
 }
 
 async function fetchRealOrders(supabase, userId, environment, limit) {

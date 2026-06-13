@@ -267,21 +267,11 @@ export default function ClientPanel({user}){
       const profitTargetPct = Math.max(0.0018, Math.min(0.008, Number(plan.profitTargetPct || 0.005)));
       const estimatedAverage = Number.isFinite(lowestSellPrice) ? lowestSellPrice / (1 + profitTargetPct) : 0;
       const recoveryTrigger = estimatedAverage > 0 ? estimatedAverage * (microScalp ? 0.9975 : 0.996) : 0;
-      const since = Date.now() - 24 * 60 * 60 * 1000;
-      const buyCount = (state.orders || []).filter(order => {
-        const orderSymbol = String(order.symbol || '').replace('/','').toUpperCase();
-        const side = String(order.side || order.rawSide || '').toUpperCase();
-        const at = new Date(order.at || order.created_at || 0).getTime();
-        return orderSymbol === symbol && (order.accountMode === 'live' || side.startsWith('REAL_')) && side.includes('BUY') && at >= since;
-      }).length;
-      const canRecover = recoveryTrigger > 0 && Number(lastPrice || 0) > 0 && Number(lastPrice) <= recoveryTrigger && buyCount < 3;
+      const canRecover = recoveryTrigger > 0 && Number(lastPrice || 0) > 0 && Number(lastPrice) <= recoveryTrigger;
       if(!canRecover) {
-        const reason = buyCount >= 3
-          ? `Cesta ativa em ${symbol}: limite de 3 mãos atingido.`
-          : `Cesta ativa em ${symbol}: aguardando gatilho de recuperação.`;
         setState(s=>({
           ...s,
-          lastAutoRealStatus: reason
+          lastAutoRealStatus: `Cesta ativa em ${symbol}: aguardando gatilho de recuperação.`
         }));
         return;
       }

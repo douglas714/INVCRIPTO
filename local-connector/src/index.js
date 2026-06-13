@@ -486,6 +486,44 @@ async function recentBasketBuyCount(userId, environment, symbol) {
   return Math.max(1, Array.isArray(data) ? data.length : 1);
 }
 
+async function activeBasketFromOrders({ userId, environment, symbol, neededQty, referenceTime }) {
+  const until = new Date(new Date(referenceTime || Date.now()).getTime() + 5 * 60 * 1000).toISOString();
+  const { data } = await selectRows('real_orders', {
+    select: 'id,side,status,created_at,quantity,cummulative_quote_qty,price,reason',
+    filters: [
+      eqFilter('user_id', userId),
+      eqFilter('environment', environment),
+      eqFilter('symbol', symbol),
+      'side=eq.BUY',
+      'status=in.(filled,partially_filled)',
+      `created_at=lte.${until}`
+    ],
+    order: 'created_at.desc',
+    limit: 30
+  });
+  let qty = 0;
+  let quote = 0;
+  let buyCount = 0;
+  for (const row of data || []) {
+    const rowQty = Number(row.quantity || 0);
+    const rowQuote = Number(row.cummulative_quote_qty || 0) || rowQty * Number(row.price || 0);
+    if (rowQty <= 0 || rowQuote <= 0) continue;
+    const remaining = Math.max(0, Number(neededQty || 0) - qty);
+    const usedQty = neededQty ? Math.min(rowQty, remaining || rowQty) : rowQty;
+    const ratio = usedQty / rowQty;
+    qty += usedQty;
+    quote += rowQuote * ratio;
+    buyCount += 1;
+    if (neededQty && qty >= Number(neededQty) * 0.985) break;
+  }
+  return {
+    buyCount: Math.max(1, buyCount || 1),
+    qty,
+    quote,
+    avgPrice: qty > 0 ? quote / qty : 0
+  };
+}
+
 async function estimateAverageBuyPrice({ apiKey, apiSecret, environment, symbol, neededQty }) {
   const trades = await signedMyTrades({ apiKey, apiSecret, environment, symbol, limit: 100 });
   if (!trades.ok || !Array.isArray(trades.payload)) return 0;
@@ -594,6 +632,7 @@ async function handleProtectedSpotBuy(command) {
   const requestedQuote = Number(payload.quoteOrderQty || payload.valueUsdt || 0);
   const targetPriceRaw = Number(payload.targetPrice || payload.recoveryTarget || 0);
   const profitTargetPct = Math.max(0.0018, Math.min(0.008, Number(payload.profitTargetPct || 0.005)));
+  const strategyMode = ['conservative', 'moderate', 'aggressive'].includes(payload.strategyMode) ? payload.strategyMode : 'moderate';
   const timeframe = String(payload.timeframe || '15m');
   const reason = String(payload.reason || 'Entrada protegida INVCRIPTO');
 
@@ -614,22 +653,33 @@ async function handleProtectedSpotBuy(command) {
   const activeSellOrders = openOrders.ok ? openSellOrdersForSymbol(openOrders.payload, symbol) : [];
   let recoveryMode = false;
   let recoveryLevel = 1;
+  let activeBasket = null;
+  const maxRecoveryHands = strategyMode === 'conservative' ? 3 : strategyMode === 'aggressive' ? 5 : 4;
   if (activeSellOrders.length) {
     const referenceSell = activeSellOrders
       .slice()
       .sort((a, b) => Number(a.price || 0) - Number(b.price || 0))[0];
     const sellPrice = Number(referenceSell.price || 0);
+    const openSellQty = Math.max(0, Number(referenceSell.origQty || 0) - Number(referenceSell.executedQty || 0));
     const pricePayload = await ticker(symbol);
     const lastPrice = Number(pricePayload.payload?.lastPrice || pricePayload.payload?.weightedAvgPrice || 0);
-    const estimatedAverage = sellPrice > 0 ? sellPrice / (1 + profitTargetPct) : 0;
-    const martingaleTrigger = estimatedAverage > 0 ? estimatedAverage * (profitTargetPct <= 0.003 ? 0.9975 : 0.996) : 0;
-    const buyCount = await recentBasketBuyCount(command.user_id, environment, symbol).catch(() => 1);
+    activeBasket = await activeBasketFromOrders({
+      userId: command.user_id,
+      environment,
+      symbol,
+      neededQty: openSellQty,
+      referenceTime: referenceSell.time ? new Date(Number(referenceSell.time)).toISOString() : new Date().toISOString()
+    }).catch(() => null);
+    const estimatedAverage = activeBasket?.avgPrice || (sellPrice > 0 ? sellPrice / (1 + profitTargetPct) : 0);
+    const martingaleSpacing = strategyMode === 'aggressive' ? 0.997 : strategyMode === 'conservative' ? 0.994 : 0.996;
+    const martingaleTrigger = estimatedAverage > 0 ? estimatedAverage * martingaleSpacing : 0;
+    const buyCount = activeBasket?.buyCount || 1;
     recoveryLevel = buyCount + 1;
 
-    if (!lastPrice || !martingaleTrigger || lastPrice > martingaleTrigger || recoveryLevel > 3) {
-      const reason = recoveryLevel > 3 ? 'max_recovery_hands' : 'active_basket_waiting_trigger';
-      const message = recoveryLevel > 3
-        ? `Cesta ativa em ${symbol}. Limite de 3 maos atingido; aguardando venda protegida.`
+    if (!lastPrice || !martingaleTrigger || lastPrice > martingaleTrigger || recoveryLevel > maxRecoveryHands) {
+      const reason = recoveryLevel > maxRecoveryHands ? 'max_recovery_hands' : 'active_basket_waiting_trigger';
+      const message = recoveryLevel > maxRecoveryHands
+        ? `Cesta ativa em ${symbol}. Limite de ${maxRecoveryHands} maos atingido; aguardando venda protegida.`
         : `Cesta ativa em ${symbol}. Preco ${lastPrice || '-'} acima do gatilho ${martingaleTrigger ? martingaleTrigger.toFixed(8) : '-'}; aguardando venda protegida.`;
       dashboard.lastProtectedOrder = `${symbol} cesta ativa: aguardando`;
       dashboard.lastMessage = message;
@@ -642,8 +692,10 @@ async function handleProtectedSpotBuy(command) {
         skipped: true,
         reason,
         recoveryLevel,
+        maxRecoveryHands,
         lastPrice,
         martingaleTrigger,
+        basketAverage: estimatedAverage,
         protected: true,
         message
       };
@@ -672,8 +724,19 @@ async function handleProtectedSpotBuy(command) {
   const estimatedTarget = Math.max(targetPriceRaw, Number(payload.entryPrice || 0), 1);
   const roundingReserve = estimatedTarget * filters.stepSize * 1.35;
   const safeMinimum = Math.max(filters.minNotional * 1.12 + roundingReserve, 6.25);
-  const recoveryMultiplier = recoveryMode ? (recoveryLevel === 2 ? 1.6 : 2.4) : 1;
-  const quoteOrderQty = Math.max(requestedQuote * recoveryMultiplier, safeMinimum);
+  const firstHandPct = strategyMode === 'conservative' ? 0.22 : strategyMode === 'aggressive' ? 0.38 : 0.30;
+  const recoveryMultipliers = strategyMode === 'conservative'
+    ? { 2: 1.45, 3: 2.05 }
+    : strategyMode === 'aggressive'
+      ? { 2: 1.7, 3: 2.45, 4: 3.2, 5: 4.1 }
+      : { 2: 1.6, 3: 2.35, 4: 3.05 };
+  const firstHandQuote = Math.max(requestedQuote, availableUsdt * firstHandPct);
+  const recoveryMultiplier = recoveryMode ? (recoveryMultipliers[recoveryLevel] || 1) : 1;
+  const desiredQuote = recoveryMode ? firstHandQuote * recoveryMultiplier : firstHandQuote;
+  const quoteOrderQty = Math.min(availableUsdt, Math.max(desiredQuote, safeMinimum));
+  if (quoteOrderQty < safeMinimum) {
+    throw new Error(`Saldo USDT insuficiente para ordem minima protegida. Necessario ${safeMinimum.toFixed(2)} USDT, disponivel ${availableUsdt.toFixed(8)} USDT.`);
+  }
   if (quoteOrderQty > availableUsdt) {
     throw new Error(`Saldo USDT insuficiente. Necessario ${quoteOrderQty.toFixed(2)} USDT, disponivel ${availableUsdt.toFixed(8)} USDT.`);
   }
@@ -729,7 +792,7 @@ async function handleProtectedSpotBuy(command) {
 
   const sellReferenceQty = recoveryMode ? await currentFreeBalance({ apiKey, apiSecret, environment, asset: filters.baseAsset }) : executedQty;
   const basketAvgPrice = recoveryMode
-    ? await estimateAverageBuyPrice({ apiKey, apiSecret, environment, symbol, neededQty: sellReferenceQty }).catch(() => avgPrice)
+    ? await estimateAverageBuyPrice({ apiKey, apiSecret, environment, symbol, neededQty: sellReferenceQty }).catch(() => activeBasket?.avgPrice || avgPrice)
     : avgPrice;
   const sellPrice = ceilToStep(Math.max(targetPriceRaw, basketAvgPrice * (1 + profitTargetPct)), filters.tickSize);
   const freeBase = await currentFreeBalance({ apiKey, apiSecret, environment, asset: filters.baseAsset });
@@ -776,7 +839,7 @@ async function handleProtectedSpotBuy(command) {
       binance_order_id: String(sell.payload?.orderId || ''),
       quantity: sellQty,
       price: sellPrice,
-      reason: recoveryMode ? `Venda unica recalculada para cesta M${recoveryLevel}. Media ${basketAvgPrice.toFixed(8)} + 0.5%.` : 'Venda protegida criada imediatamente apos compra',
+      reason: recoveryMode ? `Venda unica recalculada para cesta M${recoveryLevel}. Media ${basketAvgPrice.toFixed(8)} + ${(profitTargetPct * 100).toFixed(2)}%.` : 'Venda protegida criada imediatamente apos compra',
       raw_response: sell.payload
     }
   ]);
@@ -802,6 +865,8 @@ async function handleProtectedSpotBuy(command) {
     sellPrice,
     recoveryMode,
     recoveryLevel,
+    maxRecoveryHands,
+    strategyMode,
     basketAvgPrice,
     minNotional: filters.minNotional,
     stepSize: filters.stepSize,

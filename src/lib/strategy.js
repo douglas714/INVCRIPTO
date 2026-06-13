@@ -1,4 +1,4 @@
-export function ema(values, period) {
+﻿export function ema(values, period) {
   if (!values.length) return [];
   const k = 2 / (period + 1);
   const out = [];
@@ -64,14 +64,14 @@ export function supportResistance(candles, lookback = 40) {
 function orderPlan({ action, price, support, resistance, atrValue, score }) {
   if (action === 'SELL' || !price || !support || !resistance) return null;
   const volatility = Math.max(price * 0.0025, atrValue || price * 0.004);
-  const entry = Math.min(price, support + volatility * 0.35);
+  const entry = price;
   const stopLoss = Math.max(0, entry - volatility * 1.4);
   const target1 = Math.max(entry + volatility * 1.35, Math.min(resistance, entry + volatility * 2));
   const target2 = Math.max(target1 + volatility * 0.9, resistance);
   const ladder = [
-    { level: 1, label: 'Mão 1', multiplier: 1, entry },
-    { level: 2, label: 'Mão 2', multiplier: 1.6, entry: Math.max(0, entry - volatility * 0.85) },
-    { level: 3, label: 'Mão 3', multiplier: 2.4, entry: Math.max(0, entry - volatility * 1.6) }
+    { level: 1, label: 'MÃ£o 1', multiplier: 1, entry },
+    { level: 2, label: 'MÃ£o 2', multiplier: 1.6, entry: Math.max(0, entry - volatility * 0.85) },
+    { level: 3, label: 'MÃ£o 3', multiplier: 2.4, entry: Math.max(0, entry - volatility * 1.6) }
   ];
   const weightedCost = ladder.reduce((sum, item) => sum + item.entry * item.multiplier, 0);
   const totalWeight = ladder.reduce((sum, item) => sum + item.multiplier, 0);
@@ -99,7 +99,7 @@ function orderPlan({ action, price, support, resistance, atrValue, score }) {
     risk,
     reward,
     riskReward: reward / risk,
-    note: 'Prévia paper. Envio real deve passar por backend, saldo USDT, permissões e limite de risco.'
+    note: 'PrÃ©via paper. Envio real deve passar por backend, saldo USDT, permissÃµes e limite de risco.'
   };
 }
 
@@ -128,6 +128,7 @@ export function analyzeMarket(candles) {
   const trendDown = ema9[i] < ema21[i] && ema21[i] < ema50[i] && last.close < ema50[i];
   const range = Math.max(1e-9, last.high - last.low);
   const volumeOk = volumes[i] >= (volSma20[i] || volumes[i]) * 0.85;
+  const volumeModerate = volumes[i] >= (volSma20[i] || volumes[i]) * 0.45;
   const momentumOk = rsi14[i] >= 48 && rsi14[i] <= 68;
   const rsiRecovering = rsi14[i] > rsi14[i - 1] && rsi14[i - 1] < 55;
   const candleStrength = last.close > last.open && (last.close - last.low) / range > 0.58;
@@ -135,13 +136,23 @@ export function analyzeMarket(candles) {
   const rejectionSell = last.high > resistance * 0.998 && last.close < resistance && (last.high - last.close) / range > 0.55;
   const pullbackBuy = trendUp && last.low <= ema21[i] && last.close > ema9[i] && momentumOk;
   const breakoutBuy = last.close > resistance * 1.001 && prev.close <= resistance && volumeOk && rsi14[i] < 74;
+  const atrValue = atr14[i] || 0;
+  const distanceFromEma21 = atrValue > 0 ? (last.close - ema21[i]) / atrValue : 0;
+  const continuationBuy = trendUp &&
+    last.close > ema9[i] &&
+    last.close >= prev.close * 0.998 &&
+    volumeModerate &&
+    rsi14[i] >= 50 &&
+    rsi14[i] <= 74 &&
+    distanceFromEma21 <= 2.4 &&
+    last.close < resistance * 1.006;
   const defensiveSell = trendDown || rejectionSell || rsi14[i] > 76;
 
   let score = 0;
   let action = 'WAIT';
   let reason = 'Sem setup';
 
-  if (pullbackBuy || rejectionBuy || breakoutBuy) {
+  if (pullbackBuy || rejectionBuy || breakoutBuy || continuationBuy) {
     score = 58;
     if (trendUp) score += 12;
     if (macroTrend) score += 8;
@@ -149,19 +160,19 @@ export function analyzeMarket(candles) {
     if (momentumOk || rsiRecovering) score += 8;
     if (rejectionBuy) score += 8;
     if (breakoutBuy) score += 5;
+    if (continuationBuy) score += 7;
     score = Math.min(96, score);
     action = 'BUY';
-    reason = breakoutBuy ? 'Rompimento com volume' : rejectionBuy ? 'Varredura de suporte com reação' : 'Tendência + pullback EMA';
+    reason = breakoutBuy ? 'Rompimento com volume' : rejectionBuy ? 'Varredura de suporte com reacao' : continuationBuy ? 'Tendencia de alta confirmada' : 'Tendencia + pullback EMA';
   }
 
   if (defensiveSell && action !== 'BUY') {
     score = Math.max(64, rsi14[i] > 76 ? 70 : 68);
     action = 'SELL';
-    reason = rsi14[i] > 76 ? 'RSI esticado: proteger lucro' : rejectionSell ? 'Rejeição em resistência' : 'Tendência defensiva';
+    reason = rsi14[i] > 76 ? 'RSI esticado: proteger lucro' : rejectionSell ? 'RejeiÃ§Ã£o em resistÃªncia' : 'TendÃªncia defensiva';
   }
 
-  const regime = trendUp ? 'TENDÊNCIA DE ALTA' : trendDown ? 'TENDÊNCIA DE BAIXA' : 'LATERAL/NEUTRO';
-  const atrValue = atr14[i] || 0;
+  const regime = trendUp ? 'TENDÃŠNCIA DE ALTA' : trendDown ? 'TENDÃŠNCIA DE BAIXA' : 'LATERAL/NEUTRO';
   const plan = orderPlan({ action, price: last.close, support, resistance, atrValue, score });
 
   return {
@@ -182,3 +193,4 @@ export function analyzeMarket(candles) {
     orderPlan: plan
   };
 }
+

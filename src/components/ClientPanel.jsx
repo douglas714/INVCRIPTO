@@ -283,7 +283,7 @@ export default function ClientPanel({user}){
   function stopRobot(){ setAnalysisSplash(false); autoOrderRef.current=''; setState(s=>({...s,active:false,lastAutoRealError:''})); }
   function createTargetOrder(){ setState(s=>createTargetPreviewOrder({...s,symbol},symbol,analysis,timeframe)); }
 
-  const tabs=[['dashboard','Dashboard'],['analysis','Análise ao vivo'],['scanner','Radar IA'],['orders','Operações'],['inv','Créditos ENV'],['settings','API Binance'],['training','Guia de instalação']];
+  const tabs=[['dashboard','Dashboard'],['analysis','Análise ao vivo'],['scanner','Radar IA'],['orders','Operações'],['inv','Créditos ENV'],['settings','API Binance']];
 
   return <div className="robot-dashboard">
     <div className="hero-row">
@@ -305,7 +305,6 @@ export default function ClientPanel({user}){
     {activeTab==='orders' && <Orders orders={state.orders} accountMode={accountMode}/>}    
     {activeTab==='inv' && <INV state={state}/>}    
     {activeTab==='settings' && <BinanceSettings user={user} setState={setState} setAccountMode={setAccountMode}/>}
-    {activeTab==='training' && <Training/>}
   </div>
 }
 
@@ -691,7 +690,7 @@ function Orders({orders,accountMode}){
 }
 function INV({state}){const envBalance=state.envBalance ?? state.invBalance ?? 0;return <div className="panel panel-glow"><h3><CreditCard size={18}/> Créditos ENV</h3><p>Saldo atual: <b>{num(envBalance,2)} ENV</b></p><p>1 ENV = US$ 1,00. O robô opera em USDT e desconta 10% apenas do lucro realizado em dólar.</p><p>No pagamento via Pix/cartão, o valor em reais será convertido pela cotação do dólar/USDT do momento para liberar ENV.</p><div className="alert">Quando o ENV zerar, o robô bloqueia novas entradas, encerra a cesta conforme segurança e solicita recarga.</div></div>}
 
-function Training(){
+export function Training(){
   const steps=[
     ['1','Baixar e extrair','Extraia o arquivo do conector em uma pasta simples, por exemplo Área de Trabalho ou Documentos. Ao abrir a pasta, deixe visível apenas o executor ENVCRIPTO.'],
     ['2','Executar o ENVCRIPTO','Clique duas vezes no executor. Se o Windows perguntar, escolha executar mesmo assim. A janela preta deve ficar aberta com status Online.'],
@@ -707,12 +706,18 @@ function Training(){
         <p className="eyebrow">Guia de instalação</p>
         <h2>Instalar, conectar Binance e operar com o INVCRIPTO</h2>
         <p className="muted">Siga a sequência abaixo para deixar o conector local rodando, salvar a API e iniciar o robô com saldo real.</p>
+        <a className="btn primary guide-download" href="/downloads/ENVCRIPTO_CONNECTOR_LOCAL.zip" download>Baixar conector ENVCRIPTO</a>
       </div>
       <div className="training-video-card">
         <MonitorPlay size={44}/>
         <strong>Guia visual</strong>
         <span>Fluxo ilustrado de instalação até operação</span>
       </div>
+    </div>
+    <div className="guide-images">
+      <img src="/training/extrair-executor.svg" alt="Extraia o conector e execute o ENVCRIPTO"/>
+      <img src="/training/binance-api.svg" alt="Crie a API Binance com leitura e Spot Trading"/>
+      <img src="/training/painel-operar.svg" alt="Salve a API no painel e inicie o robô"/>
     </div>
     <div className="training-flow">
       {steps.map(([num,title,body])=><div className="training-step" key={num}>

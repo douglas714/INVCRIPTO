@@ -1,9 +1,9 @@
 ﻿import React, { useEffect, useState } from 'react';
 import { supabase, hasSupabase } from './lib/supabase.js';
 import { isValidCpf, maskCpf, onlyDigits, sha256 } from './lib/cpf.js';
-import ClientPanel from './components/ClientPanel.jsx';
+import ClientPanel, { Training } from './components/ClientPanel.jsx';
 import AdminPanel from './components/AdminPanel.jsx';
-import { Bot, Shield, UserRound, LogOut } from 'lucide-react';
+import { Bot, BookOpen, Shield, UserRound, LogOut } from 'lucide-react';
 
 const appUrl = (import.meta.env.VITE_APP_URL || 'https://invcripto.netlify.app').replace(/\/$/, '');
 const resetUrl = import.meta.env.VITE_PASSWORD_RESET_URL || `${appUrl}/reset-password`;
@@ -121,13 +121,14 @@ function MainRouter({ user }) {
         <img src="/invcripto-logo.png" alt="INVCRIPTO IA"/>
       </div>
       <button className={view === 'client' ? 'active' : ''} onClick={() => setView('client')}><Bot size={18}/> Painel Cliente</button>
+      <button className={view === 'guide' ? 'active' : ''} onClick={() => setView('guide')}><BookOpen size={18}/> Guia de instalação</button>
       <button className={view === 'admin' ? 'active' : ''} onClick={() => setView('admin')}><Shield size={18}/> Admin</button>
       <div className="sidebar-status">
         <span className="live-dot"/> Sistema online
         <small>Layout premium aplicado</small>
       </div>
     </aside>
-    <section className="content premium-content">{view === 'client' ? <ClientPanel user={user}/> : <AdminPanel user={user}/>}</section>
+    <section className="content premium-content">{view === 'client' ? <ClientPanel user={user}/> : view === 'guide' ? <Training/> : <AdminPanel user={user}/>}</section>
   </main>;
 }
 

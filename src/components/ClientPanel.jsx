@@ -145,7 +145,12 @@ export default function ClientPanel({user}){
       });
       const ordersPayload = await ordersResponse.json().catch(()=>({}));
       if(ordersResponse.ok && ordersPayload?.ok && Array.isArray(ordersPayload.orders)){
-        setState(s=>({...s, orders: mergeRealOrders(s.orders, ordersPayload.orders)}));
+        setState(s=>({
+          ...s,
+          orders: mergeRealOrders(s.orders, ordersPayload.orders),
+          realizedRealProfitUsd: Number(ordersPayload.realProfitUsd || 0),
+          realFeesEnv: Number(ordersPayload.realFeesEnv || 0)
+        }));
       }
     } catch {
     } finally {

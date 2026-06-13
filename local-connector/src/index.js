@@ -846,12 +846,8 @@ async function monitorProtectedSells() {
       }, [eqFilter('id', sellOrder.id)]);
 
       if (status !== 'filled') continue;
-      let entry = null;
-      if (sellOrder.linked_order_id) {
-        const found = await maybeSingle('real_orders', { filters: [eqFilter('id', sellOrder.linked_order_id)] });
-        entry = found.data;
-      }
-      const cost = Number(entry?.cummulative_quote_qty || entry?.quote_order_qty || 0);
+      const entryCost = await findEntryCostForSell({ sellOrder, apiKey, apiSecret, environment, executedQty });
+      const cost = Number(entryCost.cost || 0);
       const profitUsdt = quoteFilled - cost;
       const feeEnv = Math.max(0, profitUsdt * 0.10);
       if (profitUsdt > 0) {
@@ -870,13 +866,56 @@ async function monitorProtectedSells() {
           balance_inv: Math.max(0, currentEnv - feeEnv)
         }, [eqFilter('user_id', sellOrder.user_id)]).catch(() => null);
       }
-      dashboard.lastMessage = `Venda fechada ${sellOrder.symbol}: lucro ${profitUsdt.toFixed(4)} USDT`;
+      dashboard.lastMessage = `Venda fechada ${sellOrder.symbol}: lucro ${profitUsdt.toFixed(4)} USDT (${entryCost.source})`;
       dashboard.lastSync = new Date().toLocaleString('pt-BR');
       pushEvent('info', 'real_order_closed', dashboard.lastMessage);
     } catch (error) {
       await log('warn', 'monitor_real_order_error', String(error?.message || error), { orderId: sellOrder.id });
     }
   }
+}
+
+async function findEntryCostForSell({ sellOrder, apiKey, apiSecret, environment, executedQty }) {
+  if (sellOrder.linked_order_id) {
+    const found = await maybeSingle('real_orders', { filters: [eqFilter('id', sellOrder.linked_order_id)] });
+    const linkedCost = Number(found.data?.cummulative_quote_qty || found.data?.quote_order_qty || 0);
+    if (linkedCost > 0) return { cost: linkedCost, source: 'linked_order' };
+  }
+
+  const { data: recentBuys } = await selectRows('real_orders', {
+    select: '*',
+    filters: [
+      eqFilter('user_id', sellOrder.user_id),
+      eqFilter('environment', environment),
+      eqFilter('symbol', sellOrder.symbol),
+      'side=eq.BUY',
+      `created_at=lte.${sellOrder.created_at}`
+    ],
+    order: 'created_at.desc',
+    limit: 12
+  });
+  let remainingQty = Number(executedQty || sellOrder.quantity || 0);
+  let cost = 0;
+  for (const buy of recentBuys || []) {
+    if (remainingQty <= 0) break;
+    const buyQty = Number(buy.executed_qty || buy.quantity || 0);
+    const buyCost = Number(buy.cummulative_quote_qty || buy.quote_order_qty || (buyQty * Number(buy.price || 0)) || 0);
+    if (buyQty <= 0 || buyCost <= 0) continue;
+    const usedQty = Math.min(remainingQty, buyQty);
+    cost += buyCost * (usedQty / buyQty);
+    remainingQty -= usedQty;
+  }
+  if (cost > 0) return { cost, source: 'recent_real_orders' };
+
+  const avgBuy = await estimateAverageBuyPrice({
+    apiKey,
+    apiSecret,
+    environment,
+    symbol: sellOrder.symbol,
+    neededQty: Number(executedQty || sellOrder.quantity || 0)
+  }).catch(() => 0);
+  if (avgBuy > 0) return { cost: avgBuy * Number(executedQty || sellOrder.quantity || 0), source: 'binance_trades_estimate' };
+  return { cost: 0, source: 'unknown' };
 }
 
 async function recoverFailedProtectedBuys() {

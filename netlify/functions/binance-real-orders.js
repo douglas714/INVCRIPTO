@@ -68,9 +68,28 @@ export async function handler(event) {
 
   if (error) return json(400, { error: error.message });
 
+  const { data: profits } = await supabase
+    .from('profit_events')
+    .select('created_at,symbol,profit_usdt,fee_inv,inv_charged')
+    .eq('user_id', userId)
+    .order('created_at', { ascending: false })
+    .limit(100);
+
+  const realProfitUsd = (profits || []).reduce((sum, item) => sum + Number(item.profit_usdt || 0), 0);
+  const realFeesEnv = (profits || []).reduce((sum, item) => sum + Number(item.fee_inv || 0), 0);
+
   return json(200, {
     ok: true,
     environment,
+    realProfitUsd,
+    realFeesEnv,
+    profitEvents: (profits || []).map(item => ({
+      at: item.created_at,
+      symbol: item.symbol,
+      profitUsd: Number(item.profit_usdt || 0),
+      feeEnv: Number(item.fee_inv || 0),
+      charged: Boolean(item.inv_charged)
+    })),
     orders: (data || []).map(order => ({
       id: order.id,
       at: order.created_at,

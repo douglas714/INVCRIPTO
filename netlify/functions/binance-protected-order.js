@@ -85,9 +85,13 @@ export async function handler(event) {
     String(command.payload?.symbol || '').toUpperCase() === symbol
   );
   if (duplicated) {
-    return json(409, {
-      error: 'Ja existe compra real pendente para este par. O robo vai aguardar a cesta atual antes de abrir outra.',
-      connectorCommandId: duplicated.id
+    return json(200, {
+      ok: true,
+      skipped: true,
+      reason: 'pending_command',
+      connectorQueued: false,
+      connectorCommandId: duplicated.id,
+      message: 'Ja existe compra real pendente para este par. O robo vai aguardar a cesta atual antes de abrir outra.'
     });
   }
 

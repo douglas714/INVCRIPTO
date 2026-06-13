@@ -210,6 +210,41 @@ export default function ClientPanel({user}){
     const liveBalance = Number(state.binanceUsdtBalance || 0);
     const quoteOrderQty = liveBalance >= MIN_REAL_ORDER_USDT ? Math.min(10, Math.max(MIN_REAL_ORDER_USDT, liveBalance * 0.75)) : 0;
     if(quoteOrderQty < MIN_REAL_ORDER_USDT) return;
+    const activeRealSells = (state.orders || []).filter(order => {
+      const orderSymbol = String(order.symbol || '').replace('/','').toUpperCase();
+      const side = String(order.side || order.rawSide || '').toUpperCase();
+      const status = String(order.status || 'new').toLowerCase();
+      const liveOrder = order.accountMode === 'live' || side.startsWith('REAL_');
+      const sellOrder = side.includes('SELL');
+      const openStatus = !status || ['new','open','partially_filled'].includes(status);
+      return liveOrder && sellOrder && openStatus && orderSymbol === symbol;
+    });
+    if(activeRealSells.length) {
+      const lowestSellPrice = activeRealSells.reduce((min, order) => {
+        const price = Number(order.price || 0);
+        return price > 0 ? Math.min(min, price) : min;
+      }, Infinity);
+      const estimatedAverage = Number.isFinite(lowestSellPrice) ? lowestSellPrice / 1.005 : 0;
+      const recoveryTrigger = estimatedAverage > 0 ? estimatedAverage * 0.996 : 0;
+      const since = Date.now() - 24 * 60 * 60 * 1000;
+      const buyCount = (state.orders || []).filter(order => {
+        const orderSymbol = String(order.symbol || '').replace('/','').toUpperCase();
+        const side = String(order.side || order.rawSide || '').toUpperCase();
+        const at = new Date(order.at || order.created_at || 0).getTime();
+        return orderSymbol === symbol && (order.accountMode === 'live' || side.startsWith('REAL_')) && side.includes('BUY') && at >= since;
+      }).length;
+      const canRecover = recoveryTrigger > 0 && Number(lastPrice || 0) > 0 && Number(lastPrice) <= recoveryTrigger && buyCount < 3;
+      if(!canRecover) {
+        const reason = buyCount >= 3
+          ? `Cesta ativa em ${symbol}: limite de 3 mãos atingido.`
+          : `Cesta ativa em ${symbol}: aguardando gatilho de recuperação.`;
+        setState(s=>({
+          ...s,
+          lastAutoRealStatus: reason
+        }));
+        return;
+      }
+    }
     const setupKey = `${user?.id || 'user'}:${symbol}:${timeframe}:${Math.round(plan.entry * 1000000)}:${Math.round(plan.recoveryTarget * 1000000)}:${analysis.score}`;
     if(autoOrderRef.current === setupKey || state.lastAutoRealSetupKey === setupKey) return;
     autoOrderRef.current = setupKey;
@@ -238,10 +273,19 @@ export default function ClientPanel({user}){
         const payload = await response.json().catch(()=>({}));
         if(cancelled) return;
         if(!response.ok || !payload?.ok) throw new Error(payload.error || 'Falha ao enfileirar ordem real.');
+        if(payload.skipped) {
+          setState(s=>({
+            ...s,
+            lastAutoRealSetupKey: setupKey,
+            lastAutoRealStatus: payload.message || 'Cesta ativa: aguardando venda protegida fechar.'
+          }));
+          return;
+        }
         setState(s=>({
           ...s,
           lastAutoRealSetupKey: setupKey,
           lastAutoRealCommandId: payload.connectorCommandId,
+          lastAutoRealStatus: 'Ordem protegida enviada ao conector local.',
           orders: [{
             id: payload.connectorCommandId || crypto.randomUUID(),
             at: new Date().toISOString(),
@@ -256,10 +300,19 @@ export default function ClientPanel({user}){
         }));
       } catch(err) {
         if(cancelled) return;
+        const errorMessage = String(err?.message || err);
+        if(errorMessage.includes('Cesta ativa') || errorMessage.includes('compra real pendente')) {
+          setState(s=>({
+            ...s,
+            lastAutoRealSetupKey: setupKey,
+            lastAutoRealStatus: errorMessage
+          }));
+          return;
+        }
         setState(s=>({
           ...s,
           lastAutoRealSetupKey: setupKey,
-          lastAutoRealError: String(err?.message || err),
+          lastAutoRealError: errorMessage,
           orders: [{
             id: crypto.randomUUID(),
             at: new Date().toISOString(),
@@ -269,18 +322,18 @@ export default function ClientPanel({user}){
             qty:0,
             price:lastPrice || 0,
             valueUsd:0,
-            reason:String(err?.message || err)
+            reason:errorMessage
           }, ...s.orders].slice(0,80)
         }));
       }
     }
     queueAutoOrder();
     return()=>{cancelled=true};
-  },[state.active,accountMode,analysis,symbol,timeframe,state.apiConnected,state.binanceCanTrade,state.envBalance,state.binanceUsdtBalance,user?.id]);
+  },[state.active,accountMode,analysis,symbol,timeframe,state.apiConnected,state.binanceCanTrade,state.envBalance,state.binanceUsdtBalance,state.orders,user?.id]);
 
   function operateRecommended(){ setAnalysisSplash(true); setActiveTab('dashboard'); setSymbol(recommended.symbol); setSelectionMode('recommended'); setState(s=>({...s,active:true,symbol:recommended.symbol,accountMode,selectionMode:'recommended'})); }
   function operateSelected(){ setAnalysisSplash(false); setSelectionMode('manual_assisted'); setState(s=>({...s,active:true,symbol,accountMode,selectionMode:'manual_assisted'})); }
-  function stopRobot(){ setAnalysisSplash(false); autoOrderRef.current=''; setState(s=>({...s,active:false,lastAutoRealError:''})); }
+  function stopRobot(){ setAnalysisSplash(false); autoOrderRef.current=''; setState(s=>({...s,active:false,lastAutoRealError:'',lastAutoRealStatus:'Robô pausado.'})); }
   function createTargetOrder(){ setState(s=>createTargetPreviewOrder({...s,symbol},symbol,analysis,timeframe)); }
 
   const tabs=[['dashboard','Dashboard'],['analysis','Análise ao vivo'],['scanner','Radar IA'],['orders','Operações'],['inv','Créditos ENV'],['settings','API Binance']];
@@ -557,6 +610,8 @@ function TradingControl({state,setState,symbol,setSymbol,analysis,recommended,op
     <label>Conta de operação</label>
     <div className="mode-buttons"><button className={accountMode==='demo'?'active':''} type="button" onClick={()=>setAccountMode('demo')} disabled={locked}>Demo</button><button className={accountMode==='live'?'active':''} type="button" onClick={()=>setAccountMode('live')} disabled={locked}>Real Spot</button></div>
     <small className="sync">{locked?'Robô ativo: estratégia travada. Em conta real, oportunidades com score >= 78 enviam compra + venda automaticamente.':accountMode==='demo'?'Conta demo não consome ENV.':'Conta real consome ENV somente sobre lucro realizado.'}</small>
+    {accountMode === 'live' && state.lastAutoRealStatus && <div className="alert compact">{state.lastAutoRealStatus}</div>}
+    {accountMode === 'live' && state.lastAutoRealError && <div className="alert danger compact">{state.lastAutoRealError}</div>}
     <div className="switch-row"><span>Auto Trading</span><button className={state.active?'switch on':'switch'} onClick={()=>setState(s=>({...s,active:!s.active}))}/></div>
     <button className="btn ghost" type="button" onClick={createTargetOrder} disabled={locked || !canPreview}><TrendingUp size={16}/> Criar ordem alvo 1</button>
     <button className="btn primary gold-btn" onClick={operateRecommended} disabled={locked}><Play size={16}/> Operar recomendado</button>

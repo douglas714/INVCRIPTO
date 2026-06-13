@@ -380,6 +380,25 @@ async function signedGetOrder({ apiKey, apiSecret, environment, symbol, orderId 
   return { ok: response.ok, status: response.status, payload };
 }
 
+async function signedCancelOrder({ apiKey, apiSecret, environment, symbol, orderId }) {
+  const query = new URLSearchParams({
+    symbol,
+    orderId: String(orderId),
+    timestamp: String(Date.now()),
+    recvWindow: '5000'
+  }).toString();
+  const signature = sign(query, apiSecret);
+  const url = `${binanceBase(environment)}/api/v3/order?${query}&signature=${signature}`;
+  const response = await fetch(url, {
+    method: 'DELETE',
+    headers: { 'X-MBX-APIKEY': apiKey }
+  });
+  const text = await response.text();
+  let payload;
+  try { payload = JSON.parse(text); } catch { payload = { raw: text }; }
+  return { ok: response.ok, status: response.status, payload };
+}
+
 async function signedOpenOrders({ apiKey, apiSecret, environment, symbol }) {
   const params = { timestamp: String(Date.now()), recvWindow: '5000' };
   if (symbol) params.symbol = symbol;
@@ -439,6 +458,32 @@ function hasOpenSellOrder(openOrdersPayload, symbol) {
     String(order.side || '').toUpperCase() === 'SELL' &&
     Number(order.origQty || 0) > Number(order.executedQty || 0)
   );
+}
+
+function openSellOrdersForSymbol(openOrdersPayload, symbol) {
+  const rows = Array.isArray(openOrdersPayload) ? openOrdersPayload : [];
+  return rows.filter(order =>
+    String(order.symbol || '').toUpperCase() === symbol &&
+    String(order.side || '').toUpperCase() === 'SELL' &&
+    Number(order.origQty || 0) > Number(order.executedQty || 0)
+  );
+}
+
+async function recentBasketBuyCount(userId, environment, symbol) {
+  const since = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+  const { data } = await selectRows('real_orders', {
+    select: 'id,side,status,created_at',
+    filters: [
+      eqFilter('user_id', userId),
+      eqFilter('environment', environment),
+      eqFilter('symbol', symbol),
+      'side=eq.BUY',
+      `created_at=gte.${since}`
+    ],
+    order: 'created_at.desc',
+    limit: 10
+  });
+  return Math.max(1, Array.isArray(data) ? data.length : 1);
 }
 
 async function estimateAverageBuyPrice({ apiKey, apiSecret, environment, symbol, neededQty }) {
@@ -565,8 +610,60 @@ async function handleProtectedSpotBuy(command) {
   if (filters.status !== 'TRADING') throw new Error(`Par ${symbol} nao esta liberado para trading.`);
 
   const openOrders = await signedOpenOrders({ apiKey, apiSecret, environment, symbol });
-  if (openOrders.ok && hasOpenSellOrder(openOrders.payload, symbol)) {
-    throw new Error(`Cesta ativa detectada em ${symbol}. Ja existe venda aberta na Binance; nova compra M1 bloqueada para evitar ordens repetidas.`);
+  const activeSellOrders = openOrders.ok ? openSellOrdersForSymbol(openOrders.payload, symbol) : [];
+  let recoveryMode = false;
+  let recoveryLevel = 1;
+  if (activeSellOrders.length) {
+    const referenceSell = activeSellOrders
+      .slice()
+      .sort((a, b) => Number(a.price || 0) - Number(b.price || 0))[0];
+    const sellPrice = Number(referenceSell.price || 0);
+    const pricePayload = await ticker(symbol);
+    const lastPrice = Number(pricePayload.payload?.lastPrice || pricePayload.payload?.weightedAvgPrice || 0);
+    const estimatedAverage = sellPrice > 0 ? sellPrice / 1.005 : 0;
+    const martingaleTrigger = estimatedAverage > 0 ? estimatedAverage * 0.996 : 0;
+    const buyCount = await recentBasketBuyCount(command.user_id, environment, symbol).catch(() => 1);
+    recoveryLevel = buyCount + 1;
+
+    if (!lastPrice || !martingaleTrigger || lastPrice > martingaleTrigger || recoveryLevel > 3) {
+      const reason = recoveryLevel > 3 ? 'max_recovery_hands' : 'active_basket_waiting_trigger';
+      const message = recoveryLevel > 3
+        ? `Cesta ativa em ${symbol}. Limite de 3 maos atingido; aguardando venda protegida.`
+        : `Cesta ativa em ${symbol}. Preco ${lastPrice || '-'} acima do gatilho ${martingaleTrigger ? martingaleTrigger.toFixed(8) : '-'}; aguardando venda protegida.`;
+      dashboard.lastProtectedOrder = `${symbol} cesta ativa: aguardando`;
+      dashboard.lastMessage = message;
+      dashboard.lastSync = new Date().toLocaleString('pt-BR');
+      await refreshCredentialBalance(credential, apiKey, apiSecret, environment).catch(() => null);
+      await log('info', 'protected_buy_skipped', message, { symbol, environment, lastPrice, martingaleTrigger, recoveryLevel }, command);
+      return {
+        environment,
+        symbol,
+        skipped: true,
+        reason,
+        recoveryLevel,
+        lastPrice,
+        martingaleTrigger,
+        protected: true,
+        message
+      };
+    }
+
+    for (const sellOrder of activeSellOrders) {
+      const cancel = await signedCancelOrder({
+        apiKey,
+        apiSecret,
+        environment,
+        symbol,
+        orderId: sellOrder.orderId
+      });
+      if (!cancel.ok) throw new Error(`Nao foi possivel cancelar venda antiga para recalcular cesta: ${JSON.stringify(cancel.payload)}`);
+      await updateRows('real_orders', {
+        status: 'canceled',
+        raw_response: cancel.payload
+      }, [eqFilter('binance_order_id', String(sellOrder.orderId))]).catch(() => null);
+    }
+    recoveryMode = true;
+    await log('info', 'recovery_sell_cancelled', `Venda antiga cancelada em ${symbol}; preparando mao ${recoveryLevel}.`, { symbol, recoveryLevel }, command);
   }
 
   const usdt = (account.payload?.balances || []).find(item => item.asset === 'USDT');
@@ -574,7 +671,8 @@ async function handleProtectedSpotBuy(command) {
   const estimatedTarget = Math.max(targetPriceRaw, Number(payload.entryPrice || 0), 1);
   const roundingReserve = estimatedTarget * filters.stepSize * 1.35;
   const safeMinimum = Math.max(filters.minNotional * 1.12 + roundingReserve, 6.25);
-  const quoteOrderQty = Math.max(requestedQuote, safeMinimum);
+  const recoveryMultiplier = recoveryMode ? (recoveryLevel === 2 ? 1.6 : 2.4) : 1;
+  const quoteOrderQty = Math.max(requestedQuote * recoveryMultiplier, safeMinimum);
   if (quoteOrderQty > availableUsdt) {
     throw new Error(`Saldo USDT insuficiente. Necessario ${quoteOrderQty.toFixed(2)} USDT, disponivel ${availableUsdt.toFixed(8)} USDT.`);
   }
@@ -616,7 +714,7 @@ async function handleProtectedSpotBuy(command) {
       price: avgPrice,
       executed_qty: executedQty,
       cummulative_quote_qty: cummulativeQuoteQty,
-      reason,
+      reason: recoveryMode ? `Martingale controlado M${recoveryLevel}: ${reason}` : reason,
       raw_response: buy.payload
     }
   ]);
@@ -628,9 +726,13 @@ async function handleProtectedSpotBuy(command) {
   const buyAuditId = buyLogError ? null : (Array.isArray(buyRows) ? buyRows[0]?.id : buyRows?.id);
   await refreshCredentialBalance(credential, apiKey, apiSecret, environment).catch(() => null);
 
-  const sellPrice = ceilToStep(Math.max(targetPriceRaw, avgPrice * 1.005), filters.tickSize);
+  const sellReferenceQty = recoveryMode ? await currentFreeBalance({ apiKey, apiSecret, environment, asset: filters.baseAsset }) : executedQty;
+  const basketAvgPrice = recoveryMode
+    ? await estimateAverageBuyPrice({ apiKey, apiSecret, environment, symbol, neededQty: sellReferenceQty }).catch(() => avgPrice)
+    : avgPrice;
+  const sellPrice = ceilToStep(Math.max(targetPriceRaw, basketAvgPrice * 1.005), filters.tickSize);
   const freeBase = await currentFreeBalance({ apiKey, apiSecret, environment, asset: filters.baseAsset });
-  const sellQty = floorToStep(Math.min(executedQty, freeBase), filters.stepSize);
+  const sellQty = floorToStep(Math.min(recoveryMode ? sellReferenceQty : executedQty, freeBase), filters.stepSize);
   const sellNotional = sellQty * sellPrice;
 
   if (sellQty < filters.minQty || sellNotional < filters.minNotional) {
@@ -667,13 +769,13 @@ async function handleProtectedSpotBuy(command) {
       order_type: 'LIMIT',
       status: String(sell.payload?.status || 'NEW').toLowerCase(),
       linked_order_id: buyAuditId || null,
-      protection_role: 'take_profit',
+      protection_role: recoveryMode ? `recovery_m${recoveryLevel}_take_profit` : 'take_profit',
       timeframe,
       client_order_id: sellClientOrderId,
       binance_order_id: String(sell.payload?.orderId || ''),
       quantity: sellQty,
       price: sellPrice,
-      reason: 'Venda protegida criada imediatamente apos compra',
+      reason: recoveryMode ? `Venda unica recalculada para cesta M${recoveryLevel}. Media ${basketAvgPrice.toFixed(8)} + 0.5%.` : 'Venda protegida criada imediatamente apos compra',
       raw_response: sell.payload
     }
   ]);
@@ -683,7 +785,7 @@ async function handleProtectedSpotBuy(command) {
   }
   const refreshedAfterSell = await refreshCredentialBalance(credential, apiKey, apiSecret, environment).catch(() => null);
 
-  dashboard.lastProtectedOrder = `${symbol} BUY ${quoteOrderQty.toFixed(2)} -> SELL ${formatDecimal(sellQty, filters.stepSize)} @ ${formatDecimal(sellPrice, filters.tickSize)}`;
+  dashboard.lastProtectedOrder = `${symbol} ${recoveryMode ? `M${recoveryLevel}` : 'M1'} BUY ${quoteOrderQty.toFixed(2)} -> SELL ${formatDecimal(sellQty, filters.stepSize)} @ ${formatDecimal(sellPrice, filters.tickSize)}`;
   dashboard.lastUsdt = refreshedAfterSell?.free ?? Math.max(0, availableUsdt - quoteOrderQty);
   dashboard.lastSync = new Date().toLocaleString('pt-BR');
 
@@ -697,6 +799,9 @@ async function handleProtectedSpotBuy(command) {
     avgPrice,
     sellQty,
     sellPrice,
+    recoveryMode,
+    recoveryLevel,
+    basketAvgPrice,
     minNotional: filters.minNotional,
     stepSize: filters.stepSize,
     tickSize: filters.tickSize,

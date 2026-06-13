@@ -593,6 +593,7 @@ async function handleProtectedSpotBuy(command) {
   const symbol = String(payload.symbol || 'BTCUSDT').toUpperCase();
   const requestedQuote = Number(payload.quoteOrderQty || payload.valueUsdt || 0);
   const targetPriceRaw = Number(payload.targetPrice || payload.recoveryTarget || 0);
+  const profitTargetPct = Math.max(0.0018, Math.min(0.008, Number(payload.profitTargetPct || 0.005)));
   const timeframe = String(payload.timeframe || '15m');
   const reason = String(payload.reason || 'Entrada protegida INVCRIPTO');
 
@@ -620,8 +621,8 @@ async function handleProtectedSpotBuy(command) {
     const sellPrice = Number(referenceSell.price || 0);
     const pricePayload = await ticker(symbol);
     const lastPrice = Number(pricePayload.payload?.lastPrice || pricePayload.payload?.weightedAvgPrice || 0);
-    const estimatedAverage = sellPrice > 0 ? sellPrice / 1.005 : 0;
-    const martingaleTrigger = estimatedAverage > 0 ? estimatedAverage * 0.996 : 0;
+    const estimatedAverage = sellPrice > 0 ? sellPrice / (1 + profitTargetPct) : 0;
+    const martingaleTrigger = estimatedAverage > 0 ? estimatedAverage * (profitTargetPct <= 0.003 ? 0.9975 : 0.996) : 0;
     const buyCount = await recentBasketBuyCount(command.user_id, environment, symbol).catch(() => 1);
     recoveryLevel = buyCount + 1;
 
@@ -730,7 +731,7 @@ async function handleProtectedSpotBuy(command) {
   const basketAvgPrice = recoveryMode
     ? await estimateAverageBuyPrice({ apiKey, apiSecret, environment, symbol, neededQty: sellReferenceQty }).catch(() => avgPrice)
     : avgPrice;
-  const sellPrice = ceilToStep(Math.max(targetPriceRaw, basketAvgPrice * 1.005), filters.tickSize);
+  const sellPrice = ceilToStep(Math.max(targetPriceRaw, basketAvgPrice * (1 + profitTargetPct)), filters.tickSize);
   const freeBase = await currentFreeBalance({ apiKey, apiSecret, environment, asset: filters.baseAsset });
   const sellQty = floorToStep(Math.min(recoveryMode ? sellReferenceQty : executedQty, freeBase), filters.stepSize);
   const sellNotional = sellQty * sellPrice;

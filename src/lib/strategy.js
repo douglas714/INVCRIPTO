@@ -61,12 +61,56 @@ export function supportResistance(candles, lookback = 40) {
   return { support, resistance };
 }
 
-function orderPlan({ action, price, support, resistance, atrValue, score }) {
+function clamp(value, min, max) {
+  return Math.max(min, Math.min(max, value));
+}
+
+const strategyProfiles = {
+  conservative: {
+    minScore: 78,
+    allowMicroScalp: false,
+    profitTargetMin: 0.005,
+    profitTargetMax: 0.005,
+    microVolumeFactor: 0.55,
+    microRsiMin: 48,
+    microRsiMax: 68,
+    microDistanceAtr: 1.1
+  },
+  moderate: {
+    minScore: 70,
+    allowMicroScalp: true,
+    profitTargetMin: 0.0022,
+    profitTargetMax: 0.0038,
+    microVolumeFactor: 0.45,
+    microRsiMin: 45,
+    microRsiMax: 72,
+    microDistanceAtr: 1.35
+  },
+  aggressive: {
+    minScore: 62,
+    allowMicroScalp: true,
+    profitTargetMin: 0.0018,
+    profitTargetMax: 0.003,
+    microVolumeFactor: 0.32,
+    microRsiMin: 42,
+    microRsiMax: 75,
+    microDistanceAtr: 1.75
+  }
+};
+
+export function strategyProfile(mode = 'moderate') {
+  return strategyProfiles[mode] || strategyProfiles.moderate;
+}
+
+function orderPlan({ action, price, support, resistance, atrValue, score, setup = 'support_reversal', fastEntry = false, profile = strategyProfiles.moderate }) {
   if (action === 'SELL' || !price || !support || !resistance) return null;
   const volatility = Math.max(price * 0.0025, atrValue || price * 0.004);
-  const entry = Math.min(price, support + volatility * 0.35);
+  const profitTargetPct = setup === 'micro_scalp'
+    ? clamp((atrValue || price * 0.002) / price * 0.38, profile.profitTargetMin, profile.profitTargetMax)
+    : 0.005;
+  const entry = fastEntry ? price : Math.min(price, support + volatility * 0.35);
   const stopLoss = Math.max(0, entry - volatility * 1.4);
-  const target1 = Math.max(entry + volatility * 1.35, Math.min(resistance, entry + volatility * 2));
+  const target1 = Math.max(entry * (1 + profitTargetPct), Math.min(resistance, entry + volatility * (fastEntry ? 0.7 : 2)));
   const target2 = Math.max(target1 + volatility * 0.9, resistance);
   const ladder = [
     { level: 1, label: 'MÃ£o 1', multiplier: 1, entry },
@@ -76,7 +120,7 @@ function orderPlan({ action, price, support, resistance, atrValue, score }) {
   const weightedCost = ladder.reduce((sum, item) => sum + item.entry * item.multiplier, 0);
   const totalWeight = ladder.reduce((sum, item) => sum + item.multiplier, 0);
   const fullBasketAvg = weightedCost / totalWeight;
-  const recoveryTarget = fullBasketAvg * 1.005;
+  const recoveryTarget = fullBasketAvg * (1 + profitTargetPct);
   const risk = Math.max(0.00000001, entry - stopLoss);
   const reward = target1 - entry;
   return {
@@ -93,20 +137,24 @@ function orderPlan({ action, price, support, resistance, atrValue, score }) {
     martingale: {
       enabled: true,
       maxHands: ladder.length,
-      profitTargetPct: 0.5,
+      profitTargetPct: profitTargetPct * 100,
       multipliers: ladder.map(item => item.multiplier)
     },
+    setup,
+    fastEntry,
+    profitTargetPct,
     risk,
     reward,
     riskReward: reward / risk,
-    note: 'PrÃ©via paper. Envio real deve passar por backend, saldo USDT, permissÃµes e limite de risco.'
+    note: 'Previa paper. Envio real deve passar por backend, saldo USDT, permissoes e limite de risco.'
   };
 }
 
-export function analyzeMarket(candles) {
+export function analyzeMarket(candles, mode = 'moderate') {
   if (!candles || candles.length < 80) {
     return { action: 'WAIT', score: 0, reason: 'Aguardando candles suficientes' };
   }
+  const profile = strategyProfile(mode);
 
   const closes = candles.map(candle => candle.close);
   const volumes = candles.map(candle => Number(candle.volume || 0));
@@ -129,7 +177,7 @@ export function analyzeMarket(candles) {
   const range = Math.max(1e-9, last.high - last.low);
   const effectiveVolume = Math.max(volumes[i] || 0, volumes[i - 1] || 0);
   const volumeOk = effectiveVolume >= (volSma20[i] || effectiveVolume) * 0.85;
-  const volumeModerate = effectiveVolume >= (volSma20[i] || effectiveVolume) * 0.45;
+  const volumeModerate = effectiveVolume >= (volSma20[i] || effectiveVolume) * profile.microVolumeFactor;
   const momentumOk = rsi14[i] >= 48 && rsi14[i] <= 68;
   const rsiRecovering = rsi14[i] > rsi14[i - 1] && rsi14[i - 1] < 55;
   const candleStrength = last.close > last.open && (last.close - last.low) / range > 0.58;
@@ -147,24 +195,40 @@ export function analyzeMarket(candles) {
     rsi14[i] <= 74 &&
     distanceFromEma21 <= 2.4 &&
     last.close < resistance * 1.006;
+  const nearFastEma = atrValue > 0 ? Math.abs(last.close - ema9[i]) <= atrValue * profile.microDistanceAtr : last.close <= ema9[i] * 1.006;
+  const microScalpBuy = profile.allowMicroScalp &&
+    !trendDown &&
+    (trendUp || (shortTrend && last.close > ema50[i])) &&
+    nearFastEma &&
+    volumeModerate &&
+    rsi14[i] >= profile.microRsiMin &&
+    rsi14[i] <= profile.microRsiMax &&
+    last.close >= prev.close * 0.997 &&
+    last.close < resistance * 1.004;
   const defensiveSell = trendDown || rejectionSell || rsi14[i] > 76;
 
   let score = 0;
   let action = 'WAIT';
   let reason = 'Sem setup';
+  let setup = 'support_reversal';
+  let fastEntry = false;
 
-  if (pullbackBuy || rejectionBuy || breakoutBuy || continuationBuy) {
+  if (pullbackBuy || rejectionBuy || breakoutBuy || continuationBuy || microScalpBuy) {
     score = 58;
     if (trendUp) score += 12;
     if (macroTrend) score += 8;
     if (volumeOk) score += 7;
+    if (volumeModerate && !volumeOk) score += 4;
     if (momentumOk || rsiRecovering) score += 8;
     if (rejectionBuy) score += 8;
     if (breakoutBuy) score += 5;
     if (continuationBuy) score += 7;
+    if (microScalpBuy) score += 6;
     score = Math.min(96, score);
     action = 'BUY';
-    reason = breakoutBuy ? 'Rompimento com volume' : rejectionBuy ? 'Varredura de suporte com reacao' : continuationBuy ? 'Tendencia de alta confirmada' : 'Tendencia + pullback EMA';
+    setup = microScalpBuy && !rejectionBuy && !pullbackBuy ? 'micro_scalp' : 'support_reversal';
+    fastEntry = setup === 'micro_scalp';
+    reason = breakoutBuy ? 'Rompimento com volume' : rejectionBuy ? 'Varredura de suporte com reacao' : continuationBuy ? 'Tendencia de alta confirmada' : microScalpBuy ? 'Scalper de micro lucro' : 'Tendencia + pullback EMA';
   }
 
   if (defensiveSell && action !== 'BUY') {
@@ -174,7 +238,7 @@ export function analyzeMarket(candles) {
   }
 
   const regime = trendUp ? 'TENDÃŠNCIA DE ALTA' : trendDown ? 'TENDÃŠNCIA DE BAIXA' : 'LATERAL/NEUTRO';
-  const plan = orderPlan({ action, price: last.close, support, resistance, atrValue, score });
+  const plan = orderPlan({ action, price: last.close, support, resistance, atrValue, score, setup, fastEntry, profile });
 
   return {
     action,
@@ -190,6 +254,9 @@ export function analyzeMarket(candles) {
     rsi14: rsi14[i],
     atr14: atrValue,
     volumeOk,
+    setup,
+    strategyMode: mode,
+    minScore: profile.minScore,
     price: last.close,
     orderPlan: plan
   };

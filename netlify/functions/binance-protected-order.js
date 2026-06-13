@@ -12,6 +12,11 @@ function json(statusCode, body) {
 }
 
 const allowedSymbols = new Set(['BTCUSDT','ETHUSDT','BNBUSDT','SOLUSDT','XRPUSDT','ADAUSDT','AVAXUSDT','DOGEUSDT','LINKUSDT','DOTUSDT','LTCUSDT','TRXUSDT']);
+const strategyScores = { conservative: 78, moderate: 70, aggressive: 62 };
+
+function clamp(value, min, max) {
+  return Math.max(min, Math.min(max, value));
+}
 
 export async function handler(event) {
   if (event.httpMethod === 'OPTIONS') return { statusCode: 204, headers: jsonHeaders, body: '' };
@@ -32,12 +37,14 @@ export async function handler(event) {
   const targetPrice = Number(body.targetPrice || body.recoveryTarget || 0);
   const timeframe = String(body.timeframe || '15m').trim();
   const score = Number(body.score || 0);
+  const strategyMode = ['conservative', 'moderate', 'aggressive'].includes(body.strategyMode) ? body.strategyMode : 'moderate';
+  const profitTargetPct = clamp(Number(body.profitTargetPct || 0.005), 0.0018, 0.008);
   const reason = String(body.reason || 'Entrada protegida INVCRIPTO').slice(0, 500);
 
   if (!allowedSymbols.has(symbol)) return json(400, { error: 'Par nao permitido para operacao real.' });
   if (!quoteOrderQty || quoteOrderQty <= 0) return json(400, { error: 'Valor da compra em USDT obrigatorio.' });
   if (!targetPrice || targetPrice <= 0) return json(400, { error: 'Preco alvo de venda obrigatorio.' });
-  if (environment === 'live' && score < 78) return json(400, { error: 'Score insuficiente para conta real.' });
+  if (environment === 'live' && score < strategyScores[strategyMode]) return json(400, { error: `Score insuficiente para conta real no perfil ${strategyMode}.` });
 
   const supabase = createClient(supabaseUrl, serviceKey, { auth: { persistSession: false } });
   const token = (event.headers.authorization || event.headers.Authorization || '').replace(/^Bearer\s+/i, '');
@@ -106,8 +113,10 @@ export async function handler(event) {
         symbol,
         quoteOrderQty,
         targetPrice,
+        profitTargetPct,
         timeframe,
         score,
+        strategyMode,
         reason
       },
       status: 'pending'
@@ -126,6 +135,8 @@ export async function handler(event) {
     symbol,
     quoteOrderQty,
     targetPrice,
+    profitTargetPct,
+    strategyMode,
     message: 'Ordem protegida enviada ao conector local. A compra e a venda serao criadas pela Binance via conector.'
   });
 }

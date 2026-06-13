@@ -806,7 +806,7 @@ export function Training(){
     ['3','Criar API na Binance','Na Binance, acesse Gerenciamento de API, crie uma chave, habilite leitura e Spot Trading. Saque deve ficar desativado.'],
     ['4','Salvar API no painel','No site INVCRIPTO, entre em API Binance, cole API Key e Secret Key, selecione Conta real Spot e salve.'],
     ['5','Atualizar saldo','No Dashboard, use o botão de refresh no card Saldo da conta. O saldo real em USDT deve aparecer.'],
-    ['6','Iniciar o robô','Escolha Conta real, selecione Operar recomendado pela IA e ligue Auto Trading. O robô analisa e só envia compra quando o score permite.'],
+    ['6','Iniciar o robô','Escolha o perfil Conservador, Moderado ou Arrojado, selecione Conta real, use Operar recomendado pela IA e ligue Auto Trading. O robô analisa e só envia compra quando o score do perfil permite.'],
     ['7','Conferir proteção','Depois da compra, confira Ordens abertas na Binance. Deve existir uma venda limite protegida para a posição/cesta.']
   ];
   return <div className="training panel panel-glow">
@@ -836,6 +836,29 @@ export function Training(){
           <p>{body}</p>
         </div>
       </div>)}
+    </div>
+    <div className="training-grid profile-guide">
+      <div className="training-card">
+        <h3><ShieldCheck size={18}/> Perfil Conservador</h3>
+        <p><b>Score mínimo:</b> 78/100.</p>
+        <p>Usa a lógica mais exigente, parecida com a estratégia original. Ele espera tendência, pullback, suporte ou confirmação mais forte antes de mandar ordem real.</p>
+        <p><b>Indicado para:</b> usuários que preferem menos operações, menor exposição e entradas mais filtradas.</p>
+        <p><b>Comportamento:</b> pode ficar bastante tempo sem operar. Quando entra, busca uma venda protegida com alvo maior e evita comprar em mercado esticado.</p>
+      </div>
+      <div className="training-card">
+        <h3><Gauge size={18}/> Perfil Moderado</h3>
+        <p><b>Score mínimo:</b> 70/100.</p>
+        <p>É o padrão recomendado. Libera micro operações quando existe tendência ou reação suficiente, usando alvo menor para tentar realizar lucro com mais frequência.</p>
+        <p><b>Indicado para:</b> quem quer equilíbrio entre frequência e controle de risco.</p>
+        <p><b>Comportamento:</b> trabalha melhor em timeframe curto, como 5M, envia compra real apenas com venda limite protegida e recalcula a cesta se precisar de recuperação.</p>
+      </div>
+      <div className="training-card">
+        <h3><TrendingUp size={18}/> Perfil Arrojado</h3>
+        <p><b>Score mínimo:</b> 62/100.</p>
+        <p>Procura mais oportunidades de scalper e aceita sinais mais rápidos. O alvo é menor, então tende a buscar muitos micro lucros em movimentos curtos.</p>
+        <p><b>Indicado para:</b> testes com banca pequena e acompanhamento próximo.</p>
+        <p><b>Comportamento:</b> opera com maior frequência, mas pode abrir cestas em momentos de ruído do mercado. Use somente com conector aberto e saldo que aceite oscilações.</p>
+      </div>
     </div>
     <div className="training-grid">
       <div className="training-card">

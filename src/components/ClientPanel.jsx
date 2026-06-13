@@ -95,6 +95,24 @@ export default function ClientPanel({user}){
       const { data } = await supabase.auth.getSession();
       const token = data?.session?.access_token;
       const manualUserId = user?.manual_profile ? user.id : null;
+      if(manual) {
+        const refreshResponse = await fetch('/.netlify/functions/binance-refresh', {
+          method:'POST',
+          headers:{ 'content-type':'application/json', ...(token ? { authorization:`Bearer ${token}` } : {}) },
+          body:JSON.stringify({ manualUserId, manualEmail: user?.email || '', environment:'live' })
+        });
+        const refreshPayload = await refreshResponse.json().catch(()=>({}));
+        if(refreshResponse.ok && refreshPayload?.ok) {
+          setState(s=>({
+            ...s,
+            apiConnected:true,
+            binancePending:true,
+            binanceCredentialStatus:'pending_connector_validation',
+            lastAutoRealStatus:'Atualizacao de saldo enviada ao conector local.'
+          }));
+          await new Promise(resolve=>setTimeout(resolve, 6500));
+        }
+      }
       const response = await fetch('/.netlify/functions/binance-status', {
         method:'POST',
         headers:{ 'content-type':'application/json', ...(token ? { authorization:`Bearer ${token}` } : {}) },

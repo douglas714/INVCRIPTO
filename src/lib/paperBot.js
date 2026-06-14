@@ -1,4 +1,4 @@
-import { analyzeMarket } from './strategy.js';
+import { analyzeMarket, strategyProfile } from './strategy.js';
 
 export function initialPaperState(balanceUsd=1000) {
   return {
@@ -72,7 +72,9 @@ export function createTargetPreviewOrder(state, symbol, analysis, timeframe = '1
 }
 
 export function runPaperDecision(state, candles) {
-  const analysis = analyzeMarket(candles);
+  const mode = state.strategyMode || 'moderate';
+  const analysis = analyzeMarket(candles, mode);
+  const profile = strategyProfile(mode);
   const next = structuredClone(normalizeState(state));
   const price = analysis.price || candles.at(-1)?.close || 0;
   const now = new Date().toISOString();
@@ -80,7 +82,7 @@ export function runPaperDecision(state, candles) {
   next.decisions = next.decisions.slice(0, 50);
   if (!next.active || (next.accountMode === 'live' && next.envBalance <= 0) || price <= 0) return next;
 
-  if (analysis.action === 'BUY' && analysis.score >= 78 && next.positions.length === 0) {
+  if (analysis.action === 'BUY' && analysis.score >= profile.minScore && next.positions.length === 0) {
     const plan = analysis.orderPlan;
     const valueUsd = Math.min(next.balanceUsd, Math.max(10, next.balanceUsd * 0.05));
     if (valueUsd < 10) return next;

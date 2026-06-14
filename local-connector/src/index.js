@@ -631,8 +631,8 @@ async function handleProtectedSpotBuy(command) {
   const symbol = String(payload.symbol || 'BTCUSDT').toUpperCase();
   const requestedQuote = Number(payload.quoteOrderQty || payload.valueUsdt || 0);
   const targetPriceRaw = Number(payload.targetPrice || payload.recoveryTarget || 0);
-  const profitTargetPct = Math.max(0.0018, Math.min(0.008, Number(payload.profitTargetPct || 0.005)));
-  const strategyMode = ['conservative', 'moderate', 'aggressive'].includes(payload.strategyMode) ? payload.strategyMode : 'moderate';
+  const strategyMode = ['conservative', 'moderate', 'aggressive', 'leverage'].includes(payload.strategyMode) ? payload.strategyMode : 'moderate';
+  const profitTargetPct = Math.max(strategyMode === 'leverage' ? 0.0015 : 0.0018, Math.min(0.008, Number(payload.profitTargetPct || 0.005)));
   const timeframe = String(payload.timeframe || '15m');
   const reason = String(payload.reason || 'Entrada protegida INVCRIPTO');
 
@@ -654,7 +654,7 @@ async function handleProtectedSpotBuy(command) {
   let recoveryMode = false;
   let recoveryLevel = 1;
   let activeBasket = null;
-  const maxRecoveryHands = strategyMode === 'conservative' ? 3 : strategyMode === 'aggressive' ? 5 : 4;
+  const maxRecoveryHands = strategyMode === 'conservative' ? 3 : strategyMode === 'leverage' ? 6 : strategyMode === 'aggressive' ? 5 : 4;
   if (activeSellOrders.length) {
     const referenceSell = activeSellOrders
       .slice()
@@ -671,7 +671,7 @@ async function handleProtectedSpotBuy(command) {
       referenceTime: referenceSell.time ? new Date(Number(referenceSell.time)).toISOString() : new Date().toISOString()
     }).catch(() => null);
     const estimatedAverage = activeBasket?.avgPrice || (sellPrice > 0 ? sellPrice / (1 + profitTargetPct) : 0);
-    const martingaleSpacing = strategyMode === 'aggressive' ? 0.997 : strategyMode === 'conservative' ? 0.994 : 0.996;
+    const martingaleSpacing = strategyMode === 'leverage' ? 0.998 : strategyMode === 'aggressive' ? 0.997 : strategyMode === 'conservative' ? 0.994 : 0.996;
     const martingaleTrigger = estimatedAverage > 0 ? estimatedAverage * martingaleSpacing : 0;
     const buyCount = activeBasket?.buyCount || 1;
     recoveryLevel = buyCount + 1;
@@ -724,9 +724,11 @@ async function handleProtectedSpotBuy(command) {
   const estimatedTarget = Math.max(targetPriceRaw, Number(payload.entryPrice || 0), 1);
   const roundingReserve = estimatedTarget * filters.stepSize * 1.35;
   const safeMinimum = Math.max(filters.minNotional * 1.12 + roundingReserve, 6.25);
-  const firstHandPct = strategyMode === 'conservative' ? 0.22 : strategyMode === 'aggressive' ? 0.38 : 0.30;
+  const firstHandPct = strategyMode === 'conservative' ? 0.22 : strategyMode === 'leverage' ? 0.48 : strategyMode === 'aggressive' ? 0.38 : 0.30;
   const recoveryMultipliers = strategyMode === 'conservative'
     ? { 2: 1.45, 3: 2.05 }
+    : strategyMode === 'leverage'
+      ? { 2: 1.9, 3: 2.8, 4: 3.7, 5: 4.8, 6: 6.0 }
     : strategyMode === 'aggressive'
       ? { 2: 1.7, 3: 2.45, 4: 3.2, 5: 4.1 }
       : { 2: 1.6, 3: 2.35, 4: 3.05 };

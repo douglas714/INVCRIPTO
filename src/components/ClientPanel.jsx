@@ -10,7 +10,8 @@ const MIN_REAL_ORDER_USDT = 6.5;
 const strategyLabels = {
   conservative: 'Conservador',
   moderate: 'Moderado',
-  aggressive: 'Arrojado'
+  aggressive: 'Arrojado',
+  leverage: 'Alavancagem'
 };
 const radarSeed = {
   BTCUSDT:{hold:94,liquidity:96}, ETHUSDT:{hold:91,liquidity:94}, BNBUSDT:{hold:86,liquidity:88}, SOLUSDT:{hold:78,liquidity:90}, XRPUSDT:{hold:74,liquidity:86}, ADAUSDT:{hold:72,liquidity:78}, AVAXUSDT:{hold:70,liquidity:76}, DOGEUSDT:{hold:68,liquidity:82}, LINKUSDT:{hold:76,liquidity:74}, DOTUSDT:{hold:69,liquidity:70}, LTCUSDT:{hold:73,liquidity:72}, TRXUSDT:{hold:71,liquidity:73}
@@ -45,6 +46,54 @@ function fallbackCandles(symbol, timeframe, count=320){
   });
 }
 
+async function loadMarketCandles(symbol, timeframe){
+  try{
+    const res = await fetch(`/.netlify/functions/binance-klines?symbol=${symbol}&interval=${timeframe}&limit=320`).catch(()=>null);
+    let data = [];
+    if(res?.ok) data = await res.json();
+    if(!data.length){
+      const direct = await fetch(`https://api.binance.com/api/v3/klines?symbol=${symbol}&interval=${timeframe}&limit=320`).catch(()=>null);
+      if(direct?.ok) data = await direct.json();
+    }
+    const normalized = normalizeKlines(data);
+    return normalized.length ? normalized : fallbackCandles(symbol,timeframe);
+  } catch {
+    return fallbackCandles(symbol,timeframe);
+  }
+}
+
+function liveOrderValueByProfile(balance, mode='moderate', slots=1){
+  const free = Number(balance || 0);
+  if(free < MIN_REAL_ORDER_USDT) return 0;
+  if(mode === 'leverage'){
+    const divisor = Math.max(1, Number(slots || 1));
+    return Math.max(MIN_REAL_ORDER_USDT, (free * 0.98) / divisor);
+  }
+  const pct = mode === 'aggressive' ? 0.22 : mode === 'conservative' ? 0.12 : 0.16;
+  const cap = mode === 'aggressive' ? 28 : mode === 'conservative' ? 14 : 18;
+  return Math.min(cap, Math.max(MIN_REAL_ORDER_USDT, free * pct));
+}
+
+function openLiveSellSymbols(orders){
+  return new Set((orders || []).filter(order => {
+    const side = String(order.side || order.rawSide || '').toUpperCase();
+    const status = String(order.status || 'new').toLowerCase();
+    const liveOrder = order.accountMode === 'live' || side.startsWith('REAL_');
+    const sellOrder = side.includes('SELL');
+    const openStatus = !status || ['new','open','partially_filled'].includes(status);
+    return liveOrder && sellOrder && openStatus;
+  }).map(order => String(order.symbol || '').replace('/','').toUpperCase()).filter(Boolean));
+}
+
+function pendingLiveBuySymbols(orders){
+  const cutoff = Date.now() - 4 * 60 * 1000;
+  return new Set((orders || []).filter(order => {
+    const side = String(order.side || '').toUpperCase();
+    const at = new Date(order.at || 0).getTime();
+    return order.accountMode === 'live' && side.includes('QUEUED') && at >= cutoff;
+  }).map(order => String(order.symbol || '').replace('/','').toUpperCase()).filter(Boolean));
+}
+
 function mergeRealOrders(existing, realOrders){
   const realIds = new Set((realOrders || []).map(order=>order.id));
   const keepLocal = (existing || []).filter(order=>{
@@ -71,7 +120,8 @@ export default function ClientPanel({user}){
   const [marketStatus,setMarketStatus]=useState('Sincronizando mercado');
   const [analysisSplash,setAnalysisSplash]=useState(false);
   const [balanceRefreshing,setBalanceRefreshing]=useState(false);
-  const autoOrderRef = useRef('');
+  const autoOrderRef = useRef(new Set());
+  const leverageScanRef = useRef(0);
   const lastPrice=Number(liveTicker?.lastPrice || liveTicker?.price || candles.at(-1)?.close || 0);
   const analysis = useMemo(()=>analyzeMarket(candles, strategyMode),[candles,strategyMode]);
   const radar = useMemo(()=>buildRadar(analysis),[analysis]);
@@ -228,13 +278,125 @@ export default function ClientPanel({user}){
   },[symbol]);
   useEffect(()=>{
     if(state.active && accountMode === 'demo' && candles.length){
-      const t=setInterval(()=>setState(s=>runPaperDecision({...s,symbol,accountMode:'demo'},candles)),9000);
+      const t=setInterval(()=>setState(s=>runPaperDecision({...s,symbol,accountMode:'demo',strategyMode},candles)),9000);
       return()=>clearInterval(t);
     }
-  },[state.active,candles,symbol,accountMode]);
+  },[state.active,candles,symbol,accountMode,strategyMode]);
   useEffect(()=>{
     if(!hasSupabase || !state.active || accountMode !== 'live') return;
     const minScore = Number(analysis.minScore || strategyProfile(strategyMode).minScore);
+    if(strategyMode === 'leverage' && selectionMode !== 'manual_assisted'){
+      if(!state.apiConnected || !state.binanceCanTrade || Number(state.envBalance || 0) <= 0) return;
+      const now = Date.now();
+      if(now - leverageScanRef.current < 35000) return;
+      leverageScanRef.current = now;
+
+      let cancelled = false;
+      async function scanAndQueueLeverage(){
+        const liveBalance = Number(state.binanceUsdtBalance || 0);
+        if(liveBalance < MIN_REAL_ORDER_USDT) return;
+        const activeSymbols = openLiveSellSymbols(state.orders);
+        const pendingSymbols = pendingLiveBuySymbols(state.orders);
+        const maxConcurrent = 4;
+        const availableSlots = Math.max(0, maxConcurrent - activeSymbols.size - pendingSymbols.size);
+        if(availableSlots <= 0) {
+          setState(s=>({...s,lastAutoRealStatus:'Alavancagem: limite de cestas simultâneas atingido. Aguardando vendas protegidas.'}));
+          return;
+        }
+
+        const scanSymbols = allowedSymbols
+          .filter(item => !activeSymbols.has(item) && !pendingSymbols.has(item))
+          .slice(0, 8);
+        const snapshots = await Promise.all(scanSymbols.map(async item => {
+          const marketCandles = item === symbol && candles.length ? candles : await loadMarketCandles(item, timeframe);
+          const marketAnalysis = analyzeMarket(marketCandles, 'leverage');
+          return { symbol:item, candles:marketCandles, analysis:marketAnalysis };
+        }));
+        if(cancelled) return;
+        const candidates = snapshots
+          .filter(item => item.analysis?.orderPlan && item.analysis.action === 'BUY' && Number(item.analysis.score || 0) >= minScore)
+          .sort((a,b)=>Number(b.analysis.score || 0)-Number(a.analysis.score || 0))
+          .slice(0, availableSlots);
+        if(!candidates.length) {
+          setState(s=>({...s,lastAutoRealStatus:'Alavancagem: analisando pares, sem suporte/queda esticada com score suficiente agora.'}));
+          return;
+        }
+
+        const quoteOrderQty = liveOrderValueByProfile(liveBalance, 'leverage', candidates.length);
+        if(quoteOrderQty < MIN_REAL_ORDER_USDT) return;
+        const { data } = await supabase.auth.getSession();
+        const token = data?.session?.access_token;
+        const manualUserId = user?.manual_profile ? user.id : null;
+        let queued = 0;
+        for(const candidate of candidates){
+          if(cancelled) return;
+          const plan = candidate.analysis.orderPlan;
+          const setupKey = `${user?.id || 'user'}:${candidate.symbol}:${timeframe}:leverage:${Math.round(plan.entry * 1000000)}:${Math.round(plan.recoveryTarget * 1000000)}:${candidate.analysis.score}`;
+          if(autoOrderRef.current.has(setupKey) || state.lastAutoRealSetupKey === setupKey) continue;
+          autoOrderRef.current.add(setupKey);
+          const response = await fetch('/.netlify/functions/binance-protected-order', {
+            method:'POST',
+            headers:{ 'content-type':'application/json', ...(token ? { authorization:`Bearer ${token}` } : {}) },
+            body:JSON.stringify({
+              manualUserId,
+              manualEmail:user?.email || '',
+              environment:'live',
+              symbol:candidate.symbol,
+              quoteOrderQty,
+              targetPrice:plan.recoveryTarget,
+              profitTargetPct:Number(plan.profitTargetPct || 0.002),
+              timeframe,
+              score:Number(candidate.analysis.score || 0),
+              strategyMode:'leverage',
+              reason:`Alavancagem INVCRIPTO: ${candidate.analysis.reason || 'setup BUY confirmado'}`
+            })
+          });
+          const payload = await response.json().catch(()=>({}));
+          if(!response.ok || !payload?.ok) {
+            setState(s=>({
+              ...s,
+              lastAutoRealSetupKey: setupKey,
+              lastAutoRealError: payload.error || `Falha ao enfileirar ${candidate.symbol}.`,
+              orders: [{
+                id: crypto.randomUUID(),
+                at: new Date().toISOString(),
+                side:'REAL_ERROR',
+                accountMode:'live',
+                symbol:candidate.symbol,
+                qty:0,
+                price:candidate.analysis.price || 0,
+                valueUsd:0,
+                reason:payload.error || 'Falha ao enfileirar ordem em alavancagem'
+              }, ...s.orders].slice(0,80)
+            }));
+            continue;
+          }
+          queued += payload.skipped ? 0 : 1;
+          setState(s=>({
+            ...s,
+            lastAutoRealSetupKey: setupKey,
+            lastAutoRealCommandId: payload.connectorCommandId,
+            lastAutoRealStatus: payload.skipped ? (payload.message || `Cesta ativa em ${candidate.symbol}.`) : `Alavancagem: cesta ${candidate.symbol} enviada ao conector local.`,
+            orders: payload.skipped ? s.orders : [{
+              id: payload.connectorCommandId || crypto.randomUUID(),
+              at: new Date().toISOString(),
+              side:'REAL_QUEUED',
+              accountMode:'live',
+              symbol:candidate.symbol,
+              qty: quoteOrderQty / (plan.entry || candidate.analysis.price || 1),
+              price: plan.entry || candidate.analysis.price || 0,
+              valueUsd: quoteOrderQty,
+              reason:'Alavancagem: compra real + venda protegida da cesta'
+            }, ...s.orders].slice(0,80)
+          }));
+        }
+        if(queued > 1) {
+          setState(s=>({...s,lastAutoRealStatus:`Alavancagem: ${queued} cestas enviadas ao conector local.`}));
+        }
+      }
+      scanAndQueueLeverage();
+      return()=>{cancelled=true};
+    }
     if(!analysis?.orderPlan || analysis.action !== 'BUY' || Number(analysis.score || 0) < minScore) return;
     if(!state.apiConnected || !state.binanceCanTrade || Number(state.envBalance || 0) <= 0) return;
     const plan = analysis.orderPlan;
@@ -248,7 +410,7 @@ export default function ClientPanel({user}){
       return;
     }
     const liveBalance = Number(state.binanceUsdtBalance || 0);
-    const quoteOrderQty = liveBalance >= MIN_REAL_ORDER_USDT ? Math.min(18, Math.max(MIN_REAL_ORDER_USDT, liveBalance * 0.16)) : 0;
+    const quoteOrderQty = liveOrderValueByProfile(liveBalance, strategyMode, 1);
     if(quoteOrderQty < MIN_REAL_ORDER_USDT) return;
     const activeRealSells = (state.orders || []).filter(order => {
       const orderSymbol = String(order.symbol || '').replace('/','').toUpperCase();
@@ -277,8 +439,8 @@ export default function ClientPanel({user}){
       }
     }
     const setupKey = `${user?.id || 'user'}:${symbol}:${timeframe}:${Math.round(plan.entry * 1000000)}:${Math.round(plan.recoveryTarget * 1000000)}:${analysis.score}`;
-    if(autoOrderRef.current === setupKey || state.lastAutoRealSetupKey === setupKey) return;
-    autoOrderRef.current = setupKey;
+    if(autoOrderRef.current.has(setupKey) || state.lastAutoRealSetupKey === setupKey) return;
+    autoOrderRef.current.add(setupKey);
 
     let cancelled = false;
     async function queueAutoOrder(){
@@ -362,11 +524,11 @@ export default function ClientPanel({user}){
     }
     queueAutoOrder();
     return()=>{cancelled=true};
-  },[state.active,accountMode,analysis,strategyMode,symbol,timeframe,state.apiConnected,state.binanceCanTrade,state.envBalance,state.binanceUsdtBalance,state.orders,user?.id]);
+  },[state.active,accountMode,analysis,strategyMode,selectionMode,symbol,timeframe,candles,state.apiConnected,state.binanceCanTrade,state.envBalance,state.binanceUsdtBalance,state.orders,user?.id]);
 
   function operateRecommended(){ setAnalysisSplash(true); setActiveTab('dashboard'); setSymbol(recommended.symbol); if(accountMode === 'live' && timeframe === '15m') setTimeframe('5m'); setSelectionMode('recommended'); setState(s=>({...s,active:true,symbol:recommended.symbol,accountMode,selectionMode:'recommended',strategyMode})); }
   function operateSelected(){ setAnalysisSplash(false); if(accountMode === 'live' && timeframe === '15m') setTimeframe('5m'); setSelectionMode('manual_assisted'); setState(s=>({...s,active:true,symbol,accountMode,selectionMode:'manual_assisted',strategyMode})); }
-  function stopRobot(){ setAnalysisSplash(false); autoOrderRef.current=''; setState(s=>({...s,active:false,lastAutoRealError:'',lastAutoRealStatus:'Robô pausado.'})); }
+  function stopRobot(){ setAnalysisSplash(false); autoOrderRef.current=new Set(); setState(s=>({...s,active:false,lastAutoRealError:'',lastAutoRealStatus:'Robô pausado.'})); }
   function createTargetOrder(){ setState(s=>createTargetPreviewOrder({...s,symbol},symbol,analysis,timeframe)); }
 
   const tabs=[['dashboard','Dashboard'],['analysis','Análise ao vivo'],['scanner','Radar IA'],['orders','Operações'],['inv','Créditos ENV'],['settings','API Binance']];
@@ -639,6 +801,7 @@ function TradingControl({state,setState,symbol,setSymbol,analysis,recommended,op
       <option value="conservative">Conservador</option>
       <option value="moderate">Moderado</option>
       <option value="aggressive">Arrojado</option>
+      <option value="leverage">Alavancagem</option>
     </select>
     <small className="sync">{strategyLabels[strategyMode] || 'Moderado'}: score mínimo {minScore}/100 para conta real.</small>
     <label>Modo de escolha</label>
@@ -650,7 +813,7 @@ function TradingControl({state,setState,symbol,setSymbol,analysis,recommended,op
     <div className="recommend-line"><strong>{recommended.symbol?.replace('USDT','/USDT')}</strong><span>{recommended.score}/100</span></div>
     <label>Conta de operação</label>
     <div className="mode-buttons"><button className={accountMode==='demo'?'active':''} type="button" onClick={()=>setAccountMode('demo')} disabled={locked}>Demo</button><button className={accountMode==='live'?'active':''} type="button" onClick={()=>setAccountMode('live')} disabled={locked}>Real Spot</button></div>
-    <small className="sync">{locked?`Robô ativo: estratégia travada. Em conta real, oportunidades com score >= ${minScore} enviam compra + venda automaticamente.`:accountMode==='demo'?'Conta demo não consome ENV.':'Conta real consome ENV somente sobre lucro realizado.'}</small>
+    <small className="sync">{locked?`Robô ativo: estratégia travada. Em conta real, oportunidades com score >= ${minScore} enviam compra + venda automaticamente.`:strategyMode==='leverage'?'Alavancagem pode abrir várias cestas e usar quase todo o saldo livre. Use com acompanhamento próximo.':accountMode==='demo'?'Conta demo não consome ENV.':'Conta real consome ENV somente sobre lucro realizado.'}</small>
     {accountMode === 'live' && state.lastAutoRealStatus && <div className="alert compact">{state.lastAutoRealStatus}</div>}
     {accountMode === 'live' && state.lastAutoRealError && <div className="alert danger compact">{state.lastAutoRealError}</div>}
     <div className="switch-row"><span>Auto Trading</span><button className={state.active?'switch on':'switch'} onClick={()=>setState(s=>({...s,active:!s.active}))}/></div>
@@ -672,7 +835,7 @@ function TargetOrderPreview({state,symbol,timeframe,analysis,createTargetOrder,a
   }
   const demoBaseValue = Math.min(state.balanceUsd - 1000, Math.max(10, (state.balanceUsd - 1000) * 0.05));
   const liveBalance = Number(state.binanceUsdtBalance || 0);
-  const liveBaseValue = liveBalance >= MIN_REAL_ORDER_USDT ? Math.min(18, Math.max(MIN_REAL_ORDER_USDT, liveBalance * 0.16)) : 0;
+  const liveBaseValue = liveOrderValueByProfile(liveBalance, strategyMode, strategyMode === 'leverage' ? 4 : 1);
   const baseValue = accountMode === 'live' ? liveBaseValue : demoBaseValue;
   const view = order || {
     status:'PLANO',
@@ -796,7 +959,7 @@ export function Training(){
     ['3','Criar API na Binance','Na Binance, acesse Gerenciamento de API, crie uma chave, habilite leitura e Spot Trading. Saque deve ficar desativado.'],
     ['4','Salvar API no painel','No site INVCRIPTO, entre em API Binance, cole API Key e Secret Key, selecione Conta real Spot e salve.'],
     ['5','Atualizar saldo','No Dashboard, use o botão de refresh no card Saldo da conta. O saldo real em USDT deve aparecer.'],
-    ['6','Iniciar o robô','Escolha o perfil Conservador, Moderado ou Arrojado, selecione Conta real, use Operar recomendado pela IA e ligue Auto Trading. O robô analisa e só envia compra quando o score do perfil permite.'],
+    ['6','Iniciar o robô','Escolha o perfil Conservador, Moderado, Arrojado ou Alavancagem, selecione Conta real, use Operar recomendado pela IA e ligue Auto Trading. O robô analisa e só envia compra quando o score do perfil permite.'],
     ['7','Conferir proteção','Depois da compra, confira Ordens abertas na Binance. Deve existir uma venda limite protegida para a posição/cesta.']
   ];
   return <div className="training panel panel-glow">
@@ -848,6 +1011,14 @@ export function Training(){
         <p>Procura mais oportunidades de scalper e aceita sinais mais rápidos. O alvo é menor, então tende a buscar muitos micro lucros em movimentos curtos.</p>
         <p><b>Indicado para:</b> testes com banca pequena e acompanhamento próximo.</p>
         <p><b>Comportamento:</b> opera com maior frequência, mas pode abrir cestas em momentos de ruído do mercado. Use somente com conector aberto e saldo que aceite oscilações.</p>
+      </div>
+      <div className="training-card">
+        <h3><Sparkles size={18}/> Perfil Alavancagem</h3>
+        <p><b>Score mínimo:</b> 56/100.</p>
+        <p>É o modo de maior frequência. Ele pode analisar vários pares, abrir até quatro cestas simultâneas e repartir quase todo o saldo USDT livre entre as oportunidades aprovadas.</p>
+        <p><b>Indicado para:</b> usuários que aceitam alta exposição e querem buscar muitos micro lucros com acompanhamento constante.</p>
+        <p><b>Comportamento:</b> não repete compra no mesmo símbolo se já existe venda protegida. Se o preço cair, a próxima mão fica maior para recalcular a média da cesta e criar uma venda única que cubra todas as posições.</p>
+        <p><b>Risco:</b> como não usa stop loss, quedas fortes podem prender capital em cestas abertas até haver recuperação.</p>
       </div>
     </div>
     <div className="training-grid">

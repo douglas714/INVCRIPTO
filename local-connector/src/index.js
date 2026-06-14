@@ -724,7 +724,7 @@ async function handleProtectedSpotBuy(command) {
   const estimatedTarget = Math.max(targetPriceRaw, Number(payload.entryPrice || 0), 1);
   const roundingReserve = estimatedTarget * filters.stepSize * 1.35;
   const safeMinimum = Math.max(filters.minNotional * 1.12 + roundingReserve, 6.25);
-  const firstHandPct = strategyMode === 'conservative' ? 0.22 : strategyMode === 'leverage' ? 0.48 : strategyMode === 'aggressive' ? 0.38 : 0.30;
+  const firstHandPct = strategyMode === 'conservative' ? 0.22 : strategyMode === 'leverage' ? 0.24 : strategyMode === 'aggressive' ? 0.38 : 0.30;
   const recoveryMultipliers = strategyMode === 'conservative'
     ? { 2: 1.45, 3: 2.05 }
     : strategyMode === 'leverage'

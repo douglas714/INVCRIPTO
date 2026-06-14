@@ -67,7 +67,10 @@ function liveOrderValueByProfile(balance, mode='moderate', slots=1){
   if(free < MIN_REAL_ORDER_USDT) return 0;
   if(mode === 'leverage'){
     const divisor = Math.max(1, Number(slots || 1));
-    return Math.max(MIN_REAL_ORDER_USDT, (free * 0.98) / divisor);
+    const reserveForRecovery = free * 0.42;
+    const usableForFirstHands = Math.max(MIN_REAL_ORDER_USDT, free - reserveForRecovery);
+    const maxFirstHand = free * 0.24;
+    return Math.max(MIN_REAL_ORDER_USDT, Math.min(maxFirstHand, usableForFirstHands / divisor));
   }
   const pct = mode === 'aggressive' ? 0.22 : mode === 'conservative' ? 0.12 : 0.16;
   const cap = mode === 'aggressive' ? 28 : mode === 'conservative' ? 14 : 18;
@@ -322,7 +325,7 @@ export default function ClientPanel({user}){
           return;
         }
 
-        const quoteOrderQty = liveOrderValueByProfile(liveBalance, 'leverage', candidates.length);
+        const quoteOrderQty = liveOrderValueByProfile(liveBalance, 'leverage', Math.max(availableSlots, candidates.length));
         if(quoteOrderQty < MIN_REAL_ORDER_USDT) return;
         const { data } = await supabase.auth.getSession();
         const token = data?.session?.access_token;
@@ -813,7 +816,7 @@ function TradingControl({state,setState,symbol,setSymbol,analysis,recommended,op
     <div className="recommend-line"><strong>{recommended.symbol?.replace('USDT','/USDT')}</strong><span>{recommended.score}/100</span></div>
     <label>Conta de operação</label>
     <div className="mode-buttons"><button className={accountMode==='demo'?'active':''} type="button" onClick={()=>setAccountMode('demo')} disabled={locked}>Demo</button><button className={accountMode==='live'?'active':''} type="button" onClick={()=>setAccountMode('live')} disabled={locked}>Real Spot</button></div>
-    <small className="sync">{locked?`Robô ativo: estratégia travada. Em conta real, oportunidades com score >= ${minScore} enviam compra + venda automaticamente.`:strategyMode==='leverage'?'Alavancagem pode abrir várias cestas e usar quase todo o saldo livre. Use com acompanhamento próximo.':accountMode==='demo'?'Conta demo não consome ENV.':'Conta real consome ENV somente sobre lucro realizado.'}</small>
+    <small className="sync">{locked?`Robô ativo: estratégia travada. Em conta real, oportunidades com score >= ${minScore} enviam compra + venda automaticamente.`:strategyMode==='leverage'?'Alavancagem abre mãos iniciais menores e reserva saldo para recuperar a cesta. Use com acompanhamento próximo.':accountMode==='demo'?'Conta demo não consome ENV.':'Conta real consome ENV somente sobre lucro realizado.'}</small>
     {accountMode === 'live' && state.lastAutoRealStatus && <div className="alert compact">{state.lastAutoRealStatus}</div>}
     {accountMode === 'live' && state.lastAutoRealError && <div className="alert danger compact">{state.lastAutoRealError}</div>}
     <div className="switch-row"><span>Auto Trading</span><button className={state.active?'switch on':'switch'} onClick={()=>setState(s=>({...s,active:!s.active}))}/></div>
@@ -1015,9 +1018,9 @@ export function Training(){
       <div className="training-card">
         <h3><Sparkles size={18}/> Perfil Alavancagem</h3>
         <p><b>Score mínimo:</b> 56/100.</p>
-        <p>É o modo de maior frequência. Ele pode analisar vários pares, abrir até quatro cestas simultâneas e repartir quase todo o saldo USDT livre entre as oportunidades aprovadas.</p>
+        <p>É o modo de maior frequência. Ele pode analisar vários pares, abrir até quatro cestas simultâneas e usar a banca ao longo da cesta, começando com mãos menores e preservando saldo para recuperações maiores.</p>
         <p><b>Indicado para:</b> usuários que aceitam alta exposição e querem buscar muitos micro lucros com acompanhamento constante.</p>
-        <p><b>Comportamento:</b> não repete compra no mesmo símbolo se já existe venda protegida. Se o preço cair, a próxima mão fica maior para recalcular a média da cesta e criar uma venda única que cubra todas as posições.</p>
+        <p><b>Comportamento:</b> não repete compra no mesmo símbolo se já existe venda protegida. A mão 1 não usa a banca toda; se o preço cair, a próxima mão fica maior para recalcular a média da cesta e criar uma venda única que cubra todas as posições.</p>
         <p><b>Risco:</b> como não usa stop loss, quedas fortes podem prender capital em cestas abertas até haver recuperação.</p>
       </div>
     </div>

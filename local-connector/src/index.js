@@ -36,7 +36,8 @@ const cfg = {
   testnetUrl: process.env.BINANCE_TESTNET_BASE_URL || 'https://testnet.binance.vision'
 };
 
-const allowedSymbols = ['BTCUSDT','ETHUSDT','BNBUSDT','SOLUSDT','XRPUSDT','ADAUSDT','AVAXUSDT','DOGEUSDT','LINKUSDT','DOTUSDT','LTCUSDT','TRXUSDT'];
+const allowedSymbols = ['BTCUSDT','ETHUSDT','BNBUSDT','SOLUSDT','XRPUSDT'];
+const recoverySymbols = [...new Set([...allowedSymbols,'ADAUSDT','AVAXUSDT','DOGEUSDT','LINKUSDT','DOTUSDT','LTCUSDT','TRXUSDT'])];
 
 function validateConfig() {
   const missing = [];
@@ -573,7 +574,7 @@ async function symbolsTouchedByBot(userId, environment) {
   });
   for (const row of orders || []) {
     const symbol = String(row.symbol || '').toUpperCase();
-    if (allowedSymbols.includes(symbol)) touched.add(symbol);
+    if (recoverySymbols.includes(symbol)) touched.add(symbol);
   }
   const { data: commands } = await selectRows('connector_commands', {
     select: 'payload,command_type,status',
@@ -583,7 +584,7 @@ async function symbolsTouchedByBot(userId, environment) {
   });
   for (const command of commands || []) {
     const symbol = String(command.payload?.symbol || '').toUpperCase();
-    if (allowedSymbols.includes(symbol)) touched.add(symbol);
+    if (recoverySymbols.includes(symbol)) touched.add(symbol);
   }
   return [...touched];
 }
@@ -654,6 +655,7 @@ async function handleProtectedSpotBuy(command) {
   const timeframe = String(payload.timeframe || '15m');
   const reason = String(payload.reason || 'Entrada protegida INVCRIPTO');
 
+  if (!allowedSymbols.includes(symbol)) throw new Error(`Par ${symbol} bloqueado para novas entradas. O robo opera somente top 5: ${allowedSymbols.join(', ')}.`);
   if (!requestedQuote || requestedQuote <= 0) throw new Error('Valor USDT da compra nao informado.');
   if (!targetPriceRaw || targetPriceRaw <= 0) throw new Error('Preco de venda alvo nao informado.');
 
@@ -1193,8 +1195,8 @@ async function handleLiquidateToUsdt(command) {
   const payload = command.payload || {};
   const environment = payload.environment === 'testnet' ? 'testnet' : 'live';
   const symbols = Array.isArray(payload.symbols) && payload.symbols.length
-    ? payload.symbols.map(item => String(item || '').toUpperCase()).filter(item => allowedSymbols.includes(item))
-    : allowedSymbols;
+    ? payload.symbols.map(item => String(item || '').toUpperCase()).filter(item => recoverySymbols.includes(item))
+    : recoverySymbols;
   const dryRun = Boolean(payload.dryRun);
   const credential = await getCredential(command.user_id, environment);
   const apiKey = decryptSecret(credential.api_key_encrypted);

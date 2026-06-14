@@ -1,5 +1,5 @@
 const headers = { 'content-type': 'application/json', 'access-control-allow-origin': '*' };
-const allowedSymbols = ['BTCUSDT','ETHUSDT','BNBUSDT','SOLUSDT','XRPUSDT','ADAUSDT','AVAXUSDT','DOGEUSDT','LINKUSDT','DOTUSDT','LTCUSDT','TRXUSDT'];
+const allowedSymbols = ['BTCUSDT','ETHUSDT','BNBUSDT','SOLUSDT','XRPUSDT'];
 
 export async function handler(event) {
   const symbol = event.queryStringParameters?.symbol || 'BTCUSDT';

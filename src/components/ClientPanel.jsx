@@ -5,7 +5,7 @@ import { brl, usd, usdt, env, num } from '../lib/format.js';
 import { supabase, hasSupabase } from '../lib/supabase.js';
 import { Activity, BarChart3, Bot, Brain, CheckCircle2, CreditCard, Gauge, History, KeyRound, MonitorPlay, Pause, Play, RefreshCw, Settings, ShieldCheck, SlidersHorizontal, Sparkles, StopCircle, TrendingUp, Wallet } from 'lucide-react';
 
-const allowedSymbols = ['BTCUSDT','ETHUSDT','BNBUSDT','SOLUSDT','XRPUSDT','ADAUSDT','AVAXUSDT','DOGEUSDT','LINKUSDT','DOTUSDT','LTCUSDT','TRXUSDT'];
+const allowedSymbols = ['BTCUSDT','ETHUSDT','BNBUSDT','SOLUSDT','XRPUSDT'];
 const MIN_REAL_ORDER_USDT = 6;
 const strategyLabels = {
   conservative: 'Conservador',
@@ -14,11 +14,10 @@ const strategyLabels = {
   leverage: 'Alavancagem'
 };
 const radarSeed = {
-  BTCUSDT:{hold:94,liquidity:96}, ETHUSDT:{hold:91,liquidity:94}, BNBUSDT:{hold:86,liquidity:88}, SOLUSDT:{hold:78,liquidity:90}, XRPUSDT:{hold:74,liquidity:86}, ADAUSDT:{hold:72,liquidity:78}, AVAXUSDT:{hold:70,liquidity:76}, DOGEUSDT:{hold:68,liquidity:82}, LINKUSDT:{hold:76,liquidity:74}, DOTUSDT:{hold:69,liquidity:70}, LTCUSDT:{hold:73,liquidity:72}, TRXUSDT:{hold:71,liquidity:73}
+  BTCUSDT:{hold:94,liquidity:96}, ETHUSDT:{hold:91,liquidity:94}, BNBUSDT:{hold:86,liquidity:88}, SOLUSDT:{hold:78,liquidity:90}, XRPUSDT:{hold:74,liquidity:86}
 };
 const syntheticBase = {
-  BTCUSDT: 68000, ETHUSDT: 3500, BNBUSDT: 610, SOLUSDT: 155, XRPUSDT: 0.52, ADAUSDT: 0.45,
-  AVAXUSDT: 32, DOGEUSDT: 0.15, LINKUSDT: 17, DOTUSDT: 6.5, LTCUSDT: 84, TRXUSDT: 0.12
+  BTCUSDT: 68000, ETHUSDT: 3500, BNBUSDT: 610, SOLUSDT: 155, XRPUSDT: 0.52
 };
 
 function normalizeKlines(data){
@@ -1010,7 +1009,7 @@ export function Training(){
       <div className="training-card">
         <h3><Sparkles size={18}/> Perfil Alavancagem</h3>
         <p><b>Score mínimo:</b> 56/100.</p>
-        <p>É o modo de maior frequência. Ele pode analisar vários pares, abrir até quatro cestas simultâneas e usar a banca ao longo da cesta, começando com mãos menores e preservando saldo para recuperações maiores.</p>
+        <p>É o modo de maior frequência. Ele analisa somente os cinco pares principais permitidos, abre até quatro cestas simultâneas e usa a banca ao longo da cesta, começando com mãos menores e preservando saldo para recuperações maiores.</p>
         <p><b>Indicado para:</b> usuários que aceitam alta exposição e querem buscar muitos micro lucros com acompanhamento constante.</p>
         <p><b>Comportamento:</b> não repete compra no mesmo símbolo se já existe venda protegida. A mão 1 não usa a banca toda; se o preço cair, a próxima mão fica maior para recalcular a média da cesta e criar uma venda única que cubra todas as posições.</p>
         <p><b>Risco:</b> como não usa stop loss, quedas fortes podem prender capital em cestas abertas até haver recuperação.</p>

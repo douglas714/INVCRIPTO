@@ -2,7 +2,7 @@ export async function handler(event) {
   const symbol = event.queryStringParameters?.symbol || 'BTCUSDT';
   const interval = event.queryStringParameters?.interval || '1m';
   const limit = Math.min(Number(event.queryStringParameters?.limit || 200), 1000);
-  const allowedSymbols = ['BTCUSDT','ETHUSDT','BNBUSDT','SOLUSDT','XRPUSDT','ADAUSDT','AVAXUSDT','DOGEUSDT','LINKUSDT','DOTUSDT','LTCUSDT','TRXUSDT'];
+  const allowedSymbols = ['BTCUSDT','ETHUSDT','BNBUSDT','SOLUSDT','XRPUSDT'];
   const allowedIntervals = ['1m','5m','15m','1h','4h','1d'];
   const headers = { 'content-type':'application/json', 'access-control-allow-origin':'*' };
 

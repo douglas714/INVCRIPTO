@@ -11,7 +11,7 @@ function json(statusCode, body) {
   return { statusCode, headers: jsonHeaders, body: JSON.stringify(body) };
 }
 
-const allowedSymbols = new Set(['BTCUSDT','ETHUSDT','BNBUSDT','SOLUSDT','XRPUSDT','ADAUSDT','AVAXUSDT','DOGEUSDT','LINKUSDT','DOTUSDT','LTCUSDT','TRXUSDT']);
+const allowedSymbols = new Set(['BTCUSDT','ETHUSDT','BNBUSDT','SOLUSDT','XRPUSDT']);
 const strategyScores = { conservative: 78, moderate: 70, aggressive: 62, leverage: 56 };
 
 function clamp(value, min, max) {
@@ -50,7 +50,7 @@ export async function handler(event) {
   const profitTargetPct = clamp(Number(body.profitTargetPct || 0.005), strategyMode === 'leverage' ? 0.0015 : 0.0018, 0.008);
   const reason = String(body.reason || 'Entrada protegida INVCRIPTO').slice(0, 500);
 
-  if (!allowedSymbols.has(symbol)) return json(400, { error: 'Par nao permitido para operacao real.' });
+  if (!allowedSymbols.has(symbol)) return json(400, { error: 'Par bloqueado para novas entradas reais. O robo opera somente os top 5 pares permitidos.' });
   if (!quoteOrderQty || quoteOrderQty <= 0) return json(400, { error: 'Valor da compra em USDT obrigatorio.' });
   if (!targetPrice || targetPrice <= 0) return json(400, { error: 'Preco alvo de venda obrigatorio.' });
   if (environment === 'live' && score < strategyScores[strategyMode]) return json(400, { error: `Score insuficiente para conta real no perfil ${strategyMode}.` });

@@ -6,7 +6,7 @@ import { supabase, hasSupabase } from '../lib/supabase.js';
 import { Activity, BarChart3, Bot, Brain, CheckCircle2, CreditCard, Gauge, History, KeyRound, MonitorPlay, Pause, Play, RefreshCw, Settings, ShieldCheck, SlidersHorizontal, Sparkles, StopCircle, TrendingUp, Wallet } from 'lucide-react';
 
 const allowedSymbols = ['BTCUSDT','ETHUSDT','BNBUSDT','SOLUSDT','XRPUSDT','ADAUSDT','AVAXUSDT','DOGEUSDT','LINKUSDT','DOTUSDT','LTCUSDT','TRXUSDT'];
-const MIN_REAL_ORDER_USDT = 6.5;
+const MIN_REAL_ORDER_USDT = 6;
 const strategyLabels = {
   conservative: 'Conservador',
   moderate: 'Moderado',
@@ -65,16 +65,8 @@ async function loadMarketCandles(symbol, timeframe){
 function liveOrderValueByProfile(balance, mode='moderate', slots=1){
   const free = Number(balance || 0);
   if(free < MIN_REAL_ORDER_USDT) return 0;
-  if(mode === 'leverage'){
-    const divisor = Math.max(1, Number(slots || 1));
-    const reserveForRecovery = free * 0.42;
-    const usableForFirstHands = Math.max(MIN_REAL_ORDER_USDT, free - reserveForRecovery);
-    const maxFirstHand = free * 0.24;
-    return Math.max(MIN_REAL_ORDER_USDT, Math.min(maxFirstHand, usableForFirstHands / divisor));
-  }
-  const pct = mode === 'aggressive' ? 0.22 : mode === 'conservative' ? 0.12 : 0.16;
-  const cap = mode === 'aggressive' ? 28 : mode === 'conservative' ? 14 : 18;
-  return Math.min(cap, Math.max(MIN_REAL_ORDER_USDT, free * pct));
+  // Compra inicial real fixa; o conector calcula martingale da cesta a partir dela.
+  return MIN_REAL_ORDER_USDT;
 }
 
 function openLiveSellSymbols(orders){

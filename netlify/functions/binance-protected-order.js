@@ -18,6 +18,15 @@ function clamp(value, min, max) {
   return Math.max(min, Math.min(max, value));
 }
 
+function safeFirstHandQuote(requestedQuote, strategyMode, freeUsdt) {
+  const requested = Number(requestedQuote || 0);
+  const free = Number(freeUsdt || 0);
+  const firstHandQuote = 6;
+  if (!requested || requested <= 0) return 0;
+  if (!free || free < firstHandQuote) return requested;
+  return firstHandQuote;
+}
+
 export async function handler(event) {
   if (event.httpMethod === 'OPTIONS') return { statusCode: 204, headers: jsonHeaders, body: '' };
   if (event.httpMethod !== 'POST') return json(405, { error: 'Method not allowed' });
@@ -77,6 +86,8 @@ export async function handler(event) {
   if (!credential) return json(404, { error: 'Nenhuma API Binance salva para este ambiente.' });
   if (!credential.can_trade) return json(400, { error: 'API Binance salva esta sem permissao de trading.' });
 
+  const safeQuoteOrderQty = safeFirstHandQuote(quoteOrderQty, strategyMode, credential.real_usdt_free);
+
   const { data: recentCommands, error: recentError } = await supabase
     .from('connector_commands')
     .select('id,payload,status,created_at')
@@ -111,7 +122,8 @@ export async function handler(event) {
         environment,
         credentialId: credential.id,
         symbol,
-        quoteOrderQty,
+        quoteOrderQty: safeQuoteOrderQty,
+        requestedQuoteOrderQty: quoteOrderQty,
         targetPrice,
         profitTargetPct,
         timeframe,
@@ -133,7 +145,8 @@ export async function handler(event) {
     commandType: 'EXECUTE_PROTECTED_SPOT_BUY',
     environment,
     symbol,
-    quoteOrderQty,
+    quoteOrderQty: safeQuoteOrderQty,
+    requestedQuoteOrderQty: quoteOrderQty,
     targetPrice,
     profitTargetPct,
     strategyMode,

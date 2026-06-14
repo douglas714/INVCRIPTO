@@ -3,7 +3,7 @@ import { supabase, hasSupabase } from './lib/supabase.js';
 import { isValidCpf, maskCpf, onlyDigits, sha256 } from './lib/cpf.js';
 import ClientPanel, { Training } from './components/ClientPanel.jsx';
 import AdminPanel from './components/AdminPanel.jsx';
-import { Bot, BookOpen, Shield, UserRound, LogOut } from 'lucide-react';
+import { Bell, Bot, BookOpen, CheckCircle2, Clock3, DollarSign, Download, ExternalLink, Shield, UserRound, LogOut } from 'lucide-react';
 
 const appUrl = (import.meta.env.VITE_APP_URL || 'https://invcripto.netlify.app').replace(/\/$/, '');
 const resetUrl = import.meta.env.VITE_PASSWORD_RESET_URL || `${appUrl}/reset-password`;
@@ -68,6 +68,7 @@ export default function App() {
   const [tab, setTab] = useState('login');
   const [authNotice, setAuthNotice] = useState('');
   const user = session?.user || demoUser;
+  const simpleOpsMode = window.location.pathname === '/operacoes';
 
   useEffect(() => {
     const hash = new URLSearchParams(window.location.hash.replace(/^#/, ''));
@@ -109,8 +110,184 @@ export default function App() {
       </div>
       {user && <button className="btn ghost" onClick={logout}><LogOut size={16}/> Sair</button>}
     </header>
-    {!user ? <AuthScreen setDemoUser={setDemoUser} tab={tab} setTab={setTab} authNotice={authNotice} setAuthNotice={setAuthNotice}/> : <MainRouter user={user}/>} 
+    {!user ? <AuthScreen setDemoUser={setDemoUser} tab={tab} setTab={setTab} authNotice={authNotice} setAuthNotice={setAuthNotice}/> : simpleOpsMode ? <SimpleOperationsApp user={user}/> : <MainRouter user={user}/>} 
   </div></ErrorBoundary>;
+}
+
+function SimpleOperationsApp({ user }) {
+  const [orders, setOrders] = useState([]);
+  const [profits, setProfits] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [lastSync, setLastSync] = useState(null);
+  const [error, setError] = useState('');
+  const [notice, setNotice] = useState('');
+  const [installPrompt, setInstallPrompt] = useState(null);
+  const [appInstalled, setAppInstalled] = useState(() => window.matchMedia?.('(display-mode: standalone)').matches || window.navigator?.standalone);
+  const [notificationsAllowed, setNotificationsAllowed] = useState(() => typeof Notification !== 'undefined' && Notification.permission === 'granted');
+  const seenProfitsRef = React.useRef(new Set(JSON.parse(localStorage.getItem('inv_simple_seen_profits') || '[]')));
+
+  useEffect(() => {
+    if ('serviceWorker' in navigator) {
+      navigator.serviceWorker.register('/sw.js').catch(() => {});
+    }
+    const onBeforeInstall = event => {
+      event.preventDefault();
+      setInstallPrompt(event);
+    };
+    const onInstalled = () => {
+      setAppInstalled(true);
+      setInstallPrompt(null);
+      setNotice('App instalado com sucesso.');
+    };
+    window.addEventListener('beforeinstallprompt', onBeforeInstall);
+    window.addEventListener('appinstalled', onInstalled);
+    return () => {
+      window.removeEventListener('beforeinstallprompt', onBeforeInstall);
+      window.removeEventListener('appinstalled', onInstalled);
+    };
+  }, []);
+
+  async function requestNotifications() {
+    if (typeof Notification === 'undefined') {
+      setNotice('Este navegador não suporta notificação nativa.');
+      return;
+    }
+    const permission = await Notification.requestPermission();
+    setNotificationsAllowed(permission === 'granted');
+    setNotice(permission === 'granted' ? 'Notificações ativadas para lucros fechados.' : 'Permissão de notificação não liberada no navegador.');
+  }
+
+  async function installApp() {
+    if (appInstalled) {
+      setNotice('O app já está instalado neste navegador.');
+      return;
+    }
+    if (!installPrompt) {
+      setNotice('Se o botão de instalação do navegador aparecer na barra de endereço, use ele para instalar o app. No celular, use "Adicionar à tela inicial".');
+      return;
+    }
+    installPrompt.prompt();
+    const choice = await installPrompt.userChoice.catch(() => null);
+    if (choice?.outcome === 'accepted') {
+      setAppInstalled(true);
+      setNotice('Instalação iniciada. O INVCRIPTO ficará disponível como app.');
+    } else {
+      setNotice('Instalação cancelada pelo navegador.');
+    }
+    setInstallPrompt(null);
+  }
+
+  function emitProfitNotification(event) {
+    const profit = Number(event.profitUsd || 0);
+    if (profit <= 0) return;
+    const title = `Lucro fechado: ${event.symbol || 'INVCRIPTO'}`;
+    const body = `Resultado +$${profit.toFixed(2)} USDT. Taxa ENV: ${Number(event.feeEnv || 0).toFixed(2)}.`;
+    setNotice(`${title} - ${body}`);
+    if (typeof Notification !== 'undefined' && Notification.permission === 'granted') {
+      new Notification(title, { body, icon: '/favicon.png', badge: '/favicon.png' });
+    }
+  }
+
+  async function loadOperations({ initial = false } = {}) {
+    if (!hasSupabase || !user?.id) {
+      setError('Entre com uma conta conectada ao Supabase para ver operações reais.');
+      setLoading(false);
+      return;
+    }
+    try {
+      setError('');
+      const { data } = await supabase.auth.getSession();
+      const token = data?.session?.access_token;
+      const manualUserId = user?.manual_profile ? user.id : null;
+      const response = await fetch('/.netlify/functions/binance-real-orders', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', ...(token ? { authorization: `Bearer ${token}` } : {}) },
+        body: JSON.stringify({ manualUserId, manualEmail: user?.email || '', environment: 'live', limit: 100 })
+      });
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok || !payload?.ok) throw new Error(payload.error || 'Não foi possível carregar operações.');
+      const nextProfits = Array.isArray(payload.profitEvents) ? payload.profitEvents : [];
+      setOrders(Array.isArray(payload.orders) ? payload.orders : []);
+      setProfits(nextProfits);
+      setLastSync(new Date());
+      if (!initial) {
+        nextProfits.forEach(event => {
+          const key = `${event.at}:${event.symbol}:${event.profitUsd}`;
+          if (!seenProfitsRef.current.has(key) && Number(event.profitUsd || 0) > 0) {
+            seenProfitsRef.current.add(key);
+            emitProfitNotification(event);
+          }
+        });
+        localStorage.setItem('inv_simple_seen_profits', JSON.stringify([...seenProfitsRef.current].slice(-200)));
+      } else {
+        nextProfits.forEach(event => seenProfitsRef.current.add(`${event.at}:${event.symbol}:${event.profitUsd}`));
+        localStorage.setItem('inv_simple_seen_profits', JSON.stringify([...seenProfitsRef.current].slice(-200)));
+      }
+    } catch (err) {
+      setError(String(err?.message || err));
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  useEffect(() => {
+    loadOperations({ initial: true });
+    const timer = setInterval(() => loadOperations(), 10000);
+    return () => clearInterval(timer);
+  }, [user?.id]);
+
+  const closedProfit = profits.reduce((sum, item) => sum + Number(item.profitUsd || 0), 0);
+  const fees = profits.reduce((sum, item) => sum + Number(item.feeEnv || 0), 0);
+  const openSells = orders.filter(order => String(order.rawSide || order.side || '').toUpperCase().includes('SELL') && ['new', 'open', 'partially_filled'].includes(String(order.status || 'new').toLowerCase()));
+  const recent = [...profits.map(item => ({ ...item, type: 'profit' })), ...orders.map(item => ({ ...item, type: 'order' }))]
+    .sort((a, b) => new Date(b.at || 0) - new Date(a.at || 0))
+    .slice(0, 40);
+
+  return <main className="simple-ops">
+    <section className="simple-ops-hero">
+      <div>
+        <p className="eyebrow">App de operações</p>
+        <h1>Operações INVCRIPTO</h1>
+        <p>Monitoramento resumido da conta real, com alerta quando uma operação fechar com lucro.</p>
+      </div>
+      <div className="simple-ops-actions">
+        <a className="btn ghost" href="/"><ExternalLink size={16}/> Painel completo</a>
+        <button className="btn ghost" type="button" onClick={installApp}><Download size={16}/>{appInstalled ? 'App instalado' : 'Instalar app'}</button>
+        <button className="btn primary" type="button" onClick={requestNotifications}><Bell size={16}/>{notificationsAllowed ? 'Notificações ativas' : 'Ativar notificações'}</button>
+      </div>
+    </section>
+    {notice && <div className="alert simple-profit-alert"><CheckCircle2 size={18}/>{notice}</div>}
+    {error && <div className="alert danger">{error}</div>}
+    <section className="simple-kpis">
+      <div className="mini-kpi"><DollarSign className="kpi-icon"/><span>Lucro real fechado</span><strong>${closedProfit.toFixed(2)}</strong><small>{fees.toFixed(2)} ENV taxa</small></div>
+      <div className="mini-kpi"><CheckCircle2 className="kpi-icon"/><span>Vendas protegidas</span><strong>{openSells.length}</strong><small>Ordens abertas na Binance</small></div>
+      <div className="mini-kpi"><Clock3 className="kpi-icon"/><span>Última atualização</span><strong>{lastSync ? lastSync.toLocaleTimeString('pt-BR') : loading ? 'Carregando' : '-'}</strong><small>Atualiza a cada 10 segundos</small></div>
+    </section>
+    <section className="panel panel-glow simple-ops-list">
+      <div className="simple-section-head">
+        <h3>Operações e lucros</h3>
+        <button className="btn ghost small" type="button" onClick={() => loadOperations()}>Atualizar agora</button>
+      </div>
+      <div className="table-wrap">
+        <table>
+          <thead><tr><th>Hora</th><th>Tipo</th><th>Ativo</th><th>Status</th><th>Preço</th><th>Valor</th><th>Lucro</th><th>Taxa ENV</th></tr></thead>
+          <tbody>
+            {recent.map((item, index) => <tr key={`${item.type}-${item.id || item.at}-${index}`} className={item.type === 'profit' ? 'profit-row' : ''}>
+              <td>{item.at ? new Date(item.at).toLocaleString('pt-BR') : '-'}</td>
+              <td>{item.type === 'profit' ? 'Lucro fechado' : item.side}</td>
+              <td>{String(item.symbol || '').replace('USDT', '/USDT')}</td>
+              <td>{item.type === 'profit' ? 'Finalizada' : item.status || '-'}</td>
+              <td>{item.price ? Number(item.price).toFixed(4) : '-'}</td>
+              <td>{item.valueUsd ? `$${Number(item.valueUsd).toFixed(2)}` : '-'}</td>
+              <td>{item.profitUsd ? `$${Number(item.profitUsd).toFixed(2)}` : '-'}</td>
+              <td>{item.feeEnv ? Number(item.feeEnv).toFixed(2) : '-'}</td>
+            </tr>)}
+            {!recent.length && <tr><td colSpan="8" className="muted">Nenhuma operação encontrada ainda.</td></tr>}
+          </tbody>
+        </table>
+      </div>
+    </section>
+  </main>;
 }
 
 function MainRouter({ user }) {

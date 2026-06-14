@@ -200,12 +200,13 @@ export function analyzeMarket(candles, mode = 'moderate') {
   const momentumOk = rsi14[i] >= 48 && rsi14[i] <= 68;
   const rsiRecovering = rsi14[i] > rsi14[i - 1] && rsi14[i - 1] < 55;
   const candleStrength = last.close > last.open && (last.close - last.low) / range > 0.58;
-  const rejectionBuy = last.low < support * 1.0025 && last.close > support && candleStrength;
+  const lowerRecovery = (last.close - last.low) / range;
+  const strongDowntrendReaction = rsiRecovering && volumeOk && lowerRecovery > 0.72;
+  const rejectionBuy = last.low < support * 1.0025 && last.close > support && candleStrength && (!trendDown || strongDowntrendReaction);
   const rejectionSell = last.high > resistance * 0.998 && last.close < resistance && (last.high - last.close) / range > 0.55;
   const pullbackBuy = trendUp && last.low <= ema21[i] && last.close > ema9[i] && momentumOk;
   const atrValue = atr14[i] || 0;
   const nearResistance = resistance > 0 && atrValue > 0 && (resistance - last.close) <= atrValue * 0.35 && last.close < resistance;
-  const lowerRecovery = (last.close - last.low) / range;
   const stretchedDrop = atrValue > 0 && range >= atrValue * 1.15 && last.close < last.open;
   const supportSweep = support > 0 && last.low <= support * 1.0015 && last.close >= support * 0.9975;
   const exhaustionBuy = !nearResistance &&

@@ -399,6 +399,24 @@ async function signedCancelOrder({ apiKey, apiSecret, environment, symbol, order
   return { ok: response.ok, status: response.status, payload };
 }
 
+async function signedCancelOpenOrders({ apiKey, apiSecret, environment, symbol }) {
+  const query = new URLSearchParams({
+    symbol,
+    timestamp: String(Date.now()),
+    recvWindow: '5000'
+  }).toString();
+  const signature = sign(query, apiSecret);
+  const url = `${binanceBase(environment)}/api/v3/openOrders?${query}&signature=${signature}`;
+  const response = await fetch(url, {
+    method: 'DELETE',
+    headers: { 'X-MBX-APIKEY': apiKey }
+  });
+  const text = await response.text();
+  let payload;
+  try { payload = JSON.parse(text); } catch { payload = { raw: text }; }
+  return { ok: response.ok, status: response.status, payload };
+}
+
 async function signedOpenOrders({ apiKey, apiSecret, environment, symbol }) {
   const params = { timestamp: String(Date.now()), recvWindow: '5000' };
   if (symbol) params.symbol = symbol;
@@ -723,8 +741,8 @@ async function handleProtectedSpotBuy(command) {
   const availableUsdt = Number(usdt?.free || 0);
   const estimatedTarget = Math.max(targetPriceRaw, Number(payload.entryPrice || 0), 1);
   const roundingReserve = estimatedTarget * filters.stepSize * 1.35;
-  const safeMinimum = Math.max(filters.minNotional * 1.12 + roundingReserve, 6.25);
-  const firstHandPct = strategyMode === 'conservative' ? 0.22 : strategyMode === 'leverage' ? 0.24 : strategyMode === 'aggressive' ? 0.38 : 0.30;
+  const initialQuoteOrderQty = 6;
+  const safeMinimum = Math.max(filters.minNotional * 1.02 + roundingReserve, initialQuoteOrderQty);
   const recoveryMultipliers = strategyMode === 'conservative'
     ? { 2: 1.45, 3: 2.05 }
     : strategyMode === 'leverage'
@@ -732,7 +750,7 @@ async function handleProtectedSpotBuy(command) {
     : strategyMode === 'aggressive'
       ? { 2: 1.7, 3: 2.45, 4: 3.2, 5: 4.1 }
       : { 2: 1.6, 3: 2.35, 4: 3.05 };
-  const firstHandQuote = Math.max(requestedQuote, availableUsdt * firstHandPct);
+  const firstHandQuote = Math.max(initialQuoteOrderQty, safeMinimum);
   const recoveryMultiplier = recoveryMode ? (recoveryMultipliers[recoveryLevel] || 1) : 1;
   const desiredQuote = recoveryMode ? firstHandQuote * recoveryMultiplier : firstHandQuote;
   const quoteOrderQty = Math.min(availableUsdt, Math.max(desiredQuote, safeMinimum));
@@ -792,13 +810,12 @@ async function handleProtectedSpotBuy(command) {
   const buyAuditId = buyLogError ? null : (Array.isArray(buyRows) ? buyRows[0]?.id : buyRows?.id);
   await refreshCredentialBalance(credential, apiKey, apiSecret, environment).catch(() => null);
 
-  const sellReferenceQty = recoveryMode ? await currentFreeBalance({ apiKey, apiSecret, environment, asset: filters.baseAsset }) : executedQty;
-  const basketAvgPrice = recoveryMode
-    ? await estimateAverageBuyPrice({ apiKey, apiSecret, environment, symbol, neededQty: sellReferenceQty }).catch(() => activeBasket?.avgPrice || avgPrice)
-    : avgPrice;
-  const sellPrice = ceilToStep(Math.max(targetPriceRaw, basketAvgPrice * (1 + profitTargetPct)), filters.tickSize);
   const freeBase = await currentFreeBalance({ apiKey, apiSecret, environment, asset: filters.baseAsset });
-  const sellQty = floorToStep(Math.min(recoveryMode ? sellReferenceQty : executedQty, freeBase), filters.stepSize);
+  const sellReferenceQty = freeBase;
+  const basketAvgPrice = await estimateAverageBuyPrice({ apiKey, apiSecret, environment, symbol, neededQty: sellReferenceQty })
+    .catch(() => recoveryMode ? activeBasket?.avgPrice || avgPrice : avgPrice);
+  const sellPrice = ceilToStep(Math.max(targetPriceRaw, basketAvgPrice * (1 + profitTargetPct)), filters.tickSize);
+  const sellQty = floorToStep(freeBase, filters.stepSize);
   const sellNotional = sellQty * sellPrice;
 
   if (sellQty < filters.minQty || sellNotional < filters.minNotional) {
@@ -1172,6 +1189,128 @@ async function recoverUnprotectedBotBalances() {
   }
 }
 
+async function handleLiquidateToUsdt(command) {
+  const payload = command.payload || {};
+  const environment = payload.environment === 'testnet' ? 'testnet' : 'live';
+  const symbols = Array.isArray(payload.symbols) && payload.symbols.length
+    ? payload.symbols.map(item => String(item || '').toUpperCase()).filter(item => allowedSymbols.includes(item))
+    : allowedSymbols;
+  const dryRun = Boolean(payload.dryRun);
+  const credential = await getCredential(command.user_id, environment);
+  const apiKey = decryptSecret(credential.api_key_encrypted);
+  const apiSecret = decryptSecret(credential.api_secret_encrypted);
+  const account = await signedAccount({ apiKey, apiSecret, environment });
+  if (!account.ok) throw new Error(`Binance rejeitou conta: ${JSON.stringify(account.payload)}`);
+  if (!account.payload?.canTrade) throw new Error('API Binance esta sem permissao de trading.');
+
+  const balances = Array.isArray(account.payload?.balances) ? account.payload.balances : [];
+  const cancelled = [];
+  const sold = [];
+  const skipped = [];
+
+  for (const symbol of symbols) {
+    const filters = await exchangeInfo(symbol, environment).catch(() => null);
+    if (!filters || filters.status !== 'TRADING') {
+      skipped.push({ symbol, reason: 'pair_not_trading' });
+      continue;
+    }
+
+    const openOrders = await signedOpenOrders({ apiKey, apiSecret, environment, symbol });
+    if (openOrders.ok && Array.isArray(openOrders.payload) && openOrders.payload.length) {
+      if (dryRun) {
+        cancelled.push({ symbol, count: openOrders.payload.length, dryRun: true });
+      } else {
+        const cancel = await signedCancelOpenOrders({ apiKey, apiSecret, environment, symbol });
+        if (!cancel.ok) throw new Error(`Nao foi possivel cancelar ordens abertas de ${symbol}: ${JSON.stringify(cancel.payload)}`);
+        await updateRows('real_orders', {
+          status: 'canceled',
+          raw_response: cancel.payload
+        }, [
+          eqFilter('user_id', command.user_id),
+          eqFilter('environment', environment),
+          eqFilter('symbol', symbol),
+          'side=eq.SELL',
+          'status=in.(new,open,partially_filled)'
+        ]).catch(() => null);
+        cancelled.push({ symbol, count: openOrders.payload.length });
+      }
+    }
+
+    const baseAsset = filters.baseAsset || baseAssetFromSymbol(symbol);
+    const freeBase = dryRun
+      ? Number((balances.find(item => item.asset === baseAsset) || {}).free || 0)
+      : await currentFreeBalance({ apiKey, apiSecret, environment, asset: baseAsset });
+    const sellQty = floorToStep(freeBase, filters.stepSize);
+    const pricePayload = await ticker(symbol);
+    const lastPrice = Number(pricePayload.payload?.bidPrice || pricePayload.payload?.lastPrice || pricePayload.payload?.weightedAvgPrice || 0);
+    const estimatedNotional = sellQty * lastPrice;
+
+    if (!sellQty || sellQty < filters.minQty || estimatedNotional < filters.minNotional) {
+      skipped.push({ symbol, baseAsset, freeBase, sellQty, estimatedNotional, reason: 'below_minimum' });
+      continue;
+    }
+
+    if (dryRun) {
+      sold.push({ symbol, baseAsset, sellQty, estimatedNotional, dryRun: true });
+      continue;
+    }
+
+    const clientOrderId = `INVZERO_${Date.now().toString(36)}_${symbol.slice(0, 6)}`.slice(0, 36);
+    const sell = await signedOrder({
+      apiKey,
+      apiSecret,
+      environment,
+      params: {
+        symbol,
+        side: 'SELL',
+        type: 'MARKET',
+        quantity: formatDecimal(sellQty, filters.stepSize),
+        newClientOrderId: clientOrderId,
+        newOrderRespType: 'FULL'
+      }
+    });
+    if (!sell.ok) throw new Error(`Venda a mercado rejeitada para ${symbol}: ${JSON.stringify(sell.payload)}`);
+
+    const executedQty = Number(sell.payload?.executedQty || sellQty);
+    const cummulativeQuoteQty = Number(sell.payload?.cummulativeQuoteQty || 0);
+    const avgPrice = executedQty > 0 && cummulativeQuoteQty > 0 ? cummulativeQuoteQty / executedQty : lastPrice;
+    await insertRealOrders([{
+      user_id: command.user_id,
+      environment,
+      symbol,
+      side: 'SELL',
+      order_type: 'MARKET',
+      status: String(sell.payload?.status || 'FILLED').toLowerCase(),
+      protection_role: 'manual_liquidation',
+      timeframe: 'manual',
+      client_order_id: clientOrderId,
+      binance_order_id: String(sell.payload?.orderId || ''),
+      quantity: executedQty,
+      price: avgPrice,
+      executed_qty: executedQty,
+      cummulative_quote_qty: cummulativeQuoteQty,
+      reason: 'Zeragem manual solicitada: converter saldo do robo para USDT',
+      raw_response: sell.payload
+    }]);
+    sold.push({ symbol, baseAsset, executedQty, quoteQty: cummulativeQuoteQty, avgPrice });
+  }
+
+  const refreshed = await refreshCredentialBalance(credential, apiKey, apiSecret, environment).catch(() => null);
+  dashboard.lastProtectedOrder = 'Zeragem para USDT executada';
+  dashboard.lastUsdt = refreshed?.free ?? dashboard.lastUsdt;
+  dashboard.lastSync = new Date().toLocaleString('pt-BR');
+
+  return {
+    environment,
+    dryRun,
+    cancelled,
+    sold,
+    skipped,
+    usdtFree: refreshed?.free ?? null,
+    usdtLocked: refreshed?.locked ?? null
+  };
+}
+
 async function executeCommand(command) {
   switch (String(command.command_type || '').toUpperCase()) {
     case 'VALIDATE_BINANCE_API':
@@ -1188,6 +1327,8 @@ async function executeCommand(command) {
     }
     case 'EXECUTE_PROTECTED_SPOT_BUY':
       return handleProtectedSpotBuy(command);
+    case 'LIQUIDATE_TO_USDT':
+      return handleLiquidateToUsdt(command);
     default:
       throw new Error(`Comando não suportado: ${command.command_type}`);
   }

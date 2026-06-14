@@ -3,7 +3,7 @@ import { supabase, hasSupabase } from './lib/supabase.js';
 import { isValidCpf, maskCpf, onlyDigits, sha256 } from './lib/cpf.js';
 import ClientPanel, { Training } from './components/ClientPanel.jsx';
 import AdminPanel from './components/AdminPanel.jsx';
-import { Bell, Bot, BookOpen, CheckCircle2, Clock3, DollarSign, Download, ExternalLink, Shield, UserRound, LogOut } from 'lucide-react';
+import { Bell, Bot, BookOpen, CheckCircle2, Clock3, DollarSign, Download, ExternalLink, Shield, UserRound, LogOut, Wallet } from 'lucide-react';
 
 const appUrl = (import.meta.env.VITE_APP_URL || 'https://invcripto.netlify.app').replace(/\/$/, '');
 const resetUrl = import.meta.env.VITE_PASSWORD_RESET_URL || `${appUrl}/reset-password`;
@@ -117,6 +117,7 @@ export default function App() {
 function SimpleOperationsApp({ user }) {
   const [orders, setOrders] = useState([]);
   const [profits, setProfits] = useState([]);
+  const [accountStatus, setAccountStatus] = useState({ connected: false, usdtFree: 0, usdtLocked: 0, envBalance: 0 });
   const [loading, setLoading] = useState(true);
   const [lastSync, setLastSync] = useState(null);
   const [error, setError] = useState('');
@@ -199,13 +200,31 @@ function SimpleOperationsApp({ user }) {
       const { data } = await supabase.auth.getSession();
       const token = data?.session?.access_token;
       const manualUserId = user?.manual_profile ? user.id : null;
+      const requestBody = { manualUserId, manualEmail: user?.email || '', environment: 'live' };
       const response = await fetch('/.netlify/functions/binance-real-orders', {
         method: 'POST',
         headers: { 'content-type': 'application/json', ...(token ? { authorization: `Bearer ${token}` } : {}) },
-        body: JSON.stringify({ manualUserId, manualEmail: user?.email || '', environment: 'live', limit: 100 })
+        body: JSON.stringify({ ...requestBody, limit: 100 })
+      });
+      const statusResponse = await fetch('/.netlify/functions/binance-status', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', ...(token ? { authorization: `Bearer ${token}` } : {}) },
+        body: JSON.stringify(requestBody)
       });
       const payload = await response.json().catch(() => ({}));
+      const statusPayload = await statusResponse.json().catch(() => ({}));
       if (!response.ok || !payload?.ok) throw new Error(payload.error || 'Não foi possível carregar operações.');
+      if (statusResponse.ok && statusPayload?.ok) {
+        setAccountStatus({
+          connected: Boolean(statusPayload.connected),
+          canTrade: Boolean(statusPayload.canTrade),
+          credentialStatus: statusPayload.credentialStatus || '',
+          usdtFree: Number(statusPayload.usdtFree || 0),
+          usdtLocked: Number(statusPayload.usdtLocked || 0),
+          envBalance: Number(statusPayload.envBalance || 0),
+          lastTestAt: statusPayload.lastTestAt || null
+        });
+      }
       const nextProfits = Array.isArray(payload.profitEvents) ? payload.profitEvents : [];
       setOrders(Array.isArray(payload.orders) ? payload.orders : []);
       setProfits(nextProfits);
@@ -238,6 +257,7 @@ function SimpleOperationsApp({ user }) {
 
   const closedProfit = profits.reduce((sum, item) => sum + Number(item.profitUsd || 0), 0);
   const fees = profits.reduce((sum, item) => sum + Number(item.feeEnv || 0), 0);
+  const totalUsdt = Number(accountStatus.usdtFree || 0) + Number(accountStatus.usdtLocked || 0);
   const openSells = orders.filter(order => String(order.rawSide || order.side || '').toUpperCase().includes('SELL') && ['new', 'open', 'partially_filled'].includes(String(order.status || 'new').toLowerCase()));
   const recent = [...profits.map(item => ({ ...item, type: 'profit' })), ...orders.map(item => ({ ...item, type: 'order' }))]
     .sort((a, b) => new Date(b.at || 0) - new Date(a.at || 0))
@@ -259,8 +279,10 @@ function SimpleOperationsApp({ user }) {
     {notice && <div className="alert simple-profit-alert"><CheckCircle2 size={18}/>{notice}</div>}
     {error && <div className="alert danger">{error}</div>}
     <section className="simple-kpis">
+      <div className="mini-kpi"><Wallet className="kpi-icon"/><span>Saldo real Binance</span><strong>${totalUsdt.toFixed(2)} USDT</strong><small>{accountStatus.connected ? `${Number(accountStatus.usdtFree || 0).toFixed(2)} livre | ${Number(accountStatus.usdtLocked || 0).toFixed(2)} em ordem` : 'API não conectada'}</small></div>
       <div className="mini-kpi"><DollarSign className="kpi-icon"/><span>Lucro real fechado</span><strong>${closedProfit.toFixed(2)}</strong><small>{fees.toFixed(2)} ENV taxa</small></div>
       <div className="mini-kpi"><CheckCircle2 className="kpi-icon"/><span>Vendas protegidas</span><strong>{openSells.length}</strong><small>Ordens abertas na Binance</small></div>
+      <div className="mini-kpi"><Shield className="kpi-icon"/><span>ENV disponível</span><strong>{Number(accountStatus.envBalance || 0).toFixed(2)} ENV</strong><small>{accountStatus.canTrade ? 'Trading habilitado' : accountStatus.connected ? 'Somente leitura' : 'Aguardando API'}</small></div>
       <div className="mini-kpi"><Clock3 className="kpi-icon"/><span>Última atualização</span><strong>{lastSync ? lastSync.toLocaleTimeString('pt-BR') : loading ? 'Carregando' : '-'}</strong><small>Atualiza a cada 10 segundos</small></div>
     </section>
     <section className="panel panel-glow simple-ops-list">

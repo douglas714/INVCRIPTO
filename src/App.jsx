@@ -181,8 +181,8 @@ function SimpleOperationsApp({ user }) {
   function emitProfitNotification(event) {
     const profit = Number(event.profitUsd || 0);
     if (profit <= 0) return;
-    const title = `Lucro fechado: ${event.symbol || 'INVCRIPTO'}`;
-    const body = `Resultado +$${profit.toFixed(2)} USDT. Taxa ENV: ${Number(event.feeEnv || 0).toFixed(2)}.`;
+    const title = `Lucro líquido fechado: ${event.symbol || 'INVCRIPTO'}`;
+    const body = `Resultado líquido +$${profit.toFixed(2)} USDT após taxas Binance. Taxa ENV: ${Number(event.feeEnv || 0).toFixed(2)}.`;
     setNotice(`${title} - ${body}`);
     if (typeof Notification !== 'undefined' && Notification.permission === 'granted') {
       new Notification(title, { body, icon: '/favicon.png', badge: '/favicon.png' });
@@ -280,7 +280,7 @@ function SimpleOperationsApp({ user }) {
     {error && <div className="alert danger">{error}</div>}
     <section className="simple-kpis">
       <div className="mini-kpi"><Wallet className="kpi-icon"/><span>Saldo real Binance</span><strong>${totalUsdt.toFixed(2)} USDT</strong><small>{accountStatus.connected ? `${Number(accountStatus.usdtFree || 0).toFixed(2)} livre | ${Number(accountStatus.usdtLocked || 0).toFixed(2)} em ordem` : 'API não conectada'}</small></div>
-      <div className="mini-kpi"><DollarSign className="kpi-icon"/><span>Lucro real fechado</span><strong>${closedProfit.toFixed(2)}</strong><small>{fees.toFixed(2)} ENV taxa</small></div>
+      <div className="mini-kpi"><DollarSign className="kpi-icon"/><span>Lucro líquido fechado</span><strong>${closedProfit.toFixed(2)}</strong><small>Após taxas Binance | {fees.toFixed(2)} ENV</small></div>
       <div className="mini-kpi"><CheckCircle2 className="kpi-icon"/><span>Vendas protegidas</span><strong>{openSells.length}</strong><small>Ordens abertas na Binance</small></div>
       <div className="mini-kpi"><Shield className="kpi-icon"/><span>ENV disponível</span><strong>{Number(accountStatus.envBalance || 0).toFixed(2)} ENV</strong><small>{accountStatus.canTrade ? 'Trading habilitado' : accountStatus.connected ? 'Somente leitura' : 'Aguardando API'}</small></div>
       <div className="mini-kpi"><Clock3 className="kpi-icon"/><span>Última atualização</span><strong>{lastSync ? lastSync.toLocaleTimeString('pt-BR') : loading ? 'Carregando' : '-'}</strong><small>Atualiza a cada 10 segundos</small></div>
@@ -296,7 +296,7 @@ function SimpleOperationsApp({ user }) {
           <tbody>
             {recent.map((item, index) => <tr key={`${item.type}-${item.id || item.at}-${index}`} className={item.type === 'profit' ? 'profit-row' : ''}>
               <td>{item.at ? new Date(item.at).toLocaleString('pt-BR') : '-'}</td>
-              <td>{item.type === 'profit' ? 'Lucro fechado' : item.side}</td>
+              <td>{item.type === 'profit' ? 'Lucro líquido' : item.side}</td>
               <td>{String(item.symbol || '').replace('USDT', '/USDT')}</td>
               <td>{item.type === 'profit' ? 'Finalizada' : item.status || '-'}</td>
               <td>{item.price ? Number(item.price).toFixed(4) : '-'}</td>

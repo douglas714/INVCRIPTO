@@ -562,9 +562,9 @@ function KpiStrip({state,lastPrice,symbol,timeframe,accountMode,setAccountMode,o
     <AccountBalanceKpi state={state} accountMode={accountMode} setAccountMode={setAccountMode} onRefreshBalance={onRefreshBalance} balanceRefreshing={balanceRefreshing}/>
     <MiniKpi icon={<CreditCard/>} label="ENV" value={`${num(state.envBalance ?? state.invBalance ?? 0,2)} ENV`} delta={accountMode==='live'?'cobra no lucro real':'demo não consome'}/>
     <MiniKpi icon={<ShieldCheck/>} label="Status Binance" value={state.binancePending?'Validando...':state.apiConnected?'Conectada':'Desconectada'} delta={state.binancePending?'conector local':accountMode==='live'?'conta real':'modo demo'}/>
-    <MiniKpi icon={<TrendingUp/>} label={accountMode==='live'?'Lucro real ativo':'Lucro demo ativo'} value={usd(activeProfit)} delta={`${num(activeFee,2)} ENV taxa`}/>
+    <MiniKpi icon={<TrendingUp/>} label={accountMode==='live'?'Lucro líquido real':'Lucro demo ativo'} value={usd(activeProfit)} delta={accountMode==='live'?`após taxas Binance | ${num(activeFee,2)} ENV`:`${num(activeFee,2)} ENV taxa`}/>
     <MiniKpi icon={<TrendingUp/>} label="Lucro demo" value={usd(demoProfit)} delta={`${num(state.feesEnv ?? state.feesInv ?? 0,2)} ENV taxa`}/>
-    <MiniKpi icon={<TrendingUp/>} label="Lucro real" value={usd(realProfit)} delta={`${num(state.realFeesEnv ?? state.realFeesInv ?? 0,2)} ENV taxa`}/>
+    <MiniKpi icon={<TrendingUp/>} label="Lucro líquido real" value={usd(realProfit)} delta={`após taxas Binance | ${num(state.realFeesEnv ?? state.realFeesInv ?? 0,2)} ENV`}/>
     <MiniKpi icon={<Gauge/>} label="Win Rate" value={`${winRate||0}%`} delta="estimado"/>
     <MiniKpi icon={<BarChart3/>} label="Par ativo" value={symbol.replace('USDT','/USDT')} delta={lastPrice?`$ ${lastPrice.toFixed(2)}`:'carregando'}/>
     <MiniKpi icon={<Activity/>} label="Timeframe" value={timeframe.toUpperCase()} delta="janela de operação"/>

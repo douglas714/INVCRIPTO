@@ -33,7 +33,8 @@ const cfg = {
   nodeName: process.env.CONNECTOR_NAME || 'INVCRIPTO Connector Local',
   intervalMs: Number(process.env.CONNECTOR_INTERVAL_MS || 5000),
   spotUrl: process.env.BINANCE_SPOT_BASE_URL || 'https://api.binance.com',
-  testnetUrl: process.env.BINANCE_TESTNET_BASE_URL || 'https://testnet.binance.vision'
+  testnetUrl: process.env.BINANCE_TESTNET_BASE_URL || 'https://testnet.binance.vision',
+  roundTripFeeBufferPct: Number(process.env.BINANCE_ROUND_TRIP_FEE_BUFFER_PCT || 0.0022)
 };
 
 const allowedSymbols = ['BTCUSDT','ETHUSDT','BNBUSDT','SOLUSDT','XRPUSDT'];
@@ -460,6 +461,40 @@ async function ticker(symbol) {
   return { ok: response.ok, status: response.status, payload };
 }
 
+async function commissionToUsdt({ asset, amount, symbol, tradePrice }) {
+  const qty = Number(amount || 0);
+  const commissionAsset = String(asset || '').toUpperCase();
+  if (!qty || qty <= 0 || !commissionAsset) return 0;
+  if (commissionAsset === 'USDT') return qty;
+  const baseAsset = baseAssetFromSymbol(symbol);
+  if (commissionAsset === baseAsset) return qty * Number(tradePrice || 0);
+  const feeSymbol = `${commissionAsset}USDT`;
+  const pricePayload = await ticker(feeSymbol).catch(() => null);
+  const feePrice = Number(pricePayload?.payload?.lastPrice || pricePayload?.payload?.weightedAvgPrice || 0);
+  return feePrice > 0 ? qty * feePrice : 0;
+}
+
+async function tradesCommissionUsdt({ trades, symbol }) {
+  let total = 0;
+  for (const trade of trades || []) {
+    total += await commissionToUsdt({
+      asset: trade.commissionAsset,
+      amount: trade.commission,
+      symbol,
+      tradePrice: trade.price
+    });
+  }
+  return total;
+}
+
+async function orderCommissionUsdt({ apiKey, apiSecret, environment, symbol, orderId }) {
+  if (!orderId) return 0;
+  const trades = await signedMyTrades({ apiKey, apiSecret, environment, symbol, limit: 1000 });
+  if (!trades.ok || !Array.isArray(trades.payload)) return 0;
+  const orderTrades = trades.payload.filter(trade => String(trade.orderId || '') === String(orderId));
+  return tradesCommissionUsdt({ trades: orderTrades, symbol });
+}
+
 async function klines(symbol, interval = '15m', limit = 320) {
   const response = await fetch(`${cfg.spotUrl}/api/v3/klines?symbol=${encodeURIComponent(symbol)}&interval=${encodeURIComponent(interval)}&limit=${Number(limit || 320)}`);
   const payload = await response.json().catch(() => []);
@@ -562,6 +597,34 @@ async function estimateAverageBuyPrice({ apiKey, apiSecret, environment, symbol,
     if (neededQty && qty >= Number(neededQty)) break;
   }
   return qty > 0 ? quote / qty : 0;
+}
+
+async function estimateEntryCostFromTrades({ apiKey, apiSecret, environment, symbol, neededQty }) {
+  const trades = await signedMyTrades({ apiKey, apiSecret, environment, symbol, limit: 1000 });
+  if (!trades.ok || !Array.isArray(trades.payload)) return { cost: 0, feeUsdt: 0 };
+  let qty = 0;
+  let cost = 0;
+  let feeUsdt = 0;
+  const sorted = [...trades.payload].sort((a,b)=>Number(b.time || 0) - Number(a.time || 0));
+  for (const trade of sorted) {
+    if (!trade.isBuyer) continue;
+    const tradeQty = Number(trade.qty || 0);
+    const tradeQuote = Number(trade.quoteQty || 0) || tradeQty * Number(trade.price || 0);
+    if (tradeQty <= 0 || tradeQuote <= 0) continue;
+    const remaining = Math.max(0, Number(neededQty || 0) - qty);
+    const usedQty = remaining > 0 ? Math.min(tradeQty, remaining) : tradeQty;
+    const ratio = usedQty / tradeQty;
+    qty += usedQty;
+    cost += tradeQuote * ratio;
+    feeUsdt += await commissionToUsdt({
+      asset: trade.commissionAsset,
+      amount: Number(trade.commission || 0) * ratio,
+      symbol,
+      tradePrice: trade.price
+    });
+    if (neededQty && qty >= Number(neededQty)) break;
+  }
+  return { cost, feeUsdt };
 }
 
 async function symbolsTouchedByBot(userId, environment) {
@@ -816,7 +879,11 @@ async function handleProtectedSpotBuy(command) {
   const sellReferenceQty = freeBase;
   const basketAvgPrice = await estimateAverageBuyPrice({ apiKey, apiSecret, environment, symbol, neededQty: sellReferenceQty })
     .catch(() => recoveryMode ? activeBasket?.avgPrice || avgPrice : avgPrice);
-  const sellPrice = ceilToStep(Math.max(targetPriceRaw, basketAvgPrice * (1 + profitTargetPct)), filters.tickSize);
+  const netProfitTargetPct = Math.max(profitTargetPct, 0.0015);
+  const sellPrice = ceilToStep(
+    Math.max(targetPriceRaw, basketAvgPrice * (1 + netProfitTargetPct + cfg.roundTripFeeBufferPct)),
+    filters.tickSize
+  );
   const sellQty = floorToStep(freeBase, filters.stepSize);
   const sellNotional = sellQty * sellPrice;
 
@@ -935,7 +1002,16 @@ async function monitorProtectedSells() {
       if (status !== 'filled') continue;
       const entryCost = await findEntryCostForSell({ sellOrder, apiKey, apiSecret, environment, executedQty });
       const cost = Number(entryCost.cost || 0);
-      const profitUsdt = quoteFilled - cost;
+      const buyFeeUsdt = Number(entryCost.feeUsdt || 0);
+      const sellFeeUsdt = await orderCommissionUsdt({
+        apiKey,
+        apiSecret,
+        environment,
+        symbol: sellOrder.symbol,
+        orderId: sellOrder.binance_order_id
+      }).catch(() => 0);
+      const grossProfitUsdt = quoteFilled - cost;
+      const profitUsdt = grossProfitUsdt - buyFeeUsdt - sellFeeUsdt;
       const feeEnv = Math.max(0, profitUsdt * 0.10);
       if (profitUsdt > 0) {
         const wallet = await maybeSingle('inv_wallets', { filters: [eqFilter('user_id', sellOrder.user_id)] });
@@ -953,7 +1029,7 @@ async function monitorProtectedSells() {
           balance_inv: Math.max(0, currentEnv - feeEnv)
         }, [eqFilter('user_id', sellOrder.user_id)]).catch(() => null);
       }
-      dashboard.lastMessage = `Venda fechada ${sellOrder.symbol}: lucro ${profitUsdt.toFixed(4)} USDT (${entryCost.source})`;
+      dashboard.lastMessage = `Venda fechada ${sellOrder.symbol}: lucro liquido ${profitUsdt.toFixed(4)} USDT (bruto ${grossProfitUsdt.toFixed(4)}, taxas Binance ${(buyFeeUsdt + sellFeeUsdt).toFixed(4)}, ${entryCost.source})`;
       dashboard.lastSync = new Date().toLocaleString('pt-BR');
       pushEvent('info', 'real_order_closed', dashboard.lastMessage);
     } catch (error) {
@@ -966,7 +1042,14 @@ async function findEntryCostForSell({ sellOrder, apiKey, apiSecret, environment,
   if (sellOrder.linked_order_id) {
     const found = await maybeSingle('real_orders', { filters: [eqFilter('id', sellOrder.linked_order_id)] });
     const linkedCost = Number(found.data?.cummulative_quote_qty || found.data?.quote_order_qty || 0);
-    if (linkedCost > 0) return { cost: linkedCost, source: 'linked_order' };
+    const linkedFee = await orderCommissionUsdt({
+      apiKey,
+      apiSecret,
+      environment,
+      symbol: sellOrder.symbol,
+      orderId: found.data?.binance_order_id
+    }).catch(() => 0);
+    if (linkedCost > 0) return { cost: linkedCost, feeUsdt: linkedFee, source: 'linked_order' };
   }
 
   const { data: recentBuys } = await selectRows('real_orders', {
@@ -983,26 +1066,38 @@ async function findEntryCostForSell({ sellOrder, apiKey, apiSecret, environment,
   });
   let remainingQty = Number(executedQty || sellOrder.quantity || 0);
   let cost = 0;
+  let feeUsdt = 0;
   for (const buy of recentBuys || []) {
     if (remainingQty <= 0) break;
     const buyQty = Number(buy.executed_qty || buy.quantity || 0);
     const buyCost = Number(buy.cummulative_quote_qty || buy.quote_order_qty || (buyQty * Number(buy.price || 0)) || 0);
     if (buyQty <= 0 || buyCost <= 0) continue;
     const usedQty = Math.min(remainingQty, buyQty);
+    const ratio = usedQty / buyQty;
     cost += buyCost * (usedQty / buyQty);
+    if (buy.binance_order_id) {
+      const orderFee = await orderCommissionUsdt({
+        apiKey,
+        apiSecret,
+        environment,
+        symbol: sellOrder.symbol,
+        orderId: buy.binance_order_id
+      }).catch(() => 0);
+      feeUsdt += orderFee * ratio;
+    }
     remainingQty -= usedQty;
   }
-  if (cost > 0) return { cost, source: 'recent_real_orders' };
+  if (cost > 0) return { cost, feeUsdt, source: 'recent_real_orders' };
 
-  const avgBuy = await estimateAverageBuyPrice({
+  const estimate = await estimateEntryCostFromTrades({
     apiKey,
     apiSecret,
     environment,
     symbol: sellOrder.symbol,
     neededQty: Number(executedQty || sellOrder.quantity || 0)
-  }).catch(() => 0);
-  if (avgBuy > 0) return { cost: avgBuy * Number(executedQty || sellOrder.quantity || 0), source: 'binance_trades_estimate' };
-  return { cost: 0, source: 'unknown' };
+  }).catch(() => ({ cost: 0, feeUsdt: 0 }));
+  if (estimate.cost > 0) return { ...estimate, source: 'binance_trades_estimate' };
+  return { cost: 0, feeUsdt: 0, source: 'unknown' };
 }
 
 async function recoverFailedProtectedBuys() {

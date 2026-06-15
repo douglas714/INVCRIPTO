@@ -1,56 +1,55 @@
-# INVCRIPTO IA
+# INV CRIPTO IA — Plataforma Web + Paper Trade + INV
 
-Plataforma web para robô de cripto com layout premium verde/dourado, painel cliente, painel administrador, Supabase Auth, créditos INV, modo Paper Trade e scanner IA.
+Estrutura inicial para o robô web Binance com Supabase, Netlify e GitHub.
 
-## Novidades desta versão
+## Módulos incluídos
 
-- Logo INVCRIPTO aplicada no painel.
-- Favicon configurado em PNG/ICO.
-- Layout premium baseado na paleta verde escuro + dourado.
-- Dashboard com gráfico real, suporte/resistência, trading control e cards de análise.
-- Radar IA com moedas fortes: BTC, ETH, BNB, SOL, XRP, ADA, AVAX, DOGE, LINK, DOT, LTC e TRX.
-- Cliente pode seguir a recomendação da IA ou escolher manualmente a moeda.
-- Mantém Supabase, CPF/telefone obrigatório, admin com bloqueio de usuário e créditos INV.
+- Login/cadastro via Supabase Auth.
+- Cadastro com CPF único usando `cpf_hash`.
+- Painel cliente.
+- Painel administrador.
+- Carteira INV: 1 INV = R$ 1,00.
+- Crédito inicial de 10 INV.
+- Cobrança futura: 10% sobre lucro líquido realizado.
+- Paper trade usando gráfico real de BTC/USDT e ETH/USDT.
+- Estrutura para Binance API Spot/Testnet/Real.
+- Estrutura futura para Pix e webhooks.
 
-## Instalação
+## Como rodar local
 
 ```bash
 npm install
 npm run dev
 ```
 
-## Build Netlify
+## Como publicar no Netlify
+
+Build command:
+
+```bash
+npm run build
+```
+
+Publish directory:
 
 ```text
-Build command: npm run build
-Publish directory: dist
+dist
 ```
+
+Configure as variáveis de ambiente do `.env.example` no Netlify.
 
 ## Supabase
 
-Execute no Supabase SQL Editor:
+Rode no SQL Editor:
 
 ```text
 supabase/schema.sql
 ```
 
-Depois cadastre seu usuário e rode:
+Depois ative Auth com e-mail/senha no Supabase.
 
-```text
-supabase/02_promover_admin.sql
-```
+## Importante
 
-## Variáveis de ambiente
+Este MVP inclui paper trade e estrutura. O módulo real de ordens Binance deve rodar em backend/worker 24h, não somente no navegador. Netlify Functions são boas para APIs e webhooks, mas robô contínuo deve rodar em VPS/Render/Railway/Fly.io ou Supabase Edge Functions com scheduler, respeitando limites.
 
-Use `.env.example` apenas como modelo. Não suba chaves reais para o GitHub.
-Cadastre as chaves reais no Netlify em `Site settings > Environment variables`.
-
-
-## Atualização USDT/ENV
-
-- O robô opera pares contra USDT.
-- Ao conectar a API Binance, o backend deve consultar e exibir o saldo USDT disponível.
-- O painel usa dólar/USDT para saldo, lucro e taxa.
-- Créditos ENV: 1 ENV = US$ 1,00.
-- Pagamentos em BRL devem converter para ENV pela cotação do dólar/USDT no momento da confirmação.
-- Gráfico nativo SVG corrigido com candles visíveis, sem dependência externa.
+Nunca peça permissão de saque nas chaves Binance dos clientes.

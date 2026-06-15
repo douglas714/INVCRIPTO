@@ -189,7 +189,7 @@ function SimpleOperationsApp({ user }) {
     }
   }
 
-  async function loadOperations({ initial = false } = {}) {
+  async function loadOperations({ initial = false, syncBalance = false } = {}) {
     if (!hasSupabase || !user?.id) {
       setError('Entre com uma conta conectada ao Supabase para ver operações reais.');
       setLoading(false);
@@ -201,6 +201,18 @@ function SimpleOperationsApp({ user }) {
       const token = data?.session?.access_token;
       const manualUserId = user?.manual_profile ? user.id : null;
       const requestBody = { manualUserId, manualEmail: user?.email || '', environment: 'live' };
+      if (syncBalance) {
+        const refreshResponse = await fetch('/.netlify/functions/binance-refresh', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json', ...(token ? { authorization: `Bearer ${token}` } : {}) },
+          body: JSON.stringify(requestBody)
+        }).catch(() => null);
+        const refreshPayload = await refreshResponse?.json?.().catch(() => ({}));
+        if (refreshResponse?.ok && refreshPayload?.ok) {
+          setAccountStatus(status => ({ ...status, credentialStatus: 'pending_connector_validation' }));
+          await new Promise(resolve => setTimeout(resolve, 6500));
+        }
+      }
       const response = await fetch('/.netlify/functions/binance-real-orders', {
         method: 'POST',
         headers: { 'content-type': 'application/json', ...(token ? { authorization: `Bearer ${token}` } : {}) },
@@ -250,9 +262,19 @@ function SimpleOperationsApp({ user }) {
   }
 
   useEffect(() => {
-    loadOperations({ initial: true });
+    loadOperations({ initial: true, syncBalance: true });
     const timer = setInterval(() => loadOperations(), 10000);
-    return () => clearInterval(timer);
+    const onFocus = () => loadOperations();
+    const onVisible = () => {
+      if (document.visibilityState === 'visible') loadOperations();
+    };
+    window.addEventListener('focus', onFocus);
+    document.addEventListener('visibilitychange', onVisible);
+    return () => {
+      clearInterval(timer);
+      window.removeEventListener('focus', onFocus);
+      document.removeEventListener('visibilitychange', onVisible);
+    };
   }, [user?.id]);
 
   const closedProfit = profits.reduce((sum, item) => sum + Number(item.profitUsd || 0), 0);
@@ -288,7 +310,7 @@ function SimpleOperationsApp({ user }) {
     <section className="panel panel-glow simple-ops-list">
       <div className="simple-section-head">
         <h3>Operações e lucros</h3>
-        <button className="btn ghost small" type="button" onClick={() => loadOperations()}>Atualizar agora</button>
+        <button className="btn ghost small" type="button" onClick={() => loadOperations({ syncBalance: true })}>Sincronizar saldo</button>
       </div>
       <div className="table-wrap">
         <table>

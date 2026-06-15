@@ -2,7 +2,7 @@ export const RISK_PROFILES = {
   conservative: {
     id: 'conservative',
     label: 'Conservador',
-    description: 'Opera menos, exige setups premium e preserva metade da banca livre.',
+    description: 'Mais seguro: opera menos, exige setups fortes e preserva metade da banca livre.',
     mode: 'SPOT',
     leverageMode: 'operational',
     leverage: 1,
@@ -22,7 +22,6 @@ export const RISK_PROFILES = {
     dailyStopLossPct: 0.015,
     dailyStopWinPct: 0.015,
     maxDistanceFromAvgPct: 0.045,
-    maxHoldMinutes: 480,
     cooldownAfterLossMinutes: 45,
     invFeePct: 0.25,
     allowedSymbols: ['BTCUSDT', 'ETHUSDT']
@@ -30,7 +29,7 @@ export const RISK_PROFILES = {
   moderate: {
     id: 'moderate',
     label: 'Moderado',
-    description: 'Perfil padrão: busca mais giro sem usar toda a banca e com até 3 proteções.',
+    description: 'Perfil padrão: equilibra geração de operações com controle de exposição.',
     mode: 'SPOT',
     leverageMode: 'operational',
     leverage: 1.5,
@@ -50,15 +49,14 @@ export const RISK_PROFILES = {
     dailyStopLossPct: 0.03,
     dailyStopWinPct: 0.03,
     maxDistanceFromAvgPct: 0.065,
-    maxHoldMinutes: 720,
     cooldownAfterLossMinutes: 20,
     invFeePct: 0.25,
-    allowedSymbols: ['BTCUSDT', 'ETHUSDT', 'SOLUSDT', 'BNBUSDT']
+    allowedSymbols: ['BTCUSDT', 'ETHUSDT']
   },
   aggressive: {
     id: 'aggressive',
     label: 'Agressivo',
-    description: 'Mais oportunidades e mais exposição. Usa travas rígidas para evitar DCA infinito.',
+    description: 'Mais giro e maior exposição. Mantém trava para evitar DCA infinito.',
     mode: 'SPOT',
     leverageMode: 'operational',
     leverage: 2,
@@ -78,10 +76,9 @@ export const RISK_PROFILES = {
     dailyStopLossPct: 0.05,
     dailyStopWinPct: 0.05,
     maxDistanceFromAvgPct: 0.085,
-    maxHoldMinutes: 960,
     cooldownAfterLossMinutes: 10,
     invFeePct: 0.25,
-    allowedSymbols: ['BTCUSDT', 'ETHUSDT', 'SOLUSDT', 'BNBUSDT', 'XRPUSDT', 'LINKUSDT', 'AVAXUSDT']
+    allowedSymbols: ['BTCUSDT', 'ETHUSDT']
   }
 };
 
@@ -91,8 +88,13 @@ export function getRiskProfile(profileId = DEFAULT_PROFILE_ID) {
   return RISK_PROFILES[profileId] || RISK_PROFILES[DEFAULT_PROFILE_ID];
 }
 
+
 export function getAllowedSymbols(profileId = DEFAULT_PROFILE_ID) {
   return getRiskProfile(profileId).allowedSymbols;
+}
+
+export function getRiskProfileOptions() {
+  return Object.values(RISK_PROFILES);
 }
 
 export function formatPct(value = 0) {

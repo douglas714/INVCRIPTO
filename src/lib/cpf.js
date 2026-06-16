@@ -5,15 +5,9 @@ export function maskCpf(cpf='') {
   return d.replace(/(\d{3})(\d)/, '$1.$2').replace(/(\d{3})(\d)/, '$1.$2').replace(/(\d{3})(\d{1,2})$/, '$1-$2');
 }
 
-export function maskPhone(phone='') {
-  const d = onlyDigits(phone).slice(0, 11);
-  if (d.length <= 10) return d.replace(/(\d{2})(\d)/, '($1) $2').replace(/(\d{4})(\d)/, '$1-$2');
-  return d.replace(/(\d{2})(\d)/, '($1) $2').replace(/(\d{5})(\d)/, '$1-$2');
-}
-
 export function isValidCpf(cpf='') {
   const d = onlyDigits(cpf);
-  if (d.length !== 11 || /^(\d)\1+$/.test(d)) return false;
+  if (d.length !== 11 || /^(\d)+$/.test(d)) return false;
   let sum=0; for(let i=0;i<9;i++) sum += Number(d[i])*(10-i);
   let check = 11 - (sum % 11); if(check >= 10) check=0;
   if(check !== Number(d[9])) return false;

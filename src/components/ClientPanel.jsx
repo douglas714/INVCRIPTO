@@ -1,4 +1,4 @@
-﻿import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { createTargetPreviewOrder, initialPaperState, runPaperDecision } from '../lib/paperBot.js';
 import { analyzeMarket, supportResistance } from '../lib/strategy.js';
 import { brl, usd, usdt, env, num } from '../lib/format.js';
@@ -7,6 +7,12 @@ import { Activity, BarChart3, Bot, Brain, CheckCircle2, CreditCard, Gauge, Histo
 
 const allowedSymbols = ['BTCUSDT','ETHUSDT','BNBUSDT','SOLUSDT','XRPUSDT','ADAUSDT','AVAXUSDT','DOGEUSDT','LINKUSDT','DOTUSDT','LTCUSDT','TRXUSDT'];
 const MIN_REAL_ORDER_USDT = 10;
+const operationProfiles = Object.freeze({
+  conservador: Object.freeze({ label:'Conservador', gap:'1,00%', pairs:'1 moeda', timeframe:'5m', detail:'Proteções mais espaçadas e confirmação principal no M5.' }),
+  moderado: Object.freeze({ label:'Moderado', gap:'0,50%', pairs:'1 moeda', timeframe:'5m', detail:'Equilíbrio entre frequência, proteção e preservação da banca.' }),
+  arrojado: Object.freeze({ label:'Arrojado', gap:'0,30%', pairs:'1 moeda', timeframe:'1m', detail:'Mais entradas e proteções rápidas, mantendo apenas uma cesta ativa.' }),
+  alavancagem: Object.freeze({ label:'Alavancagem', gap:'0,15%', pairs:'até 5 moedas', timeframe:'1m', detail:'Até cinco cestas simultâneas, com capital dividido proporcionalmente.' })
+});
 const radarSeed = {
   BTCUSDT:{hold:94,liquidity:96}, ETHUSDT:{hold:91,liquidity:94}, BNBUSDT:{hold:86,liquidity:88}, SOLUSDT:{hold:78,liquidity:90}, XRPUSDT:{hold:74,liquidity:86}, ADAUSDT:{hold:72,liquidity:78}, AVAXUSDT:{hold:70,liquidity:76}, DOGEUSDT:{hold:68,liquidity:82}, LINKUSDT:{hold:76,liquidity:74}, DOTUSDT:{hold:69,liquidity:70}, LTCUSDT:{hold:73,liquidity:72}, TRXUSDT:{hold:71,liquidity:73}
 };
@@ -69,6 +75,8 @@ export default function ClientPanel({user}){
   const [analysisSplash,setAnalysisSplash]=useState(false);
   const [balanceRefreshing,setBalanceRefreshing]=useState(false);
   const [marketDataReal,setMarketDataReal]=useState(false);
+  const [profileSaving,setProfileSaving]=useState(false);
+  const [profileMessage,setProfileMessage]=useState('');
   const autoOrderRef = useRef('');
   const lastPrice=Number(liveTicker?.lastPrice || liveTicker?.price || candles.at(-1)?.close || 0);
   const analysis = useMemo(()=>analyzeMarket(candles.length > 1 ? candles.slice(0,-1) : candles),[candles]);
@@ -271,7 +279,8 @@ export default function ClientPanel({user}){
             targetPrice:plan.recoveryTarget,
             timeframe,
             score:Number(analysis.score || 0),
-            reason:`Auto Trading INVCRIPTO: ${analysis.reason || 'setup BUY confirmado'}`
+            reason:`Auto Trading INVCRIPTO: ${analysis.reason || 'setup BUY confirmado'}`,
+            profileName:state.profileName || 'conservador'
           })
         });
         const payload = await response.json().catch(()=>({}));
@@ -333,7 +342,44 @@ export default function ClientPanel({user}){
     }
     queueAutoOrder();
     return()=>{cancelled=true};
-  },[state.active,accountMode,analysis,symbol,timeframe,state.apiConnected,state.binanceCanTrade,state.envBalance,state.binanceUsdtBalance,state.orders,user?.id,marketDataReal]);
+  },[state.active,accountMode,analysis,symbol,timeframe,state.apiConnected,state.binanceCanTrade,state.envBalance,state.binanceUsdtBalance,state.orders,state.profileName,user?.id,marketDataReal]);
+
+  async function changeOperationProfile(nextProfile){
+    if(state.active) return;
+    const normalized = operationProfiles[nextProfile] ? nextProfile : 'conservador';
+    const profile = operationProfiles[normalized];
+    setProfileMessage('Salvando modalidade...');
+    if(!hasSupabase || !user?.id){
+      setState(s=>({...s,profileName:normalized}));
+      setTimeframe(profile.timeframe);
+      setProfileMessage(`Modalidade ${profile.label} selecionada localmente.`);
+      return;
+    }
+    setProfileSaving(true);
+    try{
+      const { data } = await supabase.auth.getSession();
+      const token = data?.session?.access_token;
+      const manualUserId = user?.manual_profile ? user.id : null;
+      const response = await fetch('/.netlify/functions/bot-profile-settings', {
+        method:'POST',
+        headers:{ 'content-type':'application/json', ...(token ? { authorization:`Bearer ${token}` } : {}) },
+        body:JSON.stringify({
+          manualUserId,
+          manualEmail:user?.email || '',
+          profileName:normalized
+        })
+      });
+      const payload = await response.json().catch(()=>({}));
+      if(!response.ok || !payload?.ok) throw new Error(payload.error || 'Falha ao salvar a modalidade.');
+      setState(s=>({...s,profileName:normalized}));
+      setTimeframe(profile.timeframe);
+      setProfileMessage(`${profile.label} ativo: proteção a cada ${profile.gap}, ${profile.pairs}.`);
+    } catch(err){
+      setProfileMessage(String(err?.message || err));
+    } finally {
+      setProfileSaving(false);
+    }
+  }
 
   function operateRecommended(){ setAnalysisSplash(true); setActiveTab('dashboard'); setSymbol(recommended.symbol); setSelectionMode('recommended'); setState(s=>({...s,active:true,symbol:recommended.symbol,accountMode,selectionMode:'recommended'})); }
   function operateSelected(){ setAnalysisSplash(false); setSelectionMode('manual_assisted'); setState(s=>({...s,active:true,symbol,accountMode,selectionMode:'manual_assisted'})); }
@@ -356,7 +402,7 @@ export default function ClientPanel({user}){
     <div className="tabbar premium-tabs">{tabs.map(([k,l])=><button key={k} className={activeTab===k?'active':''} onClick={()=>setActiveTab(k)}>{l}</button>)}</div>
 
     {activeTab==='dashboard' && analysisSplash && <AnalysisSplash radar={radar} recommended={recommended} timeframe={timeframe} accountMode={accountMode} onDone={()=>setAnalysisSplash(false)}/>}
-    {activeTab==='dashboard' && !analysisSplash && <Dashboard user={user} state={state} setState={setState} symbol={symbol} setSymbol={setSymbol} timeframe={timeframe} setTimeframe={setTimeframe} candles={candles} analysis={analysis} radar={radar} recommended={recommended} operateRecommended={operateRecommended} operateSelected={operateSelected} createTargetOrder={createTargetOrder} selectionMode={selectionMode} setSelectionMode={setSelectionMode} accountMode={accountMode} setAccountMode={setAccountMode} marketStatus={marketStatus} lastPrice={lastPrice} stopRobot={stopRobot}/>}    
+    {activeTab==='dashboard' && !analysisSplash && <Dashboard user={user} state={state} setState={setState} symbol={symbol} setSymbol={setSymbol} timeframe={timeframe} setTimeframe={setTimeframe} candles={candles} analysis={analysis} radar={radar} recommended={recommended} operateRecommended={operateRecommended} operateSelected={operateSelected} createTargetOrder={createTargetOrder} selectionMode={selectionMode} setSelectionMode={setSelectionMode} accountMode={accountMode} setAccountMode={setAccountMode} marketStatus={marketStatus} lastPrice={lastPrice} stopRobot={stopRobot} onProfileChange={changeOperationProfile} profileSaving={profileSaving} profileMessage={profileMessage}/>}    
     {activeTab==='analysis' && <LiveAnalysis symbol={symbol} setSymbol={setSymbol} timeframe={timeframe} setTimeframe={setTimeframe} candles={candles} state={state} analysis={analysis}/>}    
     {activeTab==='scanner' && <Scanner radar={radar} symbol={symbol} setSymbol={setSymbol} operateRecommended={operateRecommended}/>}    
     {activeTab==='orders' && <Orders orders={state.orders} accountMode={accountMode}/>}    
@@ -435,14 +481,14 @@ function AnalysisSplash({radar,recommended,timeframe,accountMode,onDone}){
   </div>
 }
 
-function Dashboard({user,state,setState,symbol,setSymbol,timeframe,setTimeframe,candles,analysis,radar,recommended,operateRecommended,operateSelected,createTargetOrder,selectionMode,setSelectionMode,accountMode,setAccountMode,marketStatus,lastPrice,stopRobot}){
+function Dashboard({user,state,setState,symbol,setSymbol,timeframe,setTimeframe,candles,analysis,radar,recommended,operateRecommended,operateSelected,createTargetOrder,selectionMode,setSelectionMode,accountMode,setAccountMode,marketStatus,lastPrice,stopRobot,onProfileChange,profileSaving,profileMessage}){
   return <div className="terminal-layout">
     <div className="chart-zone panel-glow">
       <RobotStatusBar state={state} analysis={analysis} accountMode={accountMode} marketStatus={marketStatus} lastPrice={lastPrice}/>
       <ChartHeader symbol={symbol} setSymbol={setSymbol} timeframe={timeframe} setTimeframe={setTimeframe} analysis={analysis}/>
       <TradingChart candles={candles} analysis={analysis} timeframe={timeframe} symbol={symbol} orders={state.orders}/>
     </div>
-    <TradingControl state={state} setState={setState} symbol={symbol} setSymbol={setSymbol} analysis={analysis} recommended={recommended} operateRecommended={operateRecommended} operateSelected={operateSelected} createTargetOrder={createTargetOrder} selectionMode={selectionMode} setSelectionMode={setSelectionMode} accountMode={accountMode} setAccountMode={setAccountMode} stopRobot={stopRobot}/>
+    <TradingControl state={state} setState={setState} symbol={symbol} setSymbol={setSymbol} analysis={analysis} recommended={recommended} operateRecommended={operateRecommended} operateSelected={operateSelected} createTargetOrder={createTargetOrder} selectionMode={selectionMode} setSelectionMode={setSelectionMode} accountMode={accountMode} setAccountMode={setAccountMode} stopRobot={stopRobot} onProfileChange={onProfileChange} profileSaving={profileSaving} profileMessage={profileMessage}/>
     <TargetOrderPreview state={state} symbol={symbol} timeframe={timeframe} analysis={analysis} createTargetOrder={createTargetOrder} accountMode={accountMode} user={user}/>
     <RecommendedCard recommended={recommended} symbol={symbol} analysis={analysis} setSymbol={setSymbol} operateRecommended={operateRecommended}/>
     <RecentTrades orders={state.orders}/>
@@ -491,7 +537,10 @@ function TradingChart({candles,analysis,timeframe,symbol,orders=[]}){
     .slice(0,12);
   const rawMax = safeCandles.length ? Math.max(...safeCandles.map(c=>c.high)) : 1;
   const rawMin = safeCandles.length ? Math.min(...safeCandles.map(c=>c.low)) : 0;
-  const markerPrices = orderMarkers.map(order=>Number(order.price || 0));
+  const plannedSupportEntry = analysis?.action === 'BUY' && analysis?.setup === 'SUPPORT_BOUNCE'
+    ? Number(analysis?.orderPlan?.entry || 0)
+    : 0;
+  const markerPrices = [...orderMarkers.map(order=>Number(order.price || 0)), ...(plannedSupportEntry > 0 ? [plannedSupportEntry] : [])];
   const max = Math.max(rawMax, ...markerPrices);
   const min = Math.min(rawMin, ...markerPrices);
   const range = Math.max(1, max-min);
@@ -552,6 +601,11 @@ function TradingChart({candles,analysis,timeframe,symbol,orders=[]}){
         {[0,1,2,3,4,5].map(i=><line key={'h'+i} x1="0" x2={width} y1={35+i*chartH/5} y2={35+i*chartH/5} className="grid-line"/>)}
         {sr?.resistance && <line x1="0" x2={width} y1={y(sr.resistance)} y2={y(sr.resistance)} className="resistance-line"/>}
         {sr?.support && <line x1="0" x2={width} y1={y(sr.support)} y2={y(sr.support)} className="support-line"/>}
+        {plannedSupportEntry > 0 && <g>
+          <line x1="0" x2={width} y1={y(plannedSupportEntry)} y2={y(plannedSupportEntry)} className="order-line buy"/>
+          <rect x="12" y={Math.max(24,Math.min(368,y(plannedSupportEntry)))-15} width="205" height="26" rx="8" className="order-tag buy"/>
+          <text x="22" y={Math.max(24,Math.min(368,y(plannedSupportEntry)))+3} className="chart-label order buy">ENTRADA SUPORTE {plannedSupportEntry.toFixed(2)}</text>
+        </g>}
         {orderMarkers.map((order,index)=>{
           const side = String(order.side || '').toUpperCase();
           const isSell = side.includes('SELL');
@@ -597,15 +651,35 @@ function TradingChart({candles,analysis,timeframe,symbol,orders=[]}){
   </div>
 }
 
-function TradingControl({state,setState,symbol,setSymbol,analysis,recommended,operateRecommended,operateSelected,createTargetOrder,selectionMode,setSelectionMode,accountMode,setAccountMode,stopRobot}){
+function TradingControl({state,setState,symbol,setSymbol,analysis,recommended,operateRecommended,operateSelected,createTargetOrder,selectionMode,setSelectionMode,accountMode,setAccountMode,stopRobot,onProfileChange,profileSaving,profileMessage}){
   const canPreview = Boolean(analysis?.orderPlan);
   const locked = Boolean(state.active);
   const recommendedMode = selectionMode === 'recommended' || selectionMode === 'auto_ai';
   const symbolLocked = locked || recommendedMode;
+  const profileName = operationProfiles[state.profileName] ? state.profileName : 'conservador';
+  const selectedProfile = operationProfiles[profileName];
   return <div className="trade-control panel-glow">
     <h3><span/> Trading Control</h3>
     <label>Modo de escolha</label>
     <select value={selectionMode} onChange={e=>setSelectionMode(e.target.value)} disabled={locked}><option value="recommended">Operar recomendado pela IA</option><option value="manual_assisted">Manual assistido</option><option value="auto_ai">IA escolhe automático</option></select>
+
+    <label>Modalidade de operação</label>
+    <div className="operation-profile-grid" role="group" aria-label="Modalidade de operação">
+      {Object.entries(operationProfiles).map(([key,profile])=><button
+        key={key}
+        type="button"
+        className={profileName===key?'operation-profile active':'operation-profile'}
+        onClick={()=>onProfileChange?.(key)}
+        disabled={locked || profileSaving}
+        aria-pressed={profileName===key}
+      >
+        <strong>{profile.label}</strong>
+        <small>{profile.gap} · {profile.pairs}</small>
+      </button>)}
+    </div>
+    <small className="sync profile-summary"><b>{selectedProfile.label}:</b> {selectedProfile.detail} Reserva da cesta: 80% normal e 20% extraordinária.</small>
+    {profileMessage && <div className={profileMessage.toLowerCase().includes('falha')?'alert danger compact profile-message':'alert compact profile-message'}>{profileSaving?'Salvando modalidade...':profileMessage}</div>}
+
     <label>{recommendedMode ? 'Moeda operada pela IA' : 'Moeda selecionada'}</label>
     <select value={symbol} onChange={e=>setSymbol(e.target.value)} disabled={symbolLocked}>{allowedSymbols.map(s=><option key={s}>{s}</option>)}</select>
     <small className="sync">{recommendedMode ? 'A IA escolhe automaticamente a moeda com melhor score no Radar IA.' : 'Modo manual assistido: você escolhe a moeda, a IA valida o setup.'}</small>
@@ -616,12 +690,14 @@ function TradingControl({state,setState,symbol,setSymbol,analysis,recommended,op
     <small className="sync">{locked?'Robô ativo: estratégia travada. Em conta real, oportunidades com score >= 78 enviam compra + venda automaticamente.':accountMode==='demo'?'Conta demo não consome ENV.':'Conta real consome ENV somente sobre lucro realizado.'}</small>
     {accountMode === 'live' && state.lastAutoRealStatus && <div className="alert compact">{state.lastAutoRealStatus}</div>}
     {accountMode === 'live' && state.lastAutoRealError && <div className="alert danger compact">{state.lastAutoRealError}</div>}
-    <div className="switch-row"><span>Auto Trading</span><button className={state.active?'switch on':'switch'} onClick={()=>setState(s=>({...s,active:!s.active}))}/></div>
-    <button className="btn ghost" type="button" onClick={createTargetOrder} disabled={locked || !canPreview}><TrendingUp size={16}/> Criar ordem alvo 1</button>
-    <button className="btn primary gold-btn" onClick={operateRecommended} disabled={locked}><Play size={16}/> Operar recomendado</button>
-    <button className="btn ghost" onClick={operateSelected} disabled={locked}><ShieldCheck size={16}/> Operar moeda selecionada</button>
-    <button className="btn danger full" onClick={stopRobot}><StopCircle size={16}/> Parar robô</button>
-    <small className="sync"><span className="live-dot"/> Last sync: 2 sec ago</small>
+    <div className="auto-trading-box"><div><strong>Auto Trading</strong><small>{locked?'Robô em execução':'Inicia sempre pausado'}</small></div><button className={state.active?'switch on':'switch'} onClick={()=>setState(s=>({...s,active:!s.active}))} aria-label="Alternar Auto Trading"/></div>
+    <div className="trade-control-actions">
+      <button className="btn ghost" type="button" onClick={createTargetOrder} disabled={locked || !canPreview}><TrendingUp size={16}/> Criar ordem alvo 1</button>
+      <button className="btn primary gold-btn" onClick={operateRecommended} disabled={locked}><Play size={16}/> Operar recomendado</button>
+      <button className="btn ghost" onClick={operateSelected} disabled={locked}><ShieldCheck size={16}/> Operar moeda selecionada</button>
+      <button className="btn danger full" onClick={stopRobot}><StopCircle size={16}/> Parar robô</button>
+    </div>
+    <small className="sync sync-footer"><span className="live-dot"/> Last sync: 2 sec ago</small>
   </div>
 }
 
@@ -690,7 +766,8 @@ function TargetOrderPreview({state,symbol,timeframe,analysis,createTargetOrder,a
           quoteOrderQty:Number(view.valueUsd || 0),
           targetPrice:Number(view.recoveryTarget || view.target1 || 0),
           score:Number(analysis?.score || 0),
-          reason:analysis?.reason || 'Entrada protegida INVCRIPTO'
+          reason:analysis?.reason || 'Entrada protegida INVCRIPTO',
+          profileName:state.profileName || 'conservador'
         })
       });
       const payload = await response.json().catch(()=>({}));

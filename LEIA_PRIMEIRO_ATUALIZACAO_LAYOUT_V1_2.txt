@@ -1,0 +1,8 @@
+INVCRIPTO 1.2 - MODALIDADES E AJUSTE DO TRADING CONTROL
+
+1) Publique o projeto completo no Netlify.
+2) Nao e necessario executar um novo SQL para esta atualizacao.
+3) A nova funcao netlify/functions/bot-profile-settings.js salva a modalidade no bot existente.
+4) As modalidades ficam bloqueadas enquanto o robo estiver ativo.
+5) O restante do layout foi preservado.
+6) Valide primeiro em Demo/Testnet antes de liberar operacoes reais.

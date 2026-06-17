@@ -81,3 +81,30 @@ button:disabled,select:disabled{opacity:.58;cursor:not-allowed;filter:grayscale(
 
 .training{padding:22px}.training-hero{display:flex;justify-content:space-between;gap:18px;align-items:center;margin-bottom:18px}.training-hero h2{margin:0;color:var(--gold);font-family:Georgia,serif;font-size:30px}.training-video-card{min-width:240px;border:1px solid rgba(216,178,74,.35);border-radius:16px;background:rgba(4,16,10,.72);padding:18px;display:grid;gap:8px;place-items:center;text-align:center;color:var(--gold)}.training-video-card strong{color:#fff}.training-video-card span{color:var(--muted);font-size:13px}.training-flow{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}.training-step{display:grid;grid-template-columns:44px 1fr;gap:12px;align-items:start;border:1px solid rgba(216,178,74,.22);border-radius:14px;padding:14px;background:rgba(2,12,8,.72)}.step-num{width:36px;height:36px;border-radius:50%;display:grid;place-items:center;background:linear-gradient(135deg,var(--gold),#a77c22);color:#06160f;font-weight:900}.training-step h3{margin:0 0 6px;color:#fff;font-size:16px}.training-step p{margin:0;color:#e8d9a7;line-height:1.45}.training-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:14px;margin-top:18px}.training-card{border:1px solid rgba(216,178,74,.24);border-radius:16px;padding:16px;background:rgba(4,16,10,.78)}.training-card h3{display:flex;align-items:center;gap:8px;margin:0 0 12px;color:var(--gold);font-size:15px;text-transform:uppercase}.training-card p{margin:8px 0;color:#f5ebc8}.eyebrow{color:var(--green);text-transform:uppercase;letter-spacing:1.6px;font-size:12px;font-weight:900}@media(max-width:900px){.training-hero{display:block}.training-video-card{margin-top:14px}.training-flow,.training-grid{grid-template-columns:1fr}}
 .guide-download{margin-top:14px;display:inline-flex}.guide-images{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:14px;margin:18px 0}.guide-images img{width:100%;height:auto;border-radius:18px;border:1px solid rgba(216,178,74,.32);background:#04100a;box-shadow:0 14px 40px rgba(0,0,0,.22)}@media(max-width:1100px){.guide-images{grid-template-columns:1fr}}
+
+/* TRADING CONTROL V1.2 - seletor de modalidade e botoes alinhados */
+.trade-control{min-width:0;overflow:hidden}
+.operation-profile-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;margin:8px 0 4px}
+.operation-profile{min-width:0;min-height:64px;padding:10px 11px;border-radius:12px;border:1px solid rgba(216,178,74,.32);background:rgba(4,16,10,.9);color:var(--text);text-align:left;cursor:pointer;display:flex;flex-direction:column;justify-content:center;gap:5px;transition:.18s}
+.operation-profile strong{font-size:13px;line-height:1.1;color:#f5ebc8;white-space:normal;overflow-wrap:anywhere}
+.operation-profile small{font-size:10px;line-height:1.25;color:var(--muted);white-space:normal}
+.operation-profile:hover:not(:disabled){border-color:rgba(22,201,87,.72);background:rgba(22,201,87,.10);transform:translateY(-1px)}
+.operation-profile.active{border-color:var(--green);background:linear-gradient(135deg,rgba(22,201,87,.28),rgba(216,178,74,.10));box-shadow:0 0 0 1px rgba(22,201,87,.12),0 8px 22px rgba(0,0,0,.18)}
+.operation-profile.active strong{color:#fff}
+.operation-profile.active small{color:#bdf8cf}
+.operation-profile:disabled{opacity:.58;cursor:not-allowed;transform:none}
+.profile-summary{line-height:1.42;margin:7px 0 12px}
+.profile-summary b{color:var(--gold)}
+.profile-message{margin:8px 0 12px;padding:9px 10px;font-size:12px;line-height:1.35}
+.auto-trading-box{display:flex;align-items:center;justify-content:space-between;gap:12px;margin:16px 0 10px;padding:11px 12px;border:1px solid rgba(216,178,74,.22);border-radius:12px;background:rgba(4,16,10,.62)}
+.auto-trading-box>div{min-width:0}
+.auto-trading-box strong{display:block;color:#fff;font-size:14px}
+.auto-trading-box small{display:block;color:var(--muted);font-size:10px;margin-top:3px}
+.auto-trading-box .switch{flex:0 0 52px;cursor:pointer}
+.trade-control-actions{display:grid;grid-template-columns:1fr;gap:8px;margin-top:10px}
+.trade-control-actions .btn{width:100%;min-width:0;min-height:42px;margin:0;padding:10px 12px;white-space:normal;line-height:1.2;text-align:center}
+.trade-control-actions .btn svg{flex:0 0 auto}
+.trade-control-actions .gold-btn{margin:0}
+.sync-footer{display:flex;align-items:center;gap:2px;margin-top:12px}
+.sync-footer .live-dot{flex:0 0 10px}
+@media(max-width:420px){.operation-profile-grid{grid-template-columns:1fr}.operation-profile{min-height:54px}.trade-control{padding:15px}}

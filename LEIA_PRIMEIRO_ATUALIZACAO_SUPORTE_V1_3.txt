@@ -1,0 +1,14 @@
+INVCRIPTO V1.3 - SUPORTE E RESISTENCIA
+
+Esta versao prioriza entradas compradas em suporte e bloqueia entradas proximas da resistencia.
+
+Mudancas principais:
+- Reconhece vela esticada de queda tocando suporte e a recuperacao no candle seguinte.
+- Reconhece pavio inferior/rejeicao no proprio candle de suporte.
+- Nao compra suporte durante estrutura forte de baixa.
+- Pullback somente na metade inferior da faixa.
+- Rompimento somente com reteste confirmado.
+- Mostra ENTRADA SUPORTE no grafico quando houver setup confirmado.
+
+Nao existe SQL novo nesta atualizacao.
+O layout geral foi mantido.

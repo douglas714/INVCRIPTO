@@ -35,6 +35,7 @@ export async function handler(event) {
   const timeframe = String(body.timeframe || '5m').trim();
   const score = Number(body.score || 0);
   const reason = String(body.reason || 'Entrada protegida INVCRIPTO').slice(0, 500);
+  const requestedProfileName = String(body.profileName || '').trim().toLowerCase();
 
   if (!allowedSymbols.has(symbol)) return json(400, { error: 'Par nao permitido para operacao real.' });
   if (environment === 'live' && score < 78) return json(400, { error: 'Score insuficiente para conta real.' });
@@ -73,15 +74,32 @@ export async function handler(event) {
 
   const { data: bot } = await supabase
     .from('bot_instances')
-    .select('profile_name,updated_at')
+    .select('id,profile_name,config,updated_at')
     .eq('user_id', userId)
     .order('updated_at', { ascending: false })
     .limit(1)
     .maybeSingle();
-  const profileName = PROFILE_LIMITS[String(bot?.profile_name || '').toLowerCase()]
+  const storedProfileName = PROFILE_LIMITS[String(bot?.profile_name || '').toLowerCase()]
     ? String(bot.profile_name).toLowerCase()
     : 'conservador';
+  const profileName = PROFILE_LIMITS[requestedProfileName] ? requestedProfileName : storedProfileName;
   const maxConcurrentBaskets = PROFILE_LIMITS[profileName];
+  if (bot?.id && profileName !== storedProfileName) {
+    await supabase
+      .from('bot_instances')
+      .update({
+        profile_name: profileName,
+        config: {
+          ...(bot.config && typeof bot.config === 'object' ? bot.config : {}),
+          profileName,
+          initialEntryUsdt: 10,
+          targetNetPct: 0.5,
+          normalReservePct: 80,
+          emergencyReservePct: 20
+        }
+      })
+      .eq('id', bot.id);
+  }
 
   const { data: activeBaskets, error: basketError } = await supabase
     .from('real_baskets')

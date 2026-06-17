@@ -38,3 +38,7 @@ O conector usa apenas recursos nativos do Node.js e não precisa instalar depend
 - Mantenha saque desativado na API Binance.
 - Valide primeiro em testnet.
 - Ordens aceitas pela Binance continuam ativas sem o painel, mas o computador precisa voltar a ficar online para consolidar a cesta e posicionar etapas futuras.
+
+## V1.5 — Confirmação multitemporal
+
+O conector agora revalida M1, M5, M15, H1 e H4 imediatamente antes de cada entrada real. As proteções usam suportes estruturais e podem ser pausadas em baixa forte. Preserve seu `.env` ao substituir o conector.

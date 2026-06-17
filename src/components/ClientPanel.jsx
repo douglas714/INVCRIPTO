@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { createTargetPreviewOrder, initialPaperState, runPaperDecision } from '../lib/paperBot.js';
-import { analyzeMarket } from '../lib/strategy.js';
+import { analyzeMarket, analyzeMarketMultiTimeframe } from '../lib/strategy.js';
 import { brl, usd, usdt, env, num } from '../lib/format.js';
 import { supabase, hasSupabase } from '../lib/supabase.js';
 import { Activity, BarChart3, Bot, Brain, CheckCircle2, CreditCard, Gauge, History, KeyRound, MonitorPlay, Pause, Play, RefreshCw, Settings, ShieldCheck, SlidersHorizontal, Sparkles, StopCircle, TrendingUp, Wallet } from 'lucide-react';
@@ -13,8 +13,9 @@ const operationProfiles = Object.freeze({
   arrojado: Object.freeze({ label:'Arrojado', gap:'0,30%', pairs:'1 moeda', timeframe:'1m', detail:'Mais entradas e proteções rápidas, mantendo apenas uma cesta ativa.' }),
   alavancagem: Object.freeze({ label:'Alavancagem', gap:'0,15%', pairs:'até 5 moedas', timeframe:'1m', detail:'Até cinco cestas simultâneas, com capital dividido proporcionalmente.' })
 });
-const radarSeed = {
-  BTCUSDT:{hold:94,liquidity:96}, ETHUSDT:{hold:91,liquidity:94}, BNBUSDT:{hold:86,liquidity:88}, SOLUSDT:{hold:78,liquidity:90}, XRPUSDT:{hold:74,liquidity:86}, ADAUSDT:{hold:72,liquidity:78}, AVAXUSDT:{hold:70,liquidity:76}, DOGEUSDT:{hold:68,liquidity:82}, LINKUSDT:{hold:76,liquidity:74}, DOTUSDT:{hold:69,liquidity:70}, LTCUSDT:{hold:73,liquidity:72}, TRXUSDT:{hold:71,liquidity:73}
+const liquidityBaseline = {
+  BTCUSDT:99, ETHUSDT:97, BNBUSDT:92, SOLUSDT:94, XRPUSDT:93, ADAUSDT:86,
+  AVAXUSDT:80, DOGEUSDT:91, LINKUSDT:84, DOTUSDT:78, LTCUSDT:82, TRXUSDT:85
 };
 const syntheticBase = {
   BTCUSDT: 68000, ETHUSDT: 3500, BNBUSDT: 610, SOLUSDT: 155, XRPUSDT: 0.52, ADAUSDT: 0.45,
@@ -25,8 +26,15 @@ function normalizeKlines(data){
   if (!Array.isArray(data)) return [];
   return data
     .filter(k=>Array.isArray(k) && k.length >= 6)
-    .map(k=>({time:Math.floor(Number(k[0])/1000),open:+k[1],high:+k[2],low:+k[3],close:+k[4],volume:+k[5]}))
+    .map(k=>({time:Math.floor(Number(k[0])/1000),open:+k[1],high:+k[2],low:+k[3],close:+k[4],volume:+k[5],closeTime:Number(k[6]||0)}))
     .filter(c=>Number.isFinite(c.time) && Number.isFinite(c.close) && c.close > 0);
+}
+
+function normalizeClosedKlines(data){
+  const rows = normalizeKlines(data);
+  if(!rows.length) return rows;
+  const last = rows.at(-1);
+  return last?.closeTime && last.closeTime > Date.now() ? rows.slice(0,-1) : rows;
 }
 
 function fallbackCandles(symbol, timeframe, count=320){
@@ -75,12 +83,19 @@ export default function ClientPanel({user}){
   const [analysisSplash,setAnalysisSplash]=useState(false);
   const [balanceRefreshing,setBalanceRefreshing]=useState(false);
   const [marketDataReal,setMarketDataReal]=useState(false);
+  const [multiTimeframeData,setMultiTimeframeData]=useState({});
+  const [mtfDataReal,setMtfDataReal]=useState(false);
+  const [radarAnalyses,setRadarAnalyses]=useState({});
   const [profileSaving,setProfileSaving]=useState(false);
   const [profileMessage,setProfileMessage]=useState('');
   const autoOrderRef = useRef('');
   const lastPrice=Number(liveTicker?.lastPrice || liveTicker?.price || candles.at(-1)?.close || 0);
-  const analysis = useMemo(()=>analyzeMarket(candles.length > 1 ? candles.slice(0,-1) : candles),[candles]);
-  const radar = useMemo(()=>buildRadar(analysis),[analysis]);
+  const analysis = useMemo(()=>{
+    const mtf = analyzeMarketMultiTimeframe(multiTimeframeData,{profileName:state.profileName || 'conservador',symbol});
+    if(accountMode === 'live' || mtf?.dataComplete) return mtf;
+    return analyzeMarket(candles.length > 1 ? candles.slice(0,-1) : candles);
+  },[multiTimeframeData,state.profileName,symbol,candles,accountMode]);
+  const radar = useMemo(()=>buildRadar(radarAnalyses,analysis,symbol),[radarAnalyses,analysis,symbol]);
   const recommended = radar[0] || {symbol:'BTCUSDT',score:0,hold:0};
 
   useEffect(()=>{localStorage.setItem('df_paper_state',JSON.stringify({...state,symbol,accountMode}))},[state,symbol,accountMode]);
@@ -177,6 +192,7 @@ export default function ClientPanel({user}){
   },[user?.id]);
   useEffect(()=>{
     let closed=false;
+    setMarketDataReal(false);
     async function load(){
       try{
         const res=await fetch(`/.netlify/functions/binance-klines?symbol=${symbol}&interval=${timeframe}&limit=320`).catch(()=>null);
@@ -195,6 +211,54 @@ export default function ClientPanel({user}){
     }
     load(); const t=setInterval(load,12000); return()=>{closed=true;clearInterval(t)};
   },[symbol,timeframe]);
+  useEffect(()=>{
+    let closed=false;
+    setMtfDataReal(false);
+    setMultiTimeframeData({});
+    async function loadMultiTimeframe(){
+      try{
+        const response=await fetch(`/.netlify/functions/binance-mtf?symbol=${symbol}`);
+        const payload=await response.json().catch(()=>({}));
+        if(!response.ok || !payload?.ok) throw new Error(payload?.error || 'Falha na leitura multitemporal');
+        const normalized=Object.fromEntries(['1m','5m','15m','1h','4h'].map(tf=>[tf,normalizeClosedKlines(payload.klines?.[tf] || [])]));
+        const complete=['1m','5m','15m','1h','4h'].every(tf=>normalized[tf].length>=60);
+        if(!closed){
+          setMultiTimeframeData(normalized);
+          setMtfDataReal(complete);
+        }
+      }catch{
+        if(!closed){ setMtfDataReal(false); setMultiTimeframeData({}); }
+      }
+    }
+    loadMultiTimeframe();
+    const timer=setInterval(loadMultiTimeframe,15000);
+    return()=>{closed=true;clearInterval(timer)};
+  },[symbol]);
+  useEffect(()=>{
+    let closed=false;
+    async function scanRadar(){
+      const results={};
+      const batches=[];
+      for(let index=0;index<allowedSymbols.length;index+=3) batches.push(allowedSymbols.slice(index,index+3));
+      for(const batch of batches){
+        if(closed) return;
+        const rows=await Promise.all(batch.map(async radarSymbol=>{
+          try{
+            const response=await fetch(`/.netlify/functions/binance-mtf?symbol=${radarSymbol}`);
+            const payload=await response.json().catch(()=>({}));
+            if(!response.ok || !payload?.ok) return [radarSymbol,null];
+            const tfData=Object.fromEntries(['1m','5m','15m','1h','4h'].map(tf=>[tf,normalizeClosedKlines(payload.klines?.[tf] || [])]));
+            return [radarSymbol,analyzeMarketMultiTimeframe(tfData,{profileName:state.profileName || 'conservador',symbol:radarSymbol})];
+          }catch{return [radarSymbol,null]}
+        }));
+        for(const [radarSymbol,result] of rows) if(result?.dataComplete) results[radarSymbol]=result;
+      }
+      if(!closed && Object.keys(results).length) setRadarAnalyses(results);
+    }
+    const delay=setTimeout(scanRadar,600);
+    const timer=setInterval(scanRadar,180000);
+    return()=>{closed=true;clearTimeout(delay);clearInterval(timer)};
+  },[state.profileName]);
   useEffect(()=>{
     let closed=false;
     async function tick(){
@@ -234,8 +298,9 @@ export default function ClientPanel({user}){
     }
   },[state.active,candles,symbol,accountMode]);
   useEffect(()=>{
-    if(!hasSupabase || !state.active || accountMode !== 'live' || !marketDataReal) return;
-    if(!analysis?.orderPlan || analysis.action !== 'BUY' || Number(analysis.score || 0) < 78) return;
+    if(!hasSupabase || !state.active || accountMode !== 'live' || !marketDataReal || !mtfDataReal) return;
+    if(!analysis?.dataComplete || !analysis?.mtfConfirmed || analysis?.riskOff) return;
+    if(!analysis?.orderPlan || analysis.action !== 'BUY' || Number(analysis.score || 0) < Number(analysis.minScore || 78)) return;
     if(!state.apiConnected || !state.binanceCanTrade || Number(state.envBalance || 0) <= 0) return;
     const plan = analysis.orderPlan;
     const liveBalance = Number(state.binanceUsdtBalance || 0);
@@ -257,7 +322,7 @@ export default function ClientPanel({user}){
       }));
       return;
     }
-    const setupKey = `${user?.id || 'user'}:${symbol}:${timeframe}:${Math.round(plan.entry * 1000000)}:${Math.round(plan.recoveryTarget * 1000000)}:${analysis.score}`;
+    const setupKey = `${user?.id || 'user'}:${symbol}:${analysis.signalId || timeframe}:${Math.round(plan.entry * 1000000)}:${Math.round(plan.recoveryTarget * 1000000)}:${analysis.score}`;
     if(autoOrderRef.current === setupKey || state.lastAutoRealSetupKey === setupKey) return;
     autoOrderRef.current = setupKey;
 
@@ -291,7 +356,14 @@ export default function ClientPanel({user}){
               requiredRoomPct:Number(analysis.requiredRoomPct || 0),
               barsSinceSupportTouch:analysis.barsSinceSupportTouch,
               supportSignal:Boolean(analysis.supportSignal),
-              setup:String(analysis.setup || '')
+              setup:String(analysis.setup || ''),
+              mtfConfirmed:Boolean(analysis.mtfConfirmed),
+              riskOff:Boolean(analysis.riskOff),
+              marketRegime:String(analysis.marketRegime || analysis.regime || ''),
+              minScore:Number(analysis.minScore || 78),
+              structuralSupport:Number(analysis.structuralSupport || analysis.support || 0),
+              structuralResistance:Number(analysis.structuralResistance || analysis.resistance || 0),
+              timeframeRegimes:analysis.timeframeRegimes || {}
             }
           })
         });
@@ -354,7 +426,7 @@ export default function ClientPanel({user}){
     }
     queueAutoOrder();
     return()=>{cancelled=true};
-  },[state.active,accountMode,analysis,symbol,timeframe,state.apiConnected,state.binanceCanTrade,state.envBalance,state.binanceUsdtBalance,state.orders,state.profileName,user?.id,marketDataReal]);
+  },[state.active,accountMode,analysis,symbol,timeframe,state.apiConnected,state.binanceCanTrade,state.envBalance,state.binanceUsdtBalance,state.orders,state.profileName,user?.id,marketDataReal,mtfDataReal]);
 
   async function changeOperationProfile(nextProfile){
     if(state.active) return;
@@ -812,7 +884,14 @@ function TargetOrderPreview({state,symbol,timeframe,analysis,createTargetOrder,a
             requiredRoomPct:Number(analysis?.requiredRoomPct || 0),
             barsSinceSupportTouch:analysis?.barsSinceSupportTouch,
             supportSignal:Boolean(analysis?.supportSignal),
-            setup:String(analysis?.setup || '')
+            setup:String(analysis?.setup || ''),
+            mtfConfirmed:Boolean(analysis?.mtfConfirmed),
+            riskOff:Boolean(analysis?.riskOff),
+            marketRegime:String(analysis?.marketRegime || analysis?.regime || ''),
+            minScore:Number(analysis?.minScore || 78),
+            structuralSupport:Number(analysis?.structuralSupport || analysis?.support || 0),
+            structuralResistance:Number(analysis?.structuralResistance || analysis?.resistance || 0),
+            timeframeRegimes:analysis?.timeframeRegimes || {}
           }
         })
       });
@@ -1133,15 +1212,29 @@ function OldBinanceSettings({user,setState,setAccountMode}){
   return <div className="panel panel-glow"><h3><KeyRound size={18}/> Configurações Binance</h3><p className="muted">A chave é enviada somente para a Netlify Function, testada na Binance, criptografada no backend e salva no Supabase. O robô opera pares Spot contra USDT.</p><label>Ambiente</label><select value={environment} onChange={e=>setEnvironment(e.target.value)}><option value="testnet">Testnet Spot</option><option value="live">Conta real Spot</option></select><label>API Key</label><input value={apiKey} onChange={e=>setApiKey(e.target.value)} placeholder="Cole a API Key"/><label>Secret Key</label><input type="password" value={apiSecret} onChange={e=>setApiSecret(e.target.value)} placeholder="Cole a Secret Key"/><button className="btn primary gold-btn" type="button" onClick={testAndSave} disabled={loading}>{loading?'Testando...':'Testar conexão e salvar API'}</button>{error&&<div className="alert danger">{error}</div>}{result&&<div className="alert">API validada: {result.apiKeyMasked}. Saldo livre USDT: <b>{usdt(result.usdtFree)}</b>. Trade: <b>{result.canTrade?'habilitado':'somente leitura'}</b>.{result.warning&&<p>{result.warning}</p>}</div>}<div className="alert">Permissões recomendadas: leitura + spot trading. Saque deve estar desativado. Valor BRL fica apenas para recarga, convertido pela cotação do dólar/USDT.</div></div>
 }
 
-function buildRadar(analysis){
-  const base = allowedSymbols.map((s,idx)=>{
-    const seed=radarSeed[s]||{hold:65,liquidity:65};
-    const marketBonus = Math.min(18, Math.max(0, Number(analysis.score || 0) - 55));
-    const rankBonus = Math.max(0, 18 - idx);
-    const score = Math.min(96, Math.round(seed.hold*0.22 + seed.liquidity*0.22 + 30 + rankBonus + marketBonus * 0.35));
-    return {symbol:s, score, hold:seed.hold, liquidity:seed.liquidity};
+function buildRadar(radarAnalyses,selectedAnalysis,selectedSymbol){
+  const analyses={...(radarAnalyses || {})};
+  if(selectedAnalysis?.dataComplete && selectedSymbol) analyses[selectedSymbol]=selectedAnalysis;
+  return allowedSymbols.map((symbol,index)=>{
+    const analysis=analyses[symbol];
+    const liquidity=liquidityBaseline[symbol] || Math.max(70,90-index);
+    const technical=Number(analysis?.radarScore ?? analysis?.score ?? 0);
+    const opportunity=analysis?.action==='BUY' ? 12 : analysis?.nearSupport ? 5 : 0;
+    const riskPenalty=analysis?.riskOff ? 35 : 0;
+    const score=Math.max(0,Math.min(99,Math.round(technical*0.78 + liquidity*0.18 + opportunity - riskPenalty)));
+    return {
+      symbol,
+      score,
+      hold:Number(analysis?.score || 0),
+      liquidity,
+      action:analysis?.action || 'WAIT',
+      regime:analysis?.marketRegime || analysis?.regime || 'Sincronizando',
+      reason:analysis?.reason || 'Aguardando leitura multitemporal'
+    };
+  }).sort((a,b)=>{
+    const actionPriority=(b.action==='BUY'?2:b.action==='WAIT'?1:0)-(a.action==='BUY'?2:a.action==='WAIT'?1:0);
+    return actionPriority || b.score-a.score;
   });
-  return base.sort((a,b)=>b.score-a.score);
 }
 
 

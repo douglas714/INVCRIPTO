@@ -1,8 +1,8 @@
 export const PROFILE_RULES = Object.freeze({
-  conservador: Object.freeze({ name: 'conservador', protectionGapPct: 1.0, maxConcurrentBaskets: 1, timeframe: '5m' }),
-  moderado: Object.freeze({ name: 'moderado', protectionGapPct: 0.5, maxConcurrentBaskets: 1, timeframe: '5m' }),
-  arrojado: Object.freeze({ name: 'arrojado', protectionGapPct: 0.3, maxConcurrentBaskets: 1, timeframe: '1m' }),
-  alavancagem: Object.freeze({ name: 'alavancagem', protectionGapPct: 0.15, maxConcurrentBaskets: 5, timeframe: '1m' })
+  conservador: Object.freeze({ name: 'conservador', protectionGapPct: 1.0, maxConcurrentBaskets: 1, timeframe: '5m', handGrowthFactor: 1.20, minScore: 84, roomFloorPct: 1.05 }),
+  moderado: Object.freeze({ name: 'moderado', protectionGapPct: 0.5, maxConcurrentBaskets: 1, timeframe: '5m', handGrowthFactor: 1.25, minScore: 80, roomFloorPct: 0.95 }),
+  arrojado: Object.freeze({ name: 'arrojado', protectionGapPct: 0.3, maxConcurrentBaskets: 1, timeframe: '1m', handGrowthFactor: 1.30, minScore: 76, roomFloorPct: 0.88 }),
+  alavancagem: Object.freeze({ name: 'alavancagem', protectionGapPct: 0.15, maxConcurrentBaskets: 5, timeframe: '1m', handGrowthFactor: 1.35, minScore: 74, roomFloorPct: 0.82 })
 });
 
 export const INITIAL_ENTRY_USDT = 10;
@@ -43,10 +43,10 @@ export function nextProtectionPrice({ lastBuyPrice, gapPct, emergency = false })
   return price * Math.max(0, 1 - gap * multiplier);
 }
 
-export function nextProtectionQuote({ lastQuote, normalRemaining, emergencyRemaining, minimumOrder = INITIAL_ENTRY_USDT }) {
+export function nextProtectionQuote({ lastQuote, normalRemaining, emergencyRemaining, minimumOrder = INITIAL_ENTRY_USDT, growthFactor = HAND_GROWTH_FACTOR }) {
   const min = Math.max(0, Number(minimumOrder || INITIAL_ENTRY_USDT));
   const previous = Math.max(min, Number(lastQuote || min));
-  const desired = Math.max(min, previous * HAND_GROWTH_FACTOR);
+  const desired = Math.max(min, previous * Math.max(1, Number(growthFactor || HAND_GROWTH_FACTOR)));
   const normal = Math.max(0, Number(normalRemaining || 0));
   if (normal >= min) {
     return { quote: Math.min(desired, normal), bucket: 'normal', emergency: false };
@@ -362,5 +362,290 @@ export function summarizeBasketOrders(orders = []) {
     lastBuyPrice,
     lastBuyQuote,
     recoveryLevel
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Confirmação multitemporal da conta real (MTF-R V1.5)
+// ---------------------------------------------------------------------------
+
+function emaSeries(values = [], period = 14) {
+  if (!values.length) return [];
+  const alpha = 2 / (period + 1);
+  const out = [];
+  let previous = Number(values[0] || 0);
+  for (const value of values) {
+    previous = Number(value || 0) * alpha + previous * (1 - alpha);
+    out.push(previous);
+  }
+  return out;
+}
+
+function rsiSeries(values = [], period = 14) {
+  const rows = values.map(Number);
+  const out = Array(rows.length).fill(50);
+  if (rows.length < period + 1) return out;
+  let gain = 0;
+  let loss = 0;
+  for (let index = 1; index <= period; index += 1) {
+    const change = rows[index] - rows[index - 1];
+    gain += Math.max(0, change);
+    loss += Math.max(0, -change);
+  }
+  gain /= period;
+  loss /= period;
+  out[period] = loss === 0 ? 100 : 100 - 100 / (1 + gain / loss);
+  for (let index = period + 1; index < rows.length; index += 1) {
+    const change = rows[index] - rows[index - 1];
+    gain = ((gain * (period - 1)) + Math.max(0, change)) / period;
+    loss = ((loss * (period - 1)) + Math.max(0, -change)) / period;
+    out[index] = loss === 0 ? 100 : 100 - 100 / (1 + gain / loss);
+  }
+  return out;
+}
+
+function adxSeries(candles = [], period = 14) {
+  const rows = normalizeKlineRows(candles);
+  if (rows.length < period * 2 + 2) return Array(rows.length).fill(0);
+  const tr = Array(rows.length).fill(0);
+  const plusDm = Array(rows.length).fill(0);
+  const minusDm = Array(rows.length).fill(0);
+  for (let index = 1; index < rows.length; index += 1) {
+    const upMove = rows[index].high - rows[index - 1].high;
+    const downMove = rows[index - 1].low - rows[index].low;
+    plusDm[index] = upMove > downMove && upMove > 0 ? upMove : 0;
+    minusDm[index] = downMove > upMove && downMove > 0 ? downMove : 0;
+    tr[index] = trueRange(rows[index], rows[index - 1].close);
+  }
+  const smoothTr = emaSeries(tr, period);
+  const smoothPlus = emaSeries(plusDm, period);
+  const smoothMinus = emaSeries(minusDm, period);
+  const dx = rows.map((_, index) => {
+    const base = Math.max(1e-12, smoothTr[index] || 0);
+    const plus = 100 * (smoothPlus[index] || 0) / base;
+    const minus = 100 * (smoothMinus[index] || 0) / base;
+    return 100 * Math.abs(plus - minus) / Math.max(1e-12, plus + minus);
+  });
+  return emaSeries(dx, period);
+}
+
+export function timeframeTrendContext(candles = [], label = '') {
+  const rows = normalizeKlineRows(candles);
+  if (rows.length < 40) return { label, ready: false, regime: 'SEM DADOS', bullish: false, bearish: false, severeBear: false };
+  const closes = rows.map(row => row.close);
+  const e9 = emaSeries(closes, 9);
+  const e21 = emaSeries(closes, 21);
+  const e50 = emaSeries(closes, 50);
+  const e200 = emaSeries(closes, 200);
+  const rsi14 = rsiSeries(closes, 14);
+  const adx14 = adxSeries(rows, 14);
+  const index = rows.length - 1;
+  const slopeIndex = Math.max(0, index - 8);
+  const slope50Pct = e50[slopeIndex] > 0 ? ((e50[index] / e50[slopeIndex]) - 1) * 100 : 0;
+  const bullish = closes[index] >= e200[index] * 0.995 && e21[index] > e50[index] && slope50Pct > -0.03;
+  const bearish = closes[index] < e200[index] && e21[index] < e50[index] && slope50Pct < 0;
+  const severeBear = bearish && e9[index] < e21[index] && slope50Pct < -0.05 && Number(adx14[index] || 0) >= 18;
+  return {
+    label,
+    ready: true,
+    rows,
+    close: closes[index],
+    ema9: e9[index],
+    ema21: e21[index],
+    ema50: e50[index],
+    ema200: e200[index],
+    rsi14: Number(rsi14[index] || 50),
+    adx14: Number(adx14[index] || 0),
+    atr14: averageTrueRange(rows, 14),
+    slope50Pct,
+    bullish,
+    bearish,
+    severeBear,
+    regime: severeBear ? 'BAIXA FORTE' : bullish ? 'ALTA' : bearish ? 'BAIXA' : 'NEUTRO'
+  };
+}
+
+function clusterMtfLevels(candidates = [], tolerance = 0) {
+  const sorted = [...candidates].sort((a, b) => a.price - b.price);
+  const clusters = [];
+  for (const candidate of sorted) {
+    let cluster = clusters.find(item => Math.abs(item.level - candidate.price) <= tolerance);
+    if (!cluster) {
+      cluster = { level: candidate.price, weight: 0, sources: new Set(), touches: 0 };
+      clusters.push(cluster);
+    }
+    const weight = Math.max(0.1, Number(candidate.weight || 1));
+    const previousWeight = cluster.weight;
+    cluster.weight += weight;
+    cluster.level = ((cluster.level * previousWeight) + candidate.price * weight) / Math.max(1e-12, cluster.weight);
+    cluster.sources.add(candidate.source);
+    cluster.touches += Number(candidate.touches || 1);
+  }
+  return clusters.map(item => ({ ...item, sources: [...item.sources] }));
+}
+
+export function multiTimeframeStructureContext(timeframes = {}, currentPrice = 0) {
+  const price = Math.max(0, Number(currentPrice || normalizeKlineRows(timeframes?.['1m']).at(-1)?.close || normalizeKlineRows(timeframes?.['5m']).at(-1)?.close || 0));
+  const rules = [['4h', 5.5, 300], ['1h', 4.5, 300], ['15m', 3.2, 260], ['5m', 1.6, 220]];
+  const supports = [];
+  const resistances = [];
+  const structures = {};
+  for (const [timeframe, weight, lookback] of rules) {
+    const rows = normalizeKlineRows(timeframes?.[timeframe] || []);
+    if (rows.length < 40) continue;
+    const structure = marketStructure(rows, { currentPrice: price || rows.at(-1).close, lookback });
+    structures[timeframe] = structure;
+    for (const item of structure.supports.slice(0, 8)) supports.push({ price: item.level, weight: Math.max(1, item.weight) * weight, touches: item.touches, source: timeframe });
+    for (const item of structure.resistances.slice(0, 8)) resistances.push({ price: item.level, weight: Math.max(1, item.weight) * weight, touches: item.touches, source: timeframe });
+    const trend = timeframeTrendContext(rows, timeframe);
+    if (trend.ready && trend.bullish) {
+      if (trend.ema21 < price) supports.push({ price: trend.ema21, weight: weight * 2.4, touches: 2, source: `${timeframe}:EMA21` });
+      if (trend.ema50 < price) supports.push({ price: trend.ema50, weight: weight * 2.0, touches: 2, source: `${timeframe}:EMA50` });
+    }
+  }
+  const referenceAtr = Number(structures['15m']?.atr || structures['1h']?.atr || price * 0.003);
+  const tolerance = Math.max(price * 0.0015, referenceAtr * 0.42);
+  const structuralSource = source => String(source).startsWith('4h') || String(source).startsWith('1h') || String(source).startsWith('15m');
+  const supportClusters = clusterMtfLevels(supports, tolerance)
+    .filter(item => item.level <= price * 1.0025 && item.sources.some(structuralSource))
+    .sort((a, b) => b.level - a.level);
+  const resistanceClusters = clusterMtfLevels(resistances, tolerance)
+    .filter(item => item.level >= price * 0.9975 && item.sources.some(structuralSource))
+    .sort((a, b) => a.level - b.level);
+  return {
+    support: Number(supportClusters[0]?.level || structures['15m']?.support || structures['1h']?.support || 0),
+    resistance: Number(resistanceClusters[0]?.level || structures['15m']?.resistance || structures['1h']?.resistance || 0),
+    supports: supportClusters,
+    resistances: resistanceClusters,
+    structures,
+    tolerance,
+    atr: referenceAtr,
+    atrPct: price > 0 ? referenceAtr / price * 100 : 0
+  };
+}
+
+function reactionAtSupport(candles = [], support = 0, tolerance = 0, windowBars = 6) {
+  const rows = normalizeKlineRows(candles);
+  const recent = rows.slice(-Math.max(3, windowBars));
+  let touchIndex = -1;
+  for (let index = recent.length - 1; index >= 0; index -= 1) {
+    if (recent[index].low <= support + tolerance) { touchIndex = index; break; }
+  }
+  if (touchIndex < 0) return { touched: false, confirmed: false, barsSinceTouch: null, stretched: false };
+  const touch = recent[touchIndex];
+  const range = Math.max(1e-12, touch.high - touch.low);
+  const lowerWick = Math.max(0, Math.min(touch.open, touch.close) - touch.low);
+  const last = recent.at(-1);
+  const bullishAfter = recent.slice(touchIndex).some(row => row.close > row.open);
+  const confirmed = bullishAfter && last.close >= touch.low + range * 0.32;
+  return {
+    touched: true,
+    confirmed,
+    barsSinceTouch: recent.length - 1 - touchIndex,
+    stretched: lowerWick / range >= 0.24 || range >= Math.max(tolerance * 2.4, 1e-12),
+    touch,
+    last
+  };
+}
+
+export function multiTimeframeEntryContext(timeframes = {}, options = {}) {
+  const profileName = normalizeProfileName(options.profileName);
+  const profile = profileRules(profileName);
+  const rows = Object.fromEntries(['1m', '5m', '15m', '1h', '4h'].map(tf => [tf, normalizeKlineRows(timeframes?.[tf] || [])]));
+  const complete = ['1m', '5m', '15m', '1h', '4h'].every(tf => rows[tf].length >= 60);
+  if (!complete) return { valid: false, mtfConfirmed: false, reason: 'insufficient_multi_timeframe_candles', support: 0, resistance: 0 };
+  const trends = Object.fromEntries(Object.entries(rows).map(([tf, candles]) => [tf, timeframeTrendContext(candles, tf)]));
+  const currentPrice = Math.max(0, Number(options.currentPrice || rows['1m'].at(-1)?.close || 0));
+  const structure = multiTimeframeStructureContext(rows, currentPrice);
+  const h4 = trends['4h'];
+  const h1 = trends['1h'];
+  const m15 = trends['15m'];
+  const m5 = trends['5m'];
+  const riskOff = Boolean((h4.severeBear && h1.bearish) || (h1.severeBear && m15.bearish));
+  const directionAllowed = profileName === 'conservador'
+    ? !riskOff && h4.bullish && h1.bullish && !m15.bearish
+    : profileName === 'moderado'
+      ? !riskOff && !h4.bearish && (h1.bullish || (!h1.bearish && m15.bullish))
+      : !riskOff && !m15.severeBear && (h1.bullish || (!h1.bearish && m15.bullish));
+  const maxDistanceByProfile = { conservador: 0.55, moderado: 0.65, arrojado: 0.75, alavancagem: 0.85 }[profileName];
+  const maxEntryDistancePct = clamp(Math.max(0.24, (m5.atr14 / Math.max(1e-12, m5.close)) * 100 * 0.9), 0.24, maxDistanceByProfile);
+  const supportTolerance = Math.max(structure.tolerance, m5.atr14 * 0.38, currentPrice * 0.0012);
+  const maxEntryPrice = structure.support * (1 + maxEntryDistancePct / 100);
+  const distanceToResistancePct = structure.resistance > currentPrice ? ((structure.resistance / currentPrice) - 1) * 100 : 0;
+  const requiredRoomPct = clamp(Number(profile.roomFloorPct || 0.95) + (m5.atr14 / Math.max(1e-12, m5.close)) * 100 * 0.18, Number(profile.roomFloorPct || 0.95), 1.45);
+  const nearSupport = structure.support > 0 && currentPrice >= structure.support * 0.997 && currentPrice <= maxEntryPrice;
+  const m5Reaction = reactionAtSupport(rows['5m'], structure.support, supportTolerance, profileName === 'conservador' ? 4 : profileName === 'moderado' ? 5 : 7);
+  const m1Reaction = reactionAtSupport(rows['1m'], structure.support, supportTolerance, 9);
+  const m1Last = rows['1m'].at(-1);
+  const m1Previous = rows['1m'].at(-2);
+  const m1Trend = trends['1m'];
+  const higherLow = rows['1m'].at(-1).low >= Math.min(rows['1m'].at(-2).low, rows['1m'].at(-3).low) * 0.9995;
+  const m1Confirmed = Boolean((m1Reaction.confirmed || higherLow) && m1Last.close >= m1Trend.ema9 * 0.9995 && (m1Last.close > m1Last.open || m1Last.close > m1Previous.close));
+  const valid = Boolean(directionAllowed && nearSupport && m5Reaction.confirmed && m1Confirmed && distanceToResistancePct >= requiredRoomPct);
+  return {
+    ...structure,
+    valid,
+    mtfConfirmed: valid,
+    riskOff,
+    directionAllowed,
+    reason: riskOff
+      ? 'multi_timeframe_risk_off'
+      : !directionAllowed
+        ? 'higher_timeframe_not_aligned'
+        : !nearSupport
+          ? 'price_outside_structural_support_zone'
+          : !m5Reaction.confirmed
+            ? 'm5_support_reaction_not_confirmed'
+            : !m1Confirmed
+              ? 'm1_execution_not_confirmed'
+              : distanceToResistancePct < requiredRoomPct
+                ? 'structural_resistance_too_close'
+                : 'multi_timeframe_support_entry_confirmed',
+    currentPrice,
+    maxEntryDistancePct,
+    maxEntryPrice,
+    distanceFromSupportPct: structure.support > 0 ? ((currentPrice / structure.support) - 1) * 100 : 999,
+    distanceToResistancePct,
+    requiredRoomPct,
+    supportSignal: Boolean(m5Reaction.confirmed && m1Confirmed),
+    barsSinceTouch: m5Reaction.barsSinceTouch,
+    marketRegime: riskOff ? 'RISCO / BAIXA FORTE' : h4.bullish && h1.bullish ? 'TENDENCIA DE ALTA' : h1.bullish || m15.bullish ? 'RECUPERACAO / ALTA CURTA' : 'LATERAL / NEUTRO',
+    timeframeRegimes: Object.fromEntries(Object.entries(trends).map(([tf, trend]) => [tf, trend.regime]))
+  };
+}
+
+export function supportAwareProtectionPriceMtf({ timeframes = {}, lastBuyPrice, gapPct, emergency = false, entryBufferPct = 0.08, currentPrice = 0, profileName = 'conservador' }) {
+  const rows = Object.fromEntries(['1m', '5m', '15m', '1h', '4h'].map(tf => [tf, normalizeKlineRows(timeframes?.[tf] || [])]));
+  const triggerPrice = nextProtectionPrice({ lastBuyPrice, gapPct, emergency });
+  const livePrice = Math.max(0, Number(currentPrice || rows['1m'].at(-1)?.close || rows['5m'].at(-1)?.close || triggerPrice));
+  const structure = multiTimeframeStructureContext(rows, livePrice);
+  const trends = Object.fromEntries(['4h', '1h', '15m', '5m'].map(tf => [tf, timeframeTrendContext(rows[tf], tf)]));
+  const riskOff = Boolean((trends['4h'].severeBear && trends['1h'].bearish) || (trends['1h'].severeBear && trends['15m'].bearish));
+  if (riskOff) return { price: 0, triggerPrice, support: 0, structure, trends, riskOff, reason: 'risk_off_protection_paused' };
+  const buffer = Math.max(0, Number(entryBufferPct || 0)) / 100;
+  const executionCeiling = Math.min(triggerPrice, livePrice * 1.001);
+  const maximumSupport = executionCeiling / Math.max(1, 1 + buffer);
+  const preferredSources = emergency ? ['4h', '1h'] : ['1h', '15m'];
+  const candidate = structure.supports.find(item => item.level <= maximumSupport && item.sources.some(source => preferredSources.some(prefix => String(source).startsWith(prefix))))
+    || structure.supports.find(item => item.level <= maximumSupport)
+    || null;
+  const support = Number(candidate?.level || 0);
+  if (!support) return { price: 0, triggerPrice, support: 0, structure, trends, riskOff, reason: 'no_structural_support_below_trigger' };
+  if (emergency) {
+    const m5Reaction = reactionAtSupport(rows['5m'], support, Math.max(structure.tolerance, trends['5m'].atr14 * 0.4), 5);
+    if (!m5Reaction.confirmed) return { price: 0, triggerPrice, support, structure, trends, riskOff, reason: 'emergency_reserve_waiting_m5_reversal' };
+  }
+  const bufferedSupport = support * (1 + buffer);
+  return {
+    price: Math.min(triggerPrice, executionCeiling, bufferedSupport),
+    triggerPrice,
+    executionCeiling,
+    support,
+    structure,
+    trends,
+    riskOff,
+    sources: candidate?.sources || [],
+    reason: emergency ? 'mtf_major_support_emergency' : 'mtf_structural_support_below_profile_gap',
+    profileName: normalizeProfileName(profileName)
   };
 }

@@ -75,3 +75,58 @@ console.log('basket-policy tests: OK');
   });
   assert.ok(plan.price === 0 || plan.price <= 99 * 1.001 + 1e-9);
 }
+
+import {
+  multiTimeframeEntryContext,
+  supportAwareProtectionPriceMtf
+} from './basket-policy.js';
+
+function mtfSeries(count, start, drift, target = 100) {
+  const rows = [];
+  let price = start;
+  for (let index = 0; index < count; index += 1) {
+    const open = price;
+    const close = Math.max(1, open + drift + Math.sin(index / 10) * Math.abs(drift || 0.01) * 0.3);
+    rows.push({
+      openTime: index * 60000,
+      closeTime: (index + 1) * 60000 - 1,
+      open,
+      high: Math.max(open, close) + 0.12,
+      low: Math.min(open, close) - 0.12,
+      close,
+      volume: 100 + (index % 8) * 6
+    });
+    price = close;
+  }
+  const scale = target / rows.at(-1).close;
+  return rows.map(row => ({ ...row, open: row.open * scale, high: row.high * scale, low: row.low * scale, close: row.close * scale }));
+}
+
+{
+  const falling = {
+    '1m': mtfSeries(260, 115, -0.04),
+    '5m': mtfSeries(300, 120, -0.05),
+    '15m': mtfSeries(300, 125, -0.06),
+    '1h': mtfSeries(280, 130, -0.08),
+    '4h': mtfSeries(260, 140, -0.10)
+  };
+  const entry = multiTimeframeEntryContext(falling, { profileName: 'arrojado', currentPrice: 100 });
+  assert.equal(entry.riskOff, true);
+  assert.equal(entry.valid, false);
+  const protection = supportAwareProtectionPriceMtf({
+    timeframes: falling,
+    lastBuyPrice: 102,
+    gapPct: 0.3,
+    currentPrice: 100,
+    profileName: 'arrojado'
+  });
+  assert.equal(protection.price, 0);
+  assert.equal(protection.reason, 'risk_off_protection_paused');
+}
+
+assert.deepEqual(
+  nextProtectionQuote({ lastQuote: 10, normalRemaining: 100, emergencyRemaining: 20, growthFactor: 1.2 }),
+  { quote: 12, bucket: 'normal', emergency: false }
+);
+
+console.log('basket-policy multi-timeframe tests: OK');

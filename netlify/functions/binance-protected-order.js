@@ -14,6 +14,7 @@ function json(statusCode, body) {
 const allowedSymbols = new Set(['BTCUSDT','ETHUSDT','BNBUSDT','SOLUSDT','XRPUSDT','ADAUSDT','AVAXUSDT','DOGEUSDT','LINKUSDT','DOTUSDT','LTCUSDT','TRXUSDT']);
 const INITIAL_ENTRY_USDT = 10;
 const PROFILE_LIMITS = { conservador: 1, moderado: 1, arrojado: 1, alavancagem: 5 };
+const PROFILE_MIN_SCORE = { conservador: 84, moderado: 80, arrojado: 76, alavancagem: 74 };
 
 export async function handler(event) {
   if (event.httpMethod === 'OPTIONS') return { statusCode: 204, headers: jsonHeaders, body: '' };
@@ -49,20 +50,34 @@ export async function handler(event) {
       ? null
       : Number(rawMarketContext.barsSinceSupportTouch),
     supportSignal: Boolean(rawMarketContext.supportSignal),
-    setup: String(rawMarketContext.setup || '').slice(0, 80)
+    setup: String(rawMarketContext.setup || '').slice(0, 80),
+    mtfConfirmed: Boolean(rawMarketContext.mtfConfirmed),
+    riskOff: Boolean(rawMarketContext.riskOff),
+    marketRegime: String(rawMarketContext.marketRegime || '').slice(0, 120),
+    minScore: Number(rawMarketContext.minScore || 0),
+    structuralSupport: Number(rawMarketContext.structuralSupport || rawMarketContext.support || 0),
+    structuralResistance: Number(rawMarketContext.structuralResistance || rawMarketContext.resistance || 0),
+    timeframeRegimes: rawMarketContext.timeframeRegimes && typeof rawMarketContext.timeframeRegimes === 'object'
+      ? rawMarketContext.timeframeRegimes
+      : {}
   };
 
   if (!allowedSymbols.has(symbol)) return json(400, { error: 'Par nao permitido para operacao real.' });
-  if (environment === 'live' && score < 78) return json(400, { error: 'Score insuficiente para conta real.' });
+  const requestedProfileForValidation = PROFILE_LIMITS[requestedProfileName] ? requestedProfileName : 'conservador';
+  const requestedMinScore = PROFILE_MIN_SCORE[requestedProfileForValidation];
+  if (environment === 'live' && score < requestedMinScore) return json(400, { error: `Score insuficiente para ${requestedProfileForValidation}. Minimo ${requestedMinScore}.` });
   if (environment === 'live') {
-    if (!marketContext.supportSignal || marketContext.support <= 0 || marketContext.maxEntryPrice <= 0) {
-      return json(400, { error: 'Entrada real bloqueada: falta confirmacao recente na zona de suporte.' });
+    if (!marketContext.mtfConfirmed || marketContext.riskOff) {
+      return json(400, { error: 'Entrada real bloqueada: confirmacao H4/H1/M15/M5/M1 ausente ou mercado em risco.' });
+    }
+    if (!marketContext.supportSignal || marketContext.structuralSupport <= 0 || marketContext.maxEntryPrice <= 0) {
+      return json(400, { error: 'Entrada real bloqueada: falta confirmacao recente no suporte estrutural M15/H1.' });
     }
     if (marketContext.plannedEntryPrice > marketContext.maxEntryPrice * 1.0005) {
       return json(400, { error: 'Entrada real bloqueada: preco planejado acima da zona maxima do suporte.' });
     }
     if (marketContext.distanceToResistancePct < marketContext.requiredRoomPct) {
-      return json(400, { error: 'Entrada real bloqueada: resistencia muito proxima para garantir o alvo liquido.' });
+      return json(400, { error: 'Entrada real bloqueada: resistencia estrutural muito proxima para garantir o alvo liquido.' });
     }
   }
 
@@ -110,6 +125,10 @@ export async function handler(event) {
     : 'conservador';
   const profileName = PROFILE_LIMITS[requestedProfileName] ? requestedProfileName : storedProfileName;
   const maxConcurrentBaskets = PROFILE_LIMITS[profileName];
+  const profileMinScore = PROFILE_MIN_SCORE[profileName] || 84;
+  if (environment === 'live' && score < profileMinScore) {
+    return json(400, { error: `Score insuficiente para a modalidade ${profileName}. Minimo ${profileMinScore}.` });
+  }
   if (bot?.id && profileName !== storedProfileName) {
     await supabase
       .from('bot_instances')

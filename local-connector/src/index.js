@@ -12,7 +12,9 @@ import {
   roundTripRates,
   summarizeBasketOrders,
   supportAwareProtectionPrice,
-  supportEntryContext
+  supportEntryContext,
+  supportAwareProtectionPriceMtf,
+  multiTimeframeEntryContext
 } from './basket-policy.js';
 
 process.stdout?.on?.('error', error => {
@@ -569,6 +571,12 @@ async function closedMarketCandles(symbol, interval = '5m', limit = 320) {
   const now = Date.now();
   const last = rows.at(-1);
   return last?.closeTime && last.closeTime > now ? rows.slice(0, -1) : rows;
+}
+
+async function closedMultiTimeframeCandles(symbol) {
+  const settings = [['1m', 260], ['5m', 320], ['15m', 320], ['1h', 300], ['4h', 260]];
+  const entries = await Promise.all(settings.map(async ([interval, limit]) => [interval, await closedMarketCandles(symbol, interval, limit)]));
+  return Object.fromEntries(entries);
 }
 
 function baseAssetFromSymbol(symbol) {
@@ -1145,11 +1153,13 @@ async function placeNextOfflineProtection({ basket, orders, credential, apiKey, 
   const usage = basketBucketUsage(orders);
   const normalRemaining = Math.max(0, Number(basket.normal_budget_usdt || 0) - usage.normalUsed);
   const emergencyRemaining = Math.max(0, Number(basket.emergency_budget_usdt || 0) - usage.emergencyUsed);
+  const rules = profileRules(basket.profile_name);
   const next = nextProtectionQuote({
     lastQuote: Number(basket.last_buy_quote || INITIAL_ENTRY_USDT),
     normalRemaining,
     emergencyRemaining,
-    minimumOrder: Math.max(INITIAL_ENTRY_USDT, filters.minNotional * 1.02)
+    minimumOrder: Math.max(INITIAL_ENTRY_USDT, filters.minNotional * 1.02),
+    growthFactor: Number(rules.handGrowthFactor || 1.35)
   });
   if (!next.quote) {
     await updateRows('real_baskets', {
@@ -1164,20 +1174,33 @@ async function placeNextOfflineProtection({ basket, orders, credential, apiKey, 
 
   const basePrice = Number(basket.last_buy_price || 0);
   if (!basePrice) return { skipped: true, reason: 'missing_last_buy_price' };
-  const rules = profileRules(basket.profile_name);
-  const marketInterval = next.emergency ? '1h' : rules.timeframe;
-  const marketCandles = await closedMarketCandles(basket.symbol, marketInterval, next.emergency ? 500 : 360);
+  const marketInterval = 'MTF';
+  const marketTimeframes = await closedMultiTimeframeCandles(basket.symbol);
   const liveTicker = await ticker(basket.symbol).catch(() => null);
-  const currentPrice = Number(liveTicker?.payload?.lastPrice || marketCandles.at(-1)?.close || 0);
-  const supportPlan = supportAwareProtectionPrice({
-    candles: marketCandles,
+  const currentPrice = Number(liveTicker?.payload?.lastPrice || marketTimeframes['1m']?.at(-1)?.close || 0);
+  const supportPlan = supportAwareProtectionPriceMtf({
+    timeframes: marketTimeframes,
     lastBuyPrice: basePrice,
     gapPct: Number(basket.protection_gap_pct || rules.protectionGapPct),
     emergency: next.emergency,
     entryBufferPct: next.emergency ? 0.03 : 0.08,
-    currentPrice
+    currentPrice,
+    profileName: basket.profile_name
   });
+  const activeProtection = (orders || []).find(order =>
+    String(order.side || '').toUpperCase() === 'BUY' &&
+    String(order.protection_role || '') === 'protection_buy' &&
+    ['new', 'open', 'pending_new', 'partially_filled'].includes(String(order.status || '').toLowerCase())
+  );
   if (!supportPlan.price || !supportPlan.support) {
+    if (activeProtection && ['risk_off_protection_paused', 'emergency_reserve_waiting_m5_reversal'].includes(String(supportPlan.reason || ''))) {
+      await cancelOpenProtectionOrderList({ basket, activeProtection, orders, apiKey, apiSecret, environment }).catch(() => null);
+      await log('warn', 'offline_protection_paused_by_mtf', `Protecao de ${basket.symbol} pausada pela leitura H4/H1/M15.`, {
+        basketId: basket.id,
+        reason: supportPlan.reason,
+        currentPrice
+      }, command || { user_id: basket.user_id });
+    }
     await updateRows('real_baskets', {
       next_protection_price: null,
       next_protection_quote: next.quote,
@@ -1201,11 +1224,6 @@ async function placeNextOfflineProtection({ basket, orders, credential, apiKey, 
     return { skipped: true, reason: 'invalid_support_protection_price', protectionPrice, basePrice };
   }
 
-  const activeProtection = (orders || []).find(order =>
-    String(order.side || '').toUpperCase() === 'BUY' &&
-    String(order.protection_role || '') === 'protection_buy' &&
-    ['new', 'open', 'pending_new', 'partially_filled'].includes(String(order.status || '').toLowerCase())
-  );
   if (activeProtection) {
     const activePrice = Number(activeProtection.price || 0);
     const partiallyFilled = Number(activeProtection.executed_qty || 0) > 0
@@ -1501,14 +1519,13 @@ async function handleProtectedSpotBuy(command) {
   const marketContextFromPanel = payload.marketContext && typeof payload.marketContext === 'object'
     ? payload.marketContext
     : {};
-  const entryCandles = await closedMarketCandles(symbol, rules.timeframe, 360);
+  const entryTimeframes = await closedMultiTimeframeCandles(symbol);
   const liveTicker = await ticker(symbol);
   if (!liveTicker.ok) throw new Error(`Falha ao confirmar preco atual de ${symbol}: ${JSON.stringify(liveTicker.payload)}`);
-  const currentPrice = Number(liveTicker.payload?.lastPrice || entryCandles.at(-1)?.close || 0);
-  const liveEntry = supportEntryContext(entryCandles, {
+  const currentPrice = Number(liveTicker.payload?.lastPrice || entryTimeframes['1m']?.at(-1)?.close || 0);
+  const liveEntry = multiTimeframeEntryContext(entryTimeframes, {
     currentPrice,
-    windowBars: rules.timeframe === '1m' ? 6 : 4,
-    lookback: 180
+    profileName
   });
   const panelMaxEntry = Number(marketContextFromPanel.maxEntryPrice || 0);
   const liveMaxEntry = Number(liveEntry.maxEntryPrice || 0);
@@ -1524,7 +1541,7 @@ async function handleProtectedSpotBuy(command) {
     Number(liveEntry.requiredRoomPct || 0),
     Number(marketContextFromPanel.requiredRoomPct || 0)
   );
-  if (!liveEntry.valid || !Number.isFinite(entryCeiling) || currentPrice > entryCeiling || resistanceRoom < requiredRoom) {
+  if (!liveEntry.valid || !liveEntry.mtfConfirmed || liveEntry.riskOff || !Number.isFinite(entryCeiling) || currentPrice > entryCeiling || resistanceRoom < requiredRoom) {
     return {
       environment,
       symbol,
@@ -1536,7 +1553,7 @@ async function handleProtectedSpotBuy(command) {
       resistance: liveEntry.resistance,
       distanceToResistancePct: resistanceRoom,
       requiredRoomPct: requiredRoom,
-      message: 'Compra cancelada antes de chegar à Binance: o preço saiu da zona de suporte ou a resistência ficou próxima.'
+      message: 'Compra cancelada antes de chegar à Binance: H4/H1/M15/M5/M1 não confirmaram, o preço saiu do suporte ou a resistência ficou próxima.'
     };
   }
 

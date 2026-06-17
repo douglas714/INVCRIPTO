@@ -1,0 +1,29 @@
+INVCRIPTO V1.5 - ESTRATEGIA MTF-R PARA CONTA REAL
+
+1. Publique todo o conteúdo deste pacote no Netlify.
+2. Substitua o conector antigo pelo arquivo:
+   public/downloads/ENVCRIPTO_CONNECTOR_LOCAL.zip
+3. Preserve o arquivo .env do conector antigo.
+4. Execute INSTALAR_E_EXECUTAR_CONNECTOR.bat.
+5. O robô inicia pausado. Confirme no painel que M1, M5, M15, H1 e H4 foram sincronizados antes de liberar a operação.
+6. Não é necessário executar SQL novo se o SQL 12_cestas_offline_binance.sql já foi aplicado.
+
+ALTERAÇÕES PRINCIPAIS
+- Entrada real confirmada por H4/H1/M15/M5/M1.
+- Suporte e resistência estruturais, não apenas janela curta do M1.
+- Radar real por ativo.
+- Proteções posicionadas em suporte estrutural abaixo do intervalo do perfil.
+- Pausa de novas compras durante baixa forte confirmada.
+- Meta de 0,5% líquido mantida.
+- Entrada inicial de US$ 10 mantida.
+- Orçamento 80% normal e 20% extraordinário mantido.
+- Layout preservado.
+
+VALIDAÇÃO
+- Build de produção.
+- Testes da estratégia simples e multitemporal.
+- Testes do motor de cestas e das proteções multitemporais.
+- Verificação sintática das funções Netlify e do conector.
+
+IMPORTANTE
+Nenhum backtest garante lucro futuro. Faça a primeira validação em Testnet ou shadow mode e depois use o menor capital real possível.

@@ -62,3 +62,7 @@ Cadastre as chaves reais no Netlify em `Site settings > Environment variables`.
 - Reposicionamento automático de proteção antiga para suporte mais baixo.
 - Mesmos níveis de suporte e resistência no gráfico e no motor.
 - Bloqueio por resistência e janela de confirmação de vela esticada no suporte.
+
+## Atualização V1.5 — Estratégia MTF-R
+
+A conta real agora exige confirmação de H4, H1, M15, M5 e M1. O radar analisa cada ativo individualmente, a entrada é limitada ao suporte estrutural e as proteções procuram suportes H1/M15 ou H4/H1 antes de serem posicionadas. Consulte `LEIA_PRIMEIRO_ESTRATEGIA_MTF_V1_5.txt`.

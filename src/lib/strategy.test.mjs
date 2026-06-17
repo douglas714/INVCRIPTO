@@ -136,3 +136,58 @@ function downtrendCandles(count = 140, start = 110, drift = -0.05) {
 }
 
 console.log('strategy support/resistance tests: OK');
+
+import { analyzeMarketMultiTimeframe } from './strategy.js';
+
+function scaledSeries(count, start, drift, target = 100) {
+  const rows = [];
+  let price = start;
+  for (let index = 0; index < count; index += 1) {
+    const open = price;
+    const close = Math.max(1, open + drift + Math.sin(index / 11) * Math.abs(drift || 0.01) * 0.35);
+    rows.push({
+      time: index,
+      open,
+      high: Math.max(open, close) + Math.max(0.05, start * 0.001),
+      low: Math.min(open, close) - Math.max(0.05, start * 0.001),
+      close,
+      volume: 100 + (index % 9) * 7
+    });
+    price = close;
+  }
+  const scale = target / rows.at(-1).close;
+  return rows.map(row => ({ ...row, open: row.open * scale, high: row.high * scale, low: row.low * scale, close: row.close * scale }));
+}
+
+{
+  const falling = {
+    '1m': scaledSeries(260, 115, -0.045, 100),
+    '5m': scaledSeries(300, 120, -0.055, 100),
+    '15m': scaledSeries(300, 125, -0.065, 100),
+    '1h': scaledSeries(280, 130, -0.08, 100),
+    '4h': scaledSeries(260, 140, -0.10, 100)
+  };
+  const result = analyzeMarketMultiTimeframe(falling, { profileName: 'arrojado' });
+  assert.equal(result.dataComplete, true);
+  assert.equal(result.riskOff, true);
+  assert.notEqual(result.action, 'BUY');
+  assert.match(result.reason, /baixa|risco/i);
+}
+
+{
+  const rising = {
+    '1m': scaledSeries(260, 90, 0.025, 100),
+    '5m': scaledSeries(300, 88, 0.035, 100),
+    '15m': scaledSeries(300, 85, 0.045, 100),
+    '1h': scaledSeries(280, 80, 0.065, 100),
+    '4h': scaledSeries(260, 70, 0.09, 100)
+  };
+  const result = analyzeMarketMultiTimeframe(rising, { profileName: 'moderado' });
+  assert.equal(result.dataComplete, true);
+  assert.equal(result.riskOff, false);
+  assert.ok(result.structuralSupport > 0);
+  assert.ok(Array.isArray(result.supportSources));
+  assert.ok(result.timeframeRegimes['4h']);
+}
+
+console.log('strategy multi-timeframe tests: OK');

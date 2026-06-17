@@ -1,30 +1,40 @@
-# INVCRIPTO Connector Local
+# INVCRIPTO Connector Local 1.1
 
-O conector local permite manter o painel web no Netlify e usar o IP da sua propria maquina para consultar e operar na Binance.
+O conector mantém o painel no Netlify e executa ordens Spot usando a conexão e o IP do computador do usuário.
 
-## Como funciona
+## O que esta versão faz
 
-1. O cliente acessa o painel web.
-2. O painel grava comandos no Supabase.
-3. Este conector roda no Windows.
-4. O conector le comandos pendentes no Supabase.
-5. A chamada para Binance sai pela internet da sua maquina.
-6. O resultado volta para o Supabase.
-7. O painel mostra saldo, status e ordens.
+1. Lê comandos pendentes no Supabase.
+2. Consulta conta, saldo e filtros do par na Binance.
+3. Cria uma cesta persistente identificada por `basket_id`.
+4. Envia compra inicial de US$ 10.
+5. Posiciona uma venda limite GTC com meta de 0,5% líquido estimado.
+6. Posiciona a próxima compra de proteção e uma venda pendente da nova mão por OPO/OTO.
+7. Ao reiniciar, consulta as ordens reais, recompõe a cesta, consolida a venda e cria a próxima proteção.
 
-## Como iniciar
+## Proteção de saldo manual
 
-Use:
+O conector soma somente ordens ligadas ao `basket_id`. Ele nunca usa todo o saldo de BTC, ETH ou outra moeda como se pertencesse ao robô. O saldo livre é usado apenas como teto para a quantidade rastreada, cobrindo comissões debitadas no ativo-base.
+
+## Antes de iniciar
+
+Execute no Supabase:
+
+```text
+supabase/12_cestas_offline_binance.sql
+```
+
+Configure `.env` a partir de `.env.example` e use:
 
 ```bat
 INSTALAR_E_EXECUTAR_CONNECTOR.bat
 ```
 
-O BAT nao executa `npm install` e nao precisa de `node_modules`. O conector usa apenas recursos nativos do Node.js. Isso evita erro de certificado como `SELF_SIGNED_CERT_IN_CHAIN`.
+O conector usa apenas recursos nativos do Node.js e não precisa instalar dependências externas.
 
-## Seguranca
+## Segurança
 
-- Nao publique o arquivo `.env`.
-- Nao use chave Binance com saque habilitado.
-- A maquina precisa ficar ligada para executar comandos Binance.
-- A venda protegida fica salva na Binance depois que a compra real executa.
+- Não publique o `.env`.
+- Mantenha saque desativado na API Binance.
+- Valide primeiro em testnet.
+- Ordens aceitas pela Binance continuam ativas sem o painel, mas o computador precisa voltar a ficar online para consolidar a cesta e posicionar etapas futuras.

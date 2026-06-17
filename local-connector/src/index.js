@@ -1,5 +1,17 @@
 import fs from 'node:fs';
 import crypto from 'node:crypto';
+import {
+  INITIAL_ENTRY_USDT,
+  TARGET_NET_PCT,
+  allocateBasketBudget,
+  netTargetPrice,
+  nextProtectionPrice,
+  nextProtectionQuote,
+  normalizeProfileName,
+  profileRules,
+  roundTripRates,
+  summarizeBasketOrders
+} from './basket-policy.js';
 
 process.stdout?.on?.('error', error => {
   if (error?.code === 'EPIPE') process.exit(0);
@@ -67,7 +79,11 @@ async function restRequest(path, options = {}) {
     body: options.body === undefined ? undefined : JSON.stringify(options.body)
   });
   const text = await response.text();
-  const payload = text ? JSON.parse(text) : null;
+  let payload = null;
+  if (text) {
+    try { payload = JSON.parse(text); }
+    catch { payload = { raw: text }; }
+  }
   if (!response.ok) {
     return { data: null, error: { message: payload?.message || payload?.error || text || `HTTP ${response.status}` }, count: null };
   }
@@ -111,7 +127,16 @@ function isSchemaCacheColumnError(error) {
 }
 
 function legacyRealOrderRow(row) {
-  const { protection_role, linked_order_id, timeframe, ...legacy } = row;
+  const {
+    protection_role,
+    linked_order_id,
+    timeframe,
+    basket_id,
+    order_list_id,
+    commission_quote,
+    profile_name,
+    ...legacy
+  } = row;
   return legacy;
 }
 
@@ -275,7 +300,7 @@ async function heartbeat(status = 'online', metadata = {}) {
     name: cfg.nodeName,
     status,
     public_ip: ip,
-    app_version: '1.0.0',
+    app_version: '1.1.0-baskets-offline',
     last_seen_at: new Date().toISOString(),
     metadata
   };
@@ -302,6 +327,21 @@ async function signedAccount({ apiKey, apiSecret, environment }) {
   let payload;
   try { payload = JSON.parse(text); } catch { payload = { raw: text }; }
   return { ok: response.ok, status: response.status, payload };
+}
+
+async function freeAssetBalanceWithRetry({ apiKey, apiSecret, environment, asset, minimum = 0, attempts = 5 }) {
+  let lastAccount = null;
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    const account = await signedAccount({ apiKey, apiSecret, environment });
+    lastAccount = account;
+    if (!account.ok) break;
+    const balance = (account.payload?.balances || []).find(item => item.asset === asset) || { free: '0', locked: '0' };
+    const free = Math.max(0, Number(balance.free || 0));
+    const locked = Math.max(0, Number(balance.locked || 0));
+    if (free >= Number(minimum || 0) || attempt === attempts) return { ok: true, free, locked, account };
+    await new Promise(resolve => setTimeout(resolve, attempt * 200));
+  }
+  return { ok: false, free: 0, locked: 0, account: lastAccount };
 }
 
 function decimalPlaces(value) {
@@ -428,6 +468,57 @@ async function signedMyTrades({ apiKey, apiSecret, environment, symbol, limit = 
   return { ok: response.ok, status: response.status, payload };
 }
 
+async function signedCommissionRates({ apiKey, apiSecret, environment, symbol }) {
+  const query = new URLSearchParams({
+    symbol,
+    timestamp: String(Date.now()),
+    recvWindow: '5000'
+  }).toString();
+  const signature = sign(query, apiSecret);
+  const url = `${binanceBase(environment)}/api/v3/account/commission?${query}&signature=${signature}`;
+  const response = await fetch(url, { headers: { 'X-MBX-APIKEY': apiKey } });
+  const text = await response.text();
+  let payload;
+  try { payload = JSON.parse(text); } catch { payload = { raw: text }; }
+  return { ok: response.ok, status: response.status, payload };
+}
+
+async function signedOpoOrderList({ apiKey, apiSecret, environment, params }) {
+  const query = new URLSearchParams({
+    ...params,
+    timestamp: String(Date.now()),
+    recvWindow: '5000'
+  }).toString();
+  const signature = sign(query, apiSecret);
+  const url = `${binanceBase(environment)}/api/v3/orderList/opo?${query}&signature=${signature}`;
+  const response = await fetch(url, {
+    method: 'POST',
+    headers: { 'X-MBX-APIKEY': apiKey }
+  });
+  const text = await response.text();
+  let payload;
+  try { payload = JSON.parse(text); } catch { payload = { raw: text }; }
+  return { ok: response.ok, status: response.status, payload };
+}
+
+async function signedOtoOrderList({ apiKey, apiSecret, environment, params }) {
+  const query = new URLSearchParams({
+    ...params,
+    timestamp: String(Date.now()),
+    recvWindow: '5000'
+  }).toString();
+  const signature = sign(query, apiSecret);
+  const url = `${binanceBase(environment)}/api/v3/orderList/oto?${query}&signature=${signature}`;
+  const response = await fetch(url, {
+    method: 'POST',
+    headers: { 'X-MBX-APIKEY': apiKey }
+  });
+  const text = await response.text();
+  let payload;
+  try { payload = JSON.parse(text); } catch { payload = { raw: text }; }
+  return { ok: response.ok, status: response.status, payload };
+}
+
 async function currentFreeBalance({ apiKey, apiSecret, environment, asset }) {
   const account = await signedAccount({ apiKey, apiSecret, environment });
   if (!account.ok) throw new Error(`Falha ao consultar saldo: ${JSON.stringify(account.payload)}`);
@@ -532,6 +623,263 @@ async function symbolsTouchedByBot(userId, environment) {
   return [...touched];
 }
 
+async function getBotProfileName(userId) {
+  const { data } = await maybeSingle('bot_instances', {
+    select: 'profile_name,updated_at,created_at',
+    filters: [eqFilter('user_id', userId)],
+    order: 'updated_at.desc,created_at.desc'
+  });
+  return normalizeProfileName(data?.profile_name || 'conservador');
+}
+
+async function activeBasketsForUser(userId, environment) {
+  const { data, error } = await selectRows('real_baskets', {
+    select: '*',
+    filters: [eqFilter('user_id', userId), eqFilter('environment', environment), eqFilter('status', 'active')],
+    order: 'opened_at.asc',
+    limit: 20
+  });
+  if (error) {
+    if (isSchemaCacheColumnError(error) || /real_baskets/i.test(error.message || '')) return [];
+    throw new Error(error.message);
+  }
+  return Array.isArray(data) ? data : [];
+}
+
+async function activeBasketForSymbol(userId, environment, symbol) {
+  const { data, error } = await maybeSingle('real_baskets', {
+    select: '*',
+    filters: [
+      eqFilter('user_id', userId),
+      eqFilter('environment', environment),
+      eqFilter('symbol', symbol),
+      eqFilter('status', 'active')
+    ],
+    order: 'opened_at.desc'
+  });
+  if (error) return null;
+  return data || null;
+}
+
+async function createRealBasket({ userId, environment, symbol, profileName, accountUsdt }) {
+  const rules = profileRules(profileName);
+  const allocation = allocateBasketBudget({ accountUsdt, profileName });
+  if (allocation.normalBudget < INITIAL_ENTRY_USDT) {
+    throw new Error(`Saldo insuficiente para reservar a cesta. Minimo ${INITIAL_ENTRY_USDT.toFixed(2)} USDT.`);
+  }
+  const { data, error } = await insertRows('real_baskets', [{
+    user_id: userId,
+    environment,
+    symbol,
+    profile_name: rules.name,
+    status: 'active',
+    initial_order_usdt: INITIAL_ENTRY_USDT,
+    target_net_pct: TARGET_NET_PCT,
+    protection_gap_pct: rules.protectionGapPct,
+    max_concurrent_baskets: rules.maxConcurrentBaskets,
+    normal_budget_usdt: allocation.normalBudget,
+    emergency_budget_usdt: allocation.emergencyBudget,
+    last_buy_quote: INITIAL_ENTRY_USDT,
+    metadata: {
+      created_by: 'connector_v1_1',
+      allocation_total_usdt: allocation.basketBudget
+    }
+  }]);
+  if (error) throw new Error(`Falha ao criar cesta persistente: ${error.message}`);
+  return Array.isArray(data) ? data[0] : data;
+}
+
+async function basketOrders(basketId) {
+  const { data, error } = await selectRows('real_orders', {
+    select: '*',
+    filters: [eqFilter('basket_id', basketId)],
+    order: 'created_at.asc',
+    limit: 500
+  });
+  if (error) throw new Error(error.message);
+  return Array.isArray(data) ? data : [];
+}
+
+async function recoverBasketOrdersFromMetadata({ basket, apiKey, apiSecret, environment }) {
+  const buy = basket.metadata?.buy_payload;
+  const emergency = basket.metadata?.emergency_sell;
+  if (!buy || !emergency?.orderId) return false;
+
+  const executedQty = Number(buy.executedQty || 0);
+  const quoteQty = Number(buy.cummulativeQuoteQty || 0);
+  const avgPrice = executedQty > 0 ? quoteQty / executedQty : Number(basket.avg_price || 0);
+  await insertBasketOrder({
+    user_id: basket.user_id,
+    environment,
+    symbol: basket.symbol,
+    basket_id: basket.id,
+    profile_name: basket.profile_name,
+    side: 'BUY',
+    order_type: 'MARKET',
+    status: String(buy.status || 'FILLED').toLowerCase(),
+    protection_role: 'entry',
+    timeframe: 'auto',
+    client_order_id: String(buy.clientOrderId || buy.origClientOrderId || ''),
+    binance_order_id: String(buy.orderId || ''),
+    quote_order_qty: quoteQty,
+    quantity: executedQty,
+    price: avgPrice,
+    executed_qty: executedQty,
+    cummulative_quote_qty: quoteQty,
+    reason: 'Entrada reconstruida depois de falha temporaria de auditoria.',
+    raw_response: { ...buy, invcripto: { basket_id: basket.id, bucket: 'normal', recovered_from_metadata: true } }
+  });
+
+  const remoteSell = await signedGetOrder({
+    apiKey,
+    apiSecret,
+    environment,
+    symbol: basket.symbol,
+    orderId: emergency.orderId
+  });
+  if (!remoteSell.ok) throw new Error(`Falha ao reconstruir venda emergencial: ${JSON.stringify(remoteSell.payload)}`);
+  await insertBasketOrder({
+    user_id: basket.user_id,
+    environment,
+    symbol: basket.symbol,
+    basket_id: basket.id,
+    profile_name: basket.profile_name,
+    side: 'SELL',
+    order_type: 'LIMIT',
+    status: String(remoteSell.payload?.status || 'NEW').toLowerCase(),
+    protection_role: 'take_profit',
+    timeframe: 'auto',
+    client_order_id: String(remoteSell.payload?.clientOrderId || emergency.clientOrderId || ''),
+    binance_order_id: String(remoteSell.payload?.orderId || emergency.orderId),
+    quantity: Number(remoteSell.payload?.origQty || emergency.quantity || 0),
+    price: Number(remoteSell.payload?.price || emergency.price || 0),
+    executed_qty: Number(remoteSell.payload?.executedQty || 0),
+    cummulative_quote_qty: Number(remoteSell.payload?.cummulativeQuoteQty || 0),
+    reason: 'Venda emergencial reconstruida depois de falha temporaria de auditoria.',
+    raw_response: { ...remoteSell.payload, invcripto: { basket_id: basket.id, recovered_from_metadata: true } }
+  });
+  const {
+    buy_payload,
+    emergency_sell,
+    audit_error,
+    ...restMetadata
+  } = basket.metadata || {};
+  const cleanedMetadata = {
+    ...restMetadata,
+    manual_reconciliation_required: false,
+    metadata_orders_recovered_at: new Date().toISOString()
+  };
+  await updateRows('real_baskets', { metadata: cleanedMetadata }, [eqFilter('id', basket.id)]).catch(() => null);
+  return cleanedMetadata;
+}
+
+async function recoverUntrackedMetadataRows({ basket, existingOrders }) {
+  const candidates = [
+    basket.metadata?.untracked_take_profit?.row,
+    ...(Array.isArray(basket.metadata?.untracked_order_list?.rows) ? basket.metadata.untracked_order_list.rows : [])
+  ].filter(Boolean);
+  if (!candidates.length) return false;
+
+  const existingOrderIds = new Set((existingOrders || []).map(row => String(row.binance_order_id || '')).filter(Boolean));
+  const existingClientIds = new Set((existingOrders || []).map(row => String(row.client_order_id || '')).filter(Boolean));
+  const missing = candidates.filter(row => {
+    const orderId = String(row.binance_order_id || '');
+    const clientId = String(row.client_order_id || '');
+    return !(orderId && existingOrderIds.has(orderId)) && !(clientId && existingClientIds.has(clientId));
+  });
+  if (missing.length) await insertBasketOrders(missing);
+
+  const {
+    untracked_take_profit,
+    untracked_order_list,
+    audit_error,
+    ...restMetadata
+  } = basket.metadata || {};
+  const cleanedMetadata = {
+    ...restMetadata,
+    untracked_orders_recovered_at: new Date().toISOString()
+  };
+  await updateRows('real_baskets', { metadata: cleanedMetadata }, [eqFilter('id', basket.id)]).catch(() => null);
+  return cleanedMetadata;
+}
+
+function botOpenOrdersForBasket(openOrdersPayload, basketOrderRows) {
+  const ids = new Set(
+    (basketOrderRows || [])
+      .map(row => String(row.binance_order_id || ''))
+      .filter(Boolean)
+  );
+  return (Array.isArray(openOrdersPayload) ? openOrdersPayload : [])
+    .filter(order => ids.has(String(order.orderId || '')));
+}
+
+function pendingOrderReport(payload, side) {
+  const reports = Array.isArray(payload?.orderReports) ? payload.orderReports : [];
+  return reports.find(report => String(report.side || '').toUpperCase() === side) || null;
+}
+
+async function commissionRatesOrDefault({ apiKey, apiSecret, environment, symbol }) {
+  const response = await signedCommissionRates({ apiKey, apiSecret, environment, symbol }).catch(() => null);
+  return roundTripRates(response?.ok ? response.payload : null);
+}
+
+async function insertBasketOrders(rows) {
+  let lastError = null;
+  for (let attempt = 1; attempt <= 3; attempt += 1) {
+    // Cestas exigem o schema novo; nao aplicamos fallback que removeria basket_id.
+    const result = await insertRows('real_orders', rows);
+    if (!result.error) return Array.isArray(result.data) ? result.data : [result.data].filter(Boolean);
+    lastError = result.error;
+    if (attempt < 3) await new Promise(resolve => setTimeout(resolve, attempt * 400));
+  }
+  throw new Error(lastError?.message || 'Falha ao registrar ordens da cesta.');
+}
+
+async function insertBasketOrder(row) {
+  const rows = await insertBasketOrders([row]);
+  return rows[0] || null;
+}
+
+async function placeEmergencyStandaloneSell({ basket, executedQty, costQuote, apiKey, apiSecret, environment, filters }) {
+  const balanceResult = await freeAssetBalanceWithRetry({
+    apiKey,
+    apiSecret,
+    environment,
+    asset: filters.baseAsset,
+    minimum: Math.max(filters.minQty, Number(executedQty || 0) * 0.995),
+    attempts: 5
+  });
+  if (!balanceResult.ok) throw new Error(`Falha ao conferir saldo para venda emergencial: ${JSON.stringify(balanceResult.account?.payload)}`);
+  const safeQty = floorToStep(Math.min(Number(executedQty || 0), Number(balanceResult.free || 0)), filters.stepSize);
+  if (safeQty < filters.minQty) throw new Error('Quantidade insuficiente para venda emergencial.');
+  const rates = await commissionRatesOrDefault({ apiKey, apiSecret, environment, symbol: basket.symbol });
+  const target = ceilToStep(netTargetPrice({
+    netCapitalUsdt: Number(costQuote || 0),
+    quantity: safeQty,
+    targetNetPct: Number(basket.target_net_pct || TARGET_NET_PCT),
+    buyRate: rates.buyRate,
+    sellRate: rates.sellRate
+  }), filters.tickSize);
+  const clientOrderId = `INVE${String(basket.id || '').replaceAll('-', '').slice(0, 12)}${Date.now().toString(36)}`.slice(0, 36);
+  const sell = await signedOrder({
+    apiKey,
+    apiSecret,
+    environment,
+    params: {
+      symbol: basket.symbol,
+      side: 'SELL',
+      type: 'LIMIT',
+      timeInForce: 'GTC',
+      quantity: formatDecimal(safeQty, filters.stepSize),
+      price: formatDecimal(target, filters.tickSize),
+      newClientOrderId: clientOrderId,
+      newOrderRespType: 'FULL'
+    }
+  });
+  if (!sell.ok) throw new Error(`Venda emergencial rejeitada: ${JSON.stringify(sell.payload)}`);
+  return { orderId: sell.payload?.orderId, clientOrderId, quantity: safeQty, price: target };
+}
+
 async function handleValidateApi(command) {
   const environment = command.payload?.environment === 'testnet' ? 'testnet' : 'live';
   const credential = await getCredential(command.user_id, environment);
@@ -587,17 +935,337 @@ async function refreshCredentialBalance(credential, apiKey, apiSecret, environme
   return { free: Number(usdt.free || 0), locked: Number(usdt.locked || 0) };
 }
 
+function basketBucketUsage(orders) {
+  let normalUsed = 0;
+  let emergencyUsed = 0;
+  for (const order of orders || []) {
+    if (String(order.side || '').toUpperCase() !== 'BUY' || String(order.status || '').toLowerCase() !== 'filled') continue;
+    const quote = Number(order.cummulative_quote_qty || order.quote_order_qty || 0);
+    const bucket = String(order.raw_response?.invcripto?.bucket || 'normal');
+    if (bucket === 'emergency') emergencyUsed += quote;
+    else normalUsed += quote;
+  }
+  return { normalUsed, emergencyUsed };
+}
+
+async function placeBasketTakeProfit({ basket, summary, orders, credential, apiKey, apiSecret, environment, filters, command = null }) {
+  // Nunca usa o saldo total da moeda como tamanho da venda. O limite superior
+  // vem exclusivamente das compras rastreadas nesta cesta; o saldo livre da
+  // Binance serve apenas para descontar comissao cobrada no ativo-base.
+  const botOwnedOpenQty = Math.max(0, Number(summary.openQty || 0));
+  const balanceResult = await freeAssetBalanceWithRetry({
+    apiKey,
+    apiSecret,
+    environment,
+    asset: filters.baseAsset,
+    minimum: Math.max(filters.minQty, botOwnedOpenQty * 0.995),
+    attempts: 5
+  });
+  if (!balanceResult.ok) throw new Error(`Falha ao conferir saldo-base antes da venda: ${JSON.stringify(balanceResult.account?.payload)}`);
+  const freeBaseQty = Math.max(0, Number(balanceResult.free || 0));
+  const openQty = floorToStep(Math.min(botOwnedOpenQty, freeBaseQty), filters.stepSize);
+  if (openQty < filters.minQty) {
+    await log('warn', 'basket_take_profit_waiting_balance', `Quantidade livre insuficiente para proteger ${basket.symbol}.`, {
+      basketId: basket.id,
+      botOwnedOpenQty,
+      freeBaseQty,
+      minQty: filters.minQty
+    }, command || { user_id: basket.user_id });
+    throw new Error(`Quantidade livre insuficiente para criar a venda da cesta ${basket.symbol}.`);
+  }
+  const { buyRate, sellRate } = await commissionRatesOrDefault({ apiKey, apiSecret, environment, symbol: basket.symbol });
+  const rawTarget = netTargetPrice({
+    netCapitalUsdt: Math.max(0, summary.netCapital),
+    quantity: openQty,
+    targetNetPct: Number(basket.target_net_pct || TARGET_NET_PCT),
+    buyRate,
+    sellRate
+  });
+  const sellPrice = ceilToStep(rawTarget, filters.tickSize);
+  if (!sellPrice || openQty * sellPrice < filters.minNotional) return null;
+
+  const token = String(basket.id || '').replaceAll('-', '').slice(0, 12);
+  const clientOrderId = `INVB${token}S${Date.now().toString(36)}`.slice(0, 36);
+  const sell = await signedOrder({
+    apiKey,
+    apiSecret,
+    environment,
+    params: {
+      symbol: basket.symbol,
+      side: 'SELL',
+      type: 'LIMIT',
+      timeInForce: 'GTC',
+      quantity: formatDecimal(openQty, filters.stepSize),
+      price: formatDecimal(sellPrice, filters.tickSize),
+      newClientOrderId: clientOrderId,
+      newOrderRespType: 'FULL'
+    }
+  });
+  if (!sell.ok) throw new Error(`Venda da cesta rejeitada pela Binance: ${JSON.stringify(sell.payload)}`);
+
+  const sellRow = {
+    user_id: basket.user_id,
+    environment,
+    symbol: basket.symbol,
+    basket_id: basket.id,
+    profile_name: basket.profile_name,
+    side: 'SELL',
+    order_type: 'LIMIT',
+    status: String(sell.payload?.status || 'NEW').toLowerCase(),
+    protection_role: 'take_profit',
+    timeframe: 'auto',
+    client_order_id: clientOrderId,
+    binance_order_id: String(sell.payload?.orderId || ''),
+    quantity: openQty,
+    price: sellPrice,
+    reason: `Venda consolidada da cesta com meta liquida de ${Number(basket.target_net_pct || TARGET_NET_PCT).toFixed(2)}%.`,
+    raw_response: {
+      ...sell.payload,
+      invcripto: { basket_id: basket.id, target_net_pct: Number(basket.target_net_pct || TARGET_NET_PCT), buyRate, sellRate }
+    }
+  };
+  try {
+    await insertBasketOrder(sellRow);
+  } catch (auditError) {
+    await updateRows('real_baskets', {
+      metadata: {
+        ...(basket.metadata || {}),
+        untracked_take_profit: { row: sellRow, saved_at: new Date().toISOString() },
+        audit_error: String(auditError?.message || auditError)
+      }
+    }, [eqFilter('id', basket.id)]).catch(() => null);
+    throw auditError;
+  }
+
+  await updateRows('real_baskets', {
+    current_take_profit_price: sellPrice,
+    open_qty: openQty,
+    avg_price: summary.avgBuyPrice,
+    total_buy_quote: summary.buyQuote,
+    total_sell_quote: summary.sellQuote,
+    total_bought_qty: summary.boughtQty,
+    total_sold_qty: summary.soldQty,
+    last_buy_price: summary.lastBuyPrice,
+    last_buy_quote: summary.lastBuyQuote,
+    recovery_level: summary.recoveryLevel
+  }, [eqFilter('id', basket.id)]);
+  await log('info', 'basket_take_profit_created', `Venda da cesta ${basket.symbol} posicionada na Binance.`, { basketId: basket.id, openQty, sellPrice }, command || { user_id: basket.user_id });
+  return { sellOrderId: sell.payload?.orderId, sellPrice, sellQty: openQty };
+}
+
+async function placeNextOfflineProtection({ basket, orders, credential, apiKey, apiSecret, environment, filters, command = null }) {
+  const activeProtection = (orders || []).find(order =>
+    String(order.side || '').toUpperCase() === 'BUY' &&
+    String(order.protection_role || '') === 'protection_buy' &&
+    ['new', 'open', 'pending_new', 'partially_filled'].includes(String(order.status || '').toLowerCase())
+  );
+  if (activeProtection) return { skipped: true, reason: 'protection_already_open', orderId: activeProtection.binance_order_id };
+
+  const usage = basketBucketUsage(orders);
+  const normalRemaining = Math.max(0, Number(basket.normal_budget_usdt || 0) - usage.normalUsed);
+  const emergencyRemaining = Math.max(0, Number(basket.emergency_budget_usdt || 0) - usage.emergencyUsed);
+  const next = nextProtectionQuote({
+    lastQuote: Number(basket.last_buy_quote || INITIAL_ENTRY_USDT),
+    normalRemaining,
+    emergencyRemaining,
+    minimumOrder: Math.max(INITIAL_ENTRY_USDT, filters.minNotional * 1.02)
+  });
+  if (!next.quote) {
+    await updateRows('real_baskets', {
+      next_protection_price: null,
+      next_protection_quote: null,
+      next_protection_bucket: null,
+      normal_used_usdt: usage.normalUsed,
+      emergency_used_usdt: usage.emergencyUsed
+    }, [eqFilter('id', basket.id)]);
+    return { skipped: true, reason: 'basket_budget_exhausted' };
+  }
+
+  const basePrice = Number(basket.last_buy_price || 0);
+  if (!basePrice) return { skipped: true, reason: 'missing_last_buy_price' };
+  const rawProtectionPrice = nextProtectionPrice({
+    lastBuyPrice: basePrice,
+    gapPct: Number(basket.protection_gap_pct || 1),
+    emergency: next.emergency
+  });
+  const protectionPrice = floorToStep(rawProtectionPrice, filters.tickSize);
+  let quantity = floorToStep(next.quote / protectionPrice, filters.stepSize);
+  if (quantity < filters.minQty || quantity * protectionPrice < filters.minNotional) {
+    return { skipped: true, reason: 'protection_below_binance_minimum', quantity, protectionPrice };
+  }
+
+  const rates = await commissionRatesOrDefault({ apiKey, apiSecret, environment, symbol: basket.symbol });
+  const handTargetRaw = netTargetPrice({
+    netCapitalUsdt: next.quote,
+    quantity,
+    targetNetPct: Number(basket.target_net_pct || TARGET_NET_PCT),
+    buyRate: rates.buyRate,
+    sellRate: rates.sellRate
+  });
+  const handTargetPrice = ceilToStep(handTargetRaw, filters.tickSize);
+  const token = String(basket.id || '').replaceAll('-', '').slice(0, 10);
+  const nonce = Date.now().toString(36).slice(-7);
+  const listClientOrderId = `INVOP${token}${nonce}`.slice(0, 36);
+  const buyClientOrderId = `INVPB${token}${nonce}`.slice(0, 36);
+  const sellClientOrderId = `INVPS${token}${nonce}`.slice(0, 36);
+
+  let orderList = await signedOpoOrderList({
+    apiKey,
+    apiSecret,
+    environment,
+    params: {
+      symbol: basket.symbol,
+      listClientOrderId,
+      workingType: 'LIMIT',
+      workingSide: 'BUY',
+      workingClientOrderId: buyClientOrderId,
+      workingPrice: formatDecimal(protectionPrice, filters.tickSize),
+      workingQuantity: formatDecimal(quantity, filters.stepSize),
+      workingTimeInForce: 'GTC',
+      pendingType: 'LIMIT',
+      pendingSide: 'SELL',
+      pendingClientOrderId: sellClientOrderId,
+      pendingPrice: formatDecimal(handTargetPrice, filters.tickSize),
+      pendingTimeInForce: 'GTC',
+      newOrderRespType: 'FULL'
+    }
+  });
+  let listType = 'OPO';
+  if (!orderList.ok) {
+    orderList = await signedOtoOrderList({
+      apiKey,
+      apiSecret,
+      environment,
+      params: {
+        symbol: basket.symbol,
+        listClientOrderId,
+        workingType: 'LIMIT',
+        workingSide: 'BUY',
+        workingClientOrderId: buyClientOrderId,
+        workingPrice: formatDecimal(protectionPrice, filters.tickSize),
+        workingQuantity: formatDecimal(quantity, filters.stepSize),
+        workingTimeInForce: 'GTC',
+        pendingType: 'LIMIT',
+        pendingSide: 'SELL',
+        pendingClientOrderId: sellClientOrderId,
+        pendingPrice: formatDecimal(handTargetPrice, filters.tickSize),
+        // OTO exige quantidade explicita. Mantemos uma pequena folga para o
+        // caso de a comissao da compra ser debitada no proprio ativo-base.
+        pendingQuantity: formatDecimal(
+          floorToStep(quantity * Math.max(0.995, 1 - rates.buyRate - 0.0002), filters.stepSize),
+          filters.stepSize
+        ),
+        pendingTimeInForce: 'GTC',
+        newOrderRespType: 'FULL'
+      }
+    });
+    listType = 'OTO';
+  }
+  if (!orderList.ok) {
+    throw new Error(`Protecao offline rejeitada pela Binance: ${JSON.stringify(orderList.payload)}`);
+  }
+
+  const buyReport = pendingOrderReport(orderList.payload, 'BUY') || orderList.payload?.orderReports?.[0] || {};
+  const sellReport = pendingOrderReport(orderList.payload, 'SELL') || orderList.payload?.orderReports?.[1] || {};
+  const orderListId = String(orderList.payload?.orderListId ?? '');
+  const commonMeta = {
+    basket_id: basket.id,
+    bucket: next.bucket,
+    list_type: listType,
+    quote_planned: next.quote,
+    rates
+  };
+
+  const protectionRows = [{
+    user_id: basket.user_id,
+    environment,
+    symbol: basket.symbol,
+    basket_id: basket.id,
+    order_list_id: orderListId,
+    profile_name: basket.profile_name,
+    side: 'BUY',
+    order_type: 'LIMIT',
+    status: String(buyReport.status || 'NEW').toLowerCase(),
+    protection_role: 'protection_buy',
+    timeframe: 'auto',
+    client_order_id: String(buyReport.clientOrderId || buyClientOrderId),
+    binance_order_id: String(buyReport.orderId || orderList.payload?.orders?.[0]?.orderId || ''),
+    quote_order_qty: next.quote,
+    quantity,
+    price: protectionPrice,
+    executed_qty: Number(buyReport.executedQty || 0),
+    cummulative_quote_qty: Number(buyReport.cummulativeQuoteQty || 0),
+    reason: `Protecao ${next.bucket} a ${Number(basket.protection_gap_pct || 0).toFixed(2)}% da ultima compra.`,
+    raw_response: { ...buyReport, invcripto: commonMeta }
+  }, {
+    user_id: basket.user_id,
+    environment,
+    symbol: basket.symbol,
+    basket_id: basket.id,
+    order_list_id: orderListId,
+    profile_name: basket.profile_name,
+    side: 'SELL',
+    order_type: 'LIMIT',
+    status: String(sellReport.status || 'PENDING_NEW').toLowerCase(),
+    protection_role: 'protection_hand_take_profit',
+    timeframe: 'auto',
+    client_order_id: String(sellReport.clientOrderId || sellClientOrderId),
+    binance_order_id: String(sellReport.orderId || orderList.payload?.orders?.[1]?.orderId || ''),
+    quantity: listType === 'OTO'
+      ? floorToStep(quantity * Math.max(0.995, 1 - rates.buyRate - 0.0002), filters.stepSize)
+      : quantity,
+    price: handTargetPrice,
+    reason: `Venda automatica da nova mao, ativada pela Binance mesmo sem internet local.`,
+    raw_response: { ...sellReport, invcripto: commonMeta }
+  }];
+  try {
+    await insertBasketOrders(protectionRows);
+  } catch (auditError) {
+    await updateRows('real_baskets', {
+      metadata: {
+        ...(basket.metadata || {}),
+        untracked_order_list: { rows: protectionRows, payload: orderList.payload, saved_at: new Date().toISOString() },
+        audit_error: String(auditError?.message || auditError)
+      }
+    }, [eqFilter('id', basket.id)]).catch(() => null);
+    throw auditError;
+  }
+
+  await updateRows('real_baskets', {
+    next_protection_price: protectionPrice,
+    next_protection_quote: next.quote,
+    next_protection_bucket: next.bucket,
+    normal_used_usdt: usage.normalUsed,
+    emergency_used_usdt: usage.emergencyUsed,
+    metadata: {
+      ...(basket.metadata || {}),
+      last_offline_protection: {
+        listType,
+        orderListId,
+        buyOrderId: buyReport.orderId || orderList.payload?.orders?.[0]?.orderId,
+        sellOrderId: sellReport.orderId || orderList.payload?.orders?.[1]?.orderId,
+        createdAt: new Date().toISOString()
+      }
+    }
+  }, [eqFilter('id', basket.id)]);
+  await log('info', 'offline_protection_created', `Proxima protecao de ${basket.symbol} ficou posicionada na Binance.`, {
+    basketId: basket.id,
+    listType,
+    protectionPrice,
+    quote: next.quote,
+    bucket: next.bucket,
+    handTargetPrice
+  }, command || { user_id: basket.user_id });
+  return { listType, orderListId, protectionPrice, quote: next.quote, bucket: next.bucket, handTargetPrice };
+}
+
 async function handleProtectedSpotBuy(command) {
   const payload = command.payload || {};
   const environment = payload.environment === 'testnet' ? 'testnet' : 'live';
   const symbol = String(payload.symbol || 'BTCUSDT').toUpperCase();
-  const requestedQuote = Number(payload.quoteOrderQty || payload.valueUsdt || 0);
-  const targetPriceRaw = Number(payload.targetPrice || payload.recoveryTarget || 0);
-  const timeframe = String(payload.timeframe || '15m');
+  const timeframe = String(payload.timeframe || '5m');
   const reason = String(payload.reason || 'Entrada protegida INVCRIPTO');
-
-  if (!requestedQuote || requestedQuote <= 0) throw new Error('Valor USDT da compra nao informado.');
-  if (!targetPriceRaw || targetPriceRaw <= 0) throw new Error('Preco de venda alvo nao informado.');
+  if (!allowedSymbols.includes(symbol)) throw new Error(`Par ${symbol} nao autorizado.`);
 
   const credential = await getCredential(command.user_id, environment);
   const apiKey = decryptSecret(credential.api_key_encrypted);
@@ -609,74 +1277,50 @@ async function handleProtectedSpotBuy(command) {
   const filters = await exchangeInfo(symbol, environment);
   if (filters.status !== 'TRADING') throw new Error(`Par ${symbol} nao esta liberado para trading.`);
 
-  const openOrders = await signedOpenOrders({ apiKey, apiSecret, environment, symbol });
-  const activeSellOrders = openOrders.ok ? openSellOrdersForSymbol(openOrders.payload, symbol) : [];
-  let recoveryMode = false;
-  let recoveryLevel = 1;
-  if (activeSellOrders.length) {
-    const referenceSell = activeSellOrders
-      .slice()
-      .sort((a, b) => Number(a.price || 0) - Number(b.price || 0))[0];
-    const sellPrice = Number(referenceSell.price || 0);
-    const pricePayload = await ticker(symbol);
-    const lastPrice = Number(pricePayload.payload?.lastPrice || pricePayload.payload?.weightedAvgPrice || 0);
-    const estimatedAverage = sellPrice > 0 ? sellPrice / 1.005 : 0;
-    const martingaleTrigger = estimatedAverage > 0 ? estimatedAverage * 0.996 : 0;
-    const buyCount = await recentBasketBuyCount(command.user_id, environment, symbol).catch(() => 1);
-    recoveryLevel = buyCount + 1;
-
-    if (!lastPrice || !martingaleTrigger || lastPrice > martingaleTrigger || recoveryLevel > 3) {
-      const reason = recoveryLevel > 3 ? 'max_recovery_hands' : 'active_basket_waiting_trigger';
-      const message = recoveryLevel > 3
-        ? `Cesta ativa em ${symbol}. Limite de 3 maos atingido; aguardando venda protegida.`
-        : `Cesta ativa em ${symbol}. Preco ${lastPrice || '-'} acima do gatilho ${martingaleTrigger ? martingaleTrigger.toFixed(8) : '-'}; aguardando venda protegida.`;
-      dashboard.lastProtectedOrder = `${symbol} cesta ativa: aguardando`;
-      dashboard.lastMessage = message;
-      dashboard.lastSync = new Date().toLocaleString('pt-BR');
-      await refreshCredentialBalance(credential, apiKey, apiSecret, environment).catch(() => null);
-      await log('info', 'protected_buy_skipped', message, { symbol, environment, lastPrice, martingaleTrigger, recoveryLevel }, command);
-      return {
-        environment,
-        symbol,
-        skipped: true,
-        reason,
-        recoveryLevel,
-        lastPrice,
-        martingaleTrigger,
-        protected: true,
-        message
-      };
-    }
-
-    for (const sellOrder of activeSellOrders) {
-      const cancel = await signedCancelOrder({
-        apiKey,
-        apiSecret,
-        environment,
-        symbol,
-        orderId: sellOrder.orderId
-      });
-      if (!cancel.ok) throw new Error(`Nao foi possivel cancelar venda antiga para recalcular cesta: ${JSON.stringify(cancel.payload)}`);
-      await updateRows('real_orders', {
-        status: 'canceled',
-        raw_response: cancel.payload
-      }, [eqFilter('binance_order_id', String(sellOrder.orderId))]).catch(() => null);
-    }
-    recoveryMode = true;
-    await log('info', 'recovery_sell_cancelled', `Venda antiga cancelada em ${symbol}; preparando mao ${recoveryLevel}.`, { symbol, recoveryLevel }, command);
+  const profileName = normalizeProfileName(payload.profileName || await getBotProfileName(command.user_id));
+  const rules = profileRules(profileName);
+  const existing = await activeBasketForSymbol(command.user_id, environment, symbol);
+  if (existing) {
+    const orders = await basketOrders(existing.id).catch(() => []);
+    const protection = await placeNextOfflineProtection({ basket: existing, orders, credential, apiKey, apiSecret, environment, filters, command }).catch(error => ({ error: String(error?.message || error) }));
+    await refreshCredentialBalance(credential, apiKey, apiSecret, environment).catch(() => null);
+    return {
+      environment,
+      symbol,
+      skipped: true,
+      reason: 'active_basket_managed_by_connector',
+      basketId: existing.id,
+      profileName,
+      protection,
+      protected: true,
+      message: `Cesta ativa em ${symbol}. As protecoes sao administradas diretamente pelo conector e pela Binance.`
+    };
   }
 
-  const usdt = (account.payload?.balances || []).find(item => item.asset === 'USDT');
-  const availableUsdt = Number(usdt?.free || 0);
-  const estimatedTarget = Math.max(targetPriceRaw, Number(payload.entryPrice || 0), 1);
-  const roundingReserve = estimatedTarget * filters.stepSize * 1.35;
-  const safeMinimum = Math.max(filters.minNotional * 1.12 + roundingReserve, 6.25);
-  const recoveryMultiplier = recoveryMode ? (recoveryLevel === 2 ? 1.6 : 2.4) : 1;
-  const quoteOrderQty = Math.max(requestedQuote * recoveryMultiplier, safeMinimum);
-  if (quoteOrderQty > availableUsdt) {
+  const activeBaskets = await activeBasketsForUser(command.user_id, environment);
+  if (activeBaskets.length >= rules.maxConcurrentBaskets) {
+    return {
+      environment,
+      symbol,
+      skipped: true,
+      reason: 'max_concurrent_baskets',
+      profileName,
+      maxConcurrentBaskets: rules.maxConcurrentBaskets,
+      message: profileName === 'alavancagem'
+        ? `Limite de ${rules.maxConcurrentBaskets} cestas simultaneas atingido.`
+        : `O perfil ${profileName} opera somente uma moeda por vez.`
+    };
+  }
+
+  const usdt = (account.payload?.balances || []).find(item => item.asset === 'USDT') || { free: '0', locked: '0' };
+  const availableUsdt = Number(usdt.free || 0);
+  const accountUsdt = availableUsdt + Number(usdt.locked || 0);
+  const quoteOrderQty = INITIAL_ENTRY_USDT;
+  if (availableUsdt < quoteOrderQty) {
     throw new Error(`Saldo USDT insuficiente. Necessario ${quoteOrderQty.toFixed(2)} USDT, disponivel ${availableUsdt.toFixed(8)} USDT.`);
   }
 
+  let basket = await createRealBasket({ userId: command.user_id, environment, symbol, profileName, accountUsdt });
   const compactId = command.id.replaceAll('-', '');
   const buyClientOrderId = `INVBUY_${compactId.slice(0, 24)}`;
   const buy = await signedOrder({
@@ -692,16 +1336,21 @@ async function handleProtectedSpotBuy(command) {
       newOrderRespType: 'FULL'
     }
   });
-  if (!buy.ok) throw new Error(`Compra Binance rejeitada: ${JSON.stringify(buy.payload)}`);
+  if (!buy.ok) {
+    await updateRows('real_baskets', { status: 'error', metadata: { ...(basket.metadata || {}), buy_error: buy.payload } }, [eqFilter('id', basket.id)]).catch(() => null);
+    throw new Error(`Compra Binance rejeitada: ${JSON.stringify(buy.payload)}`);
+  }
 
   const executedQty = Number(buy.payload?.executedQty || 0);
   const cummulativeQuoteQty = Number(buy.payload?.cummulativeQuoteQty || quoteOrderQty);
   const avgPrice = executedQty > 0 ? cummulativeQuoteQty / executedQty : 0;
-  const { data: buyRows, error: buyLogError } = await insertRealOrders([
-    {
+  try {
+    await insertBasketOrder({
       user_id: command.user_id,
       environment,
       symbol,
+      basket_id: basket.id,
+      profile_name: profileName,
       side: 'BUY',
       order_type: 'MARKET',
       status: String(buy.payload?.status || 'FILLED').toLowerCase(),
@@ -714,99 +1363,86 @@ async function handleProtectedSpotBuy(command) {
       price: avgPrice,
       executed_qty: executedQty,
       cummulative_quote_qty: cummulativeQuoteQty,
-      reason: recoveryMode ? `Martingale controlado M${recoveryLevel}: ${reason}` : reason,
-      raw_response: buy.payload
-    }
-  ]);
-  let auditWarning = '';
-  if (buyLogError) {
-    auditWarning = `Compra criada na Binance, mas falhou auditoria Supabase: ${buyLogError.message}`;
-    await log('warn', 'real_buy_audit_failed', auditWarning, { symbol, buyOrderId: buy.payload?.orderId }, command);
-  }
-  const buyAuditId = buyLogError ? null : (Array.isArray(buyRows) ? buyRows[0]?.id : buyRows?.id);
-  await refreshCredentialBalance(credential, apiKey, apiSecret, environment).catch(() => null);
-
-  const sellReferenceQty = recoveryMode ? await currentFreeBalance({ apiKey, apiSecret, environment, asset: filters.baseAsset }) : executedQty;
-  const basketAvgPrice = recoveryMode
-    ? await estimateAverageBuyPrice({ apiKey, apiSecret, environment, symbol, neededQty: sellReferenceQty }).catch(() => avgPrice)
-    : avgPrice;
-  const sellPrice = ceilToStep(Math.max(targetPriceRaw, basketAvgPrice * 1.005), filters.tickSize);
-  const freeBase = await currentFreeBalance({ apiKey, apiSecret, environment, asset: filters.baseAsset });
-  const sellQty = floorToStep(Math.min(recoveryMode ? sellReferenceQty : executedQty, freeBase), filters.stepSize);
-  const sellNotional = sellQty * sellPrice;
-
-  if (sellQty < filters.minQty || sellNotional < filters.minNotional) {
-    throw new Error(`Compra executada e auditada, mas a venda ficou abaixo do minimo Binance. Qtd ${sellQty}, notional ${sellNotional.toFixed(8)}. Aumente o tamanho minimo da entrada.`);
-  }
-
-  const sellClientOrderId = `INVSELL_${compactId.slice(0, 23)}`;
-  const sell = await signedOrder({
-    apiKey,
-    apiSecret,
-    environment,
-    params: {
-      symbol,
-      side: 'SELL',
-      type: 'LIMIT',
-      timeInForce: 'GTC',
-      quantity: formatDecimal(sellQty, filters.stepSize),
-      price: formatDecimal(sellPrice, filters.tickSize),
-      newClientOrderId: sellClientOrderId,
-      newOrderRespType: 'FULL'
-    }
-  });
-  if (!sell.ok) {
-    await refreshCredentialBalance(credential, apiKey, apiSecret, environment).catch(() => null);
-    throw new Error(`Venda protegida Binance rejeitada: ${JSON.stringify(sell.payload)}`);
-  }
-
-  const { error: sellLogError } = await insertRealOrders([
-    {
-      user_id: command.user_id,
+      reason,
+      raw_response: { ...buy.payload, invcripto: { basket_id: basket.id, bucket: 'normal', profile_name: profileName } }
+    });
+  } catch (auditError) {
+    // A compra ja aconteceu na Binance. Mesmo sem conseguir gravar no banco,
+    // posicionamos uma venda GTC para nunca deixar a moeda sem saida.
+    const emergencySell = await placeEmergencyStandaloneSell({
+      basket,
+      executedQty,
+      costQuote: cummulativeQuoteQty,
+      apiKey,
+      apiSecret,
       environment,
-      symbol,
-      side: 'SELL',
-      order_type: 'LIMIT',
-      status: String(sell.payload?.status || 'NEW').toLowerCase(),
-      linked_order_id: buyAuditId || null,
-      protection_role: recoveryMode ? `recovery_m${recoveryLevel}_take_profit` : 'take_profit',
-      timeframe,
-      client_order_id: sellClientOrderId,
-      binance_order_id: String(sell.payload?.orderId || ''),
-      quantity: sellQty,
-      price: sellPrice,
-      reason: recoveryMode ? `Venda unica recalculada para cesta M${recoveryLevel}. Media ${basketAvgPrice.toFixed(8)} + 0.5%.` : 'Venda protegida criada imediatamente apos compra',
-      raw_response: sell.payload
-    }
-  ]);
-  if (sellLogError) {
-    auditWarning = [auditWarning, `Venda protegida criada na Binance, mas falhou auditoria Supabase: ${sellLogError.message}`].filter(Boolean).join(' | ');
-    await log('warn', 'real_sell_audit_failed', auditWarning, { symbol, sellOrderId: sell.payload?.orderId }, command);
+      filters
+    });
+    await updateRows('real_baskets', {
+      status: 'active',
+      metadata: {
+        ...(basket.metadata || {}),
+        manual_reconciliation_required: true,
+        audit_error: String(auditError?.message || auditError),
+        emergency_sell: emergencySell,
+        buy_payload: buy.payload
+      }
+    }, [eqFilter('id', basket.id)]).catch(() => null);
+    throw new Error(`Compra executada, mas o registro no Supabase falhou. Venda emergencial ${emergencySell.orderId} ficou posicionada na Binance.`);
   }
-  const refreshedAfterSell = await refreshCredentialBalance(credential, apiKey, apiSecret, environment).catch(() => null);
 
-  dashboard.lastProtectedOrder = `${symbol} ${recoveryMode ? `M${recoveryLevel}` : 'M1'} BUY ${quoteOrderQty.toFixed(2)} -> SELL ${formatDecimal(sellQty, filters.stepSize)} @ ${formatDecimal(sellPrice, filters.tickSize)}`;
-  dashboard.lastUsdt = refreshedAfterSell?.free ?? Math.max(0, availableUsdt - quoteOrderQty);
+  basket = {
+    ...basket,
+    last_buy_price: avgPrice,
+    last_buy_quote: cummulativeQuoteQty,
+    normal_used_usdt: cummulativeQuoteQty,
+    total_buy_quote: cummulativeQuoteQty,
+    total_bought_qty: executedQty,
+    open_qty: executedQty,
+    avg_price: avgPrice,
+    recovery_level: 1
+  };
+  await updateRows('real_baskets', {
+    last_buy_price: avgPrice,
+    last_buy_quote: cummulativeQuoteQty,
+    normal_used_usdt: cummulativeQuoteQty,
+    total_buy_quote: cummulativeQuoteQty,
+    total_bought_qty: executedQty,
+    open_qty: executedQty,
+    avg_price: avgPrice,
+    recovery_level: 1
+  }, [eqFilter('id', basket.id)]);
+
+  const ordersAfterBuy = await basketOrders(basket.id);
+  const summary = summarizeBasketOrders(ordersAfterBuy);
+  const takeProfit = await placeBasketTakeProfit({ basket, summary, orders: ordersAfterBuy, credential, apiKey, apiSecret, environment, filters, command });
+  const refreshedBasket = { ...basket, current_take_profit_price: takeProfit?.sellPrice || null };
+  const ordersAfterSell = await basketOrders(basket.id);
+  const protection = await placeNextOfflineProtection({ basket: refreshedBasket, orders: ordersAfterSell, credential, apiKey, apiSecret, environment, filters, command });
+  const refreshed = await refreshCredentialBalance(credential, apiKey, apiSecret, environment).catch(() => null);
+
+  dashboard.lastProtectedOrder = `${symbol} M1 BUY 10.00 -> SELL ${takeProfit?.sellPrice || '-'} | PROTECAO ${protection?.protectionPrice || '-'}`;
+  dashboard.lastUsdt = refreshed?.free ?? Math.max(0, availableUsdt - quoteOrderQty);
   dashboard.lastSync = new Date().toLocaleString('pt-BR');
 
   return {
     environment,
     symbol,
-    buyOrderId: buy.payload?.orderId,
-    sellOrderId: sell.payload?.orderId,
+    basketId: basket.id,
+    profileName,
+    protectionGapPct: rules.protectionGapPct,
+    maxConcurrentBaskets: rules.maxConcurrentBaskets,
     quoteOrderQty,
+    buyOrderId: buy.payload?.orderId,
     executedQty,
     avgPrice,
-    sellQty,
-    sellPrice,
-    recoveryMode,
-    recoveryLevel,
-    basketAvgPrice,
-    minNotional: filters.minNotional,
-    stepSize: filters.stepSize,
-    tickSize: filters.tickSize,
-    protected: true,
-    auditWarning: auditWarning || null
+    sellOrderId: takeProfit?.sellOrderId,
+    sellPrice: takeProfit?.sellPrice,
+    offlineProtection: protection,
+    normalBudgetUsdt: Number(basket.normal_budget_usdt || 0),
+    emergencyBudgetUsdt: Number(basket.emergency_budget_usdt || 0),
+    targetNetPct: Number(basket.target_net_pct || TARGET_NET_PCT),
+    protected: true
   };
 }
 
@@ -822,6 +1458,7 @@ async function monitorProtectedSells() {
     return;
   }
   for (const sellOrder of sellOrders || []) {
+    if (sellOrder.basket_id) continue;
     try {
       const environment = sellOrder.environment === 'testnet' ? 'testnet' : 'live';
       const credential = await getCredential(sellOrder.user_id, environment);
@@ -879,190 +1516,334 @@ async function monitorProtectedSells() {
   }
 }
 
-async function recoverFailedProtectedBuys() {
-  const { data: failedCommands, error } = await selectRows('connector_commands', {
-    select: '*',
-    filters: [eqFilter('status', 'error'), eqFilter('command_type', 'EXECUTE_PROTECTED_SPOT_BUY')],
-    order: 'updated_at.desc',
-    limit: 10
-  });
-  if (error) return;
-  for (const command of failedCommands || []) {
-    const message = String(command.error_message || '');
-    if (!message.includes('Compra executada') && !message.includes('Compra criada na Binance')) continue;
-    if (command.result?.recoveryAttempted) continue;
-    const payload = command.payload || {};
-    const environment = payload.environment === 'testnet' ? 'testnet' : 'live';
-    const symbol = String(payload.symbol || 'BTCUSDT').toUpperCase();
-    try {
-      const credential = await getCredential(command.user_id, environment);
-      const apiKey = decryptSecret(credential.api_key_encrypted);
-      const apiSecret = decryptSecret(credential.api_secret_encrypted);
-      const filters = await exchangeInfo(symbol, environment);
-      const freeBase = await currentFreeBalance({ apiKey, apiSecret, environment, asset: filters.baseAsset });
-      const targetPrice = ceilToStep(Number(payload.targetPrice || payload.recoveryTarget || 0), filters.tickSize);
-      const sellQty = floorToStep(freeBase, filters.stepSize);
-      const sellNotional = sellQty * targetPrice;
-      if (!targetPrice || sellQty < filters.minQty || sellNotional < filters.minNotional) {
-        await updateRows('connector_commands', {
-          result: {
-            ...(command.result || {}),
-            recoveryAttempted: true,
-            recoveryStatus: 'not_enough_sell_notional',
-            freeBase,
-            sellQty,
-            sellNotional,
-            minNotional: filters.minNotional
-          },
-          error_message: `${message} Recuperacao: quantidade atual ainda nao permite venda limite Binance acima do minimo.`
-        }, [eqFilter('id', command.id)]);
-        continue;
+async function refreshBasketRemoteOrders({ basket, orders, apiKey, apiSecret, environment }) {
+  for (const order of orders || []) {
+    const currentStatus = String(order.status || '').toLowerCase();
+    if (!order.binance_order_id || ['filled', 'canceled', 'cancelled', 'rejected', 'expired'].includes(currentStatus)) continue;
+    const remote = await signedGetOrder({
+      apiKey,
+      apiSecret,
+      environment,
+      symbol: basket.symbol,
+      orderId: order.binance_order_id
+    }).catch(() => null);
+    if (!remote?.ok) continue;
+    const status = String(remote.payload?.status || currentStatus).toLowerCase();
+    const executedQty = Number(remote.payload?.executedQty || order.executed_qty || 0);
+    const quoteFilled = Number(remote.payload?.cummulativeQuoteQty || order.cummulative_quote_qty || 0);
+    await updateRows('real_orders', {
+      status,
+      executed_qty: executedQty,
+      cummulative_quote_qty: quoteFilled,
+      raw_response: {
+        ...remote.payload,
+        invcripto: order.raw_response?.invcripto || { basket_id: basket.id }
       }
-
-      const compactId = command.id.replaceAll('-', '');
-      const sellClientOrderId = `INVREC_${compactId.slice(0, 24)}`;
-      const sell = await signedOrder({
-        apiKey,
-        apiSecret,
-        environment,
-        params: {
-          symbol,
-          side: 'SELL',
-          type: 'LIMIT',
-          timeInForce: 'GTC',
-          quantity: formatDecimal(sellQty, filters.stepSize),
-          price: formatDecimal(targetPrice, filters.tickSize),
-          newClientOrderId: sellClientOrderId,
-          newOrderRespType: 'FULL'
-        }
-      });
-      if (!sell.ok) throw new Error(`Venda de recuperacao rejeitada: ${JSON.stringify(sell.payload)}`);
-      await insertRealOrders([{
-        user_id: command.user_id,
-        environment,
-        symbol,
-        side: 'SELL',
-        order_type: 'LIMIT',
-        status: String(sell.payload?.status || 'NEW').toLowerCase(),
-        protection_role: 'recovery_take_profit',
-        timeframe: String(payload.timeframe || '15m'),
-        client_order_id: sellClientOrderId,
-        binance_order_id: String(sell.payload?.orderId || ''),
-        quantity: sellQty,
-        price: targetPrice,
-        reason: 'Venda protegida de recuperacao apos compra executada',
-        raw_response: sell.payload
-      }]);
-      await refreshCredentialBalance(credential, apiKey, apiSecret, environment).catch(() => null);
-      await updateRows('connector_commands', {
-        status: 'done',
-        result: {
-          ...(command.result || {}),
-          recoveryAttempted: true,
-          recoveryStatus: 'sell_created',
-          recoverySellOrderId: sell.payload?.orderId,
-          sellQty,
-          targetPrice
-        },
-        error_message: null,
-        completed_at: new Date().toISOString()
-      }, [eqFilter('id', command.id)]);
-      await log('info', 'recovery_sell_created', `Venda de recuperacao criada para ${symbol}`, { sellQty, targetPrice }, command);
-    } catch (error) {
-      await updateRows('connector_commands', {
-        result: { ...(command.result || {}), recoveryAttempted: true, recoveryStatus: 'error', recoveryError: String(error?.message || error) }
-      }, [eqFilter('id', command.id)]).catch(() => null);
-      await log('warn', 'recovery_sell_error', String(error?.message || error), { commandId: command.id }, command);
-    }
+    }, [eqFilter('id', order.id)]).catch(() => null);
   }
 }
 
-async function recoverUnprotectedBotBalances() {
+async function cancelTrackedBasketOrders({ basket, orders, openOrdersPayload, apiKey, apiSecret, environment, sides = ['SELL'] }) {
+  const allowedSides = new Set(sides.map(side => String(side).toUpperCase()));
+  const tracked = botOpenOrdersForBasket(openOrdersPayload, orders)
+    .filter(order => allowedSides.has(String(order.side || '').toUpperCase()));
+  for (const remoteOrder of tracked) {
+    const cancel = await signedCancelOrder({
+      apiKey,
+      apiSecret,
+      environment,
+      symbol: basket.symbol,
+      orderId: remoteOrder.orderId
+    }).catch(() => null);
+    if (!cancel?.ok) continue;
+    const trackedRow = (orders || []).find(row => String(row.binance_order_id) === String(remoteOrder.orderId));
+    await updateRows('real_orders', {
+      status: 'canceled',
+      raw_response: {
+        ...cancel.payload,
+        invcripto: trackedRow?.raw_response?.invcripto || { basket_id: basket.id }
+      }
+    }, trackedRow?.id ? [eqFilter('id', trackedRow.id)] : [eqFilter('basket_id', basket.id), eqFilter('binance_order_id', String(remoteOrder.orderId))]).catch(() => null);
+  }
+  return tracked.length;
+}
+
+async function closeBasketAndRecordProfit({ basket, summary, orders, credential, apiKey, apiSecret, environment, openOrdersPayload }) {
+  await cancelTrackedBasketOrders({
+    basket,
+    orders,
+    openOrdersPayload,
+    apiKey,
+    apiSecret,
+    environment,
+    sides: ['BUY', 'SELL']
+  }).catch(() => null);
+
+  const rates = await commissionRatesOrDefault({ apiKey, apiSecret, environment, symbol: basket.symbol });
+  const estimatedFees = summary.buyQuote * rates.buyRate + summary.sellQuote * rates.sellRate;
+  const profitUsdt = summary.sellQuote - summary.buyQuote - estimatedFees;
+  const feeEnv = Math.max(0, profitUsdt * 0.10);
+
+  if (!basket.profit_recorded && profitUsdt > 0) {
+    const wallet = await maybeSingle('inv_wallets', { filters: [eqFilter('user_id', basket.user_id)] });
+    const currentEnv = Number(wallet.data?.balance_inv || 0);
+    await insertRows('profit_events', [{
+      user_id: basket.user_id,
+      symbol: basket.symbol,
+      profit_usdt: profitUsdt,
+      profit_brl: profitUsdt,
+      fee_percent: 10,
+      fee_inv: feeEnv,
+      inv_charged: true
+    }]).catch(() => null);
+    await updateRows('inv_wallets', {
+      balance_inv: Math.max(0, currentEnv - feeEnv)
+    }, [eqFilter('user_id', basket.user_id)]).catch(() => null);
+  }
+
+  await updateRows('real_baskets', {
+    status: 'closed',
+    closed_at: new Date().toISOString(),
+    profit_recorded: true,
+    total_buy_quote: summary.buyQuote,
+    total_sell_quote: summary.sellQuote,
+    total_bought_qty: summary.boughtQty,
+    total_sold_qty: summary.soldQty,
+    open_qty: 0,
+    metadata: {
+      ...(basket.metadata || {}),
+      closed_profit_usdt: profitUsdt,
+      estimated_binance_fees_usdt: estimatedFees,
+      closed_by_reconciliation: true
+    }
+  }, [eqFilter('id', basket.id)]);
+  await refreshCredentialBalance(credential, apiKey, apiSecret, environment).catch(() => null);
+  await log('info', 'basket_closed', `Cesta ${basket.symbol} encerrada e conciliada. Lucro liquido estimado ${profitUsdt.toFixed(6)} USDT.`, {
+    basketId: basket.id,
+    profitUsdt,
+    estimatedFees
+  }, { user_id: basket.user_id });
+}
+
+async function adoptLegacyBotBaskets() {
   const { data: credentials, error } = await selectRows('binance_api_credentials', {
     select: '*',
-    filters: ['environment=eq.live', 'can_trade=eq.true'],
+    filters: ['can_trade=eq.true'],
     order: 'updated_at.desc',
     limit: 50
   });
   if (error) return;
+
   for (const credential of credentials || []) {
     const environment = credential.environment === 'testnet' ? 'testnet' : 'live';
     const userId = credential.user_id;
     if (!userId) continue;
+    const apiKey = decryptSecret(credential.api_key_encrypted);
+    const apiSecret = decryptSecret(credential.api_secret_encrypted);
+    const account = await signedAccount({ apiKey, apiSecret, environment }).catch(() => null);
+    if (!account?.ok) continue;
+    const usdt = (account.payload?.balances || []).find(item => item.asset === 'USDT') || { free: 0, locked: 0 };
+    const symbols = await symbolsTouchedByBot(userId, environment).catch(() => []);
+
+    for (const symbol of symbols) {
+      const already = await activeBasketForSymbol(userId, environment, symbol);
+      if (already) continue;
+      const openOrders = await signedOpenOrders({ apiKey, apiSecret, environment, symbol }).catch(() => null);
+      const botOpenOrders = (Array.isArray(openOrders?.payload) ? openOrders.payload : [])
+        .filter(order => /^INV/i.test(String(order.clientOrderId || '')));
+      if (!botOpenOrders.length) continue;
+
+      const { data: rows } = await selectRows('real_orders', {
+        select: '*',
+        filters: [eqFilter('user_id', userId), eqFilter('environment', environment), eqFilter('symbol', symbol)],
+        order: 'created_at.asc',
+        limit: 300
+      });
+      const allRows = Array.isArray(rows) ? rows : [];
+      let startIndex = 0;
+      for (let i = allRows.length - 1; i >= 0; i -= 1) {
+        if (String(allRows[i].side || '').toUpperCase() === 'SELL' && String(allRows[i].status || '').toLowerCase() === 'filled') {
+          startIndex = i + 1;
+          break;
+        }
+      }
+      const candidates = allRows.slice(startIndex).filter(row => !row.basket_id);
+      const summary = summarizeBasketOrders(candidates);
+      if (!summary.boughtQty || summary.openQty <= 0) continue;
+
+      const profileName = await getBotProfileName(userId);
+      let basket;
+      try {
+        basket = await createRealBasket({
+          userId,
+          environment,
+          symbol,
+          profileName,
+          accountUsdt: Number(usdt.free || 0) + Number(usdt.locked || 0) + summary.netCapital
+        });
+      } catch {
+        continue;
+      }
+      for (const row of candidates) {
+        await updateRows('real_orders', {
+          basket_id: basket.id,
+          profile_name: profileName,
+          protection_role: row.protection_role || (String(row.side).toUpperCase() === 'BUY' ? 'entry' : 'take_profit')
+        }, [eqFilter('id', row.id)]).catch(() => null);
+      }
+      const usage = basketBucketUsage(candidates.map(row => ({
+        ...row,
+        raw_response: { ...(row.raw_response || {}), invcripto: { ...(row.raw_response?.invcripto || {}), bucket: 'normal' } }
+      })));
+      await updateRows('real_baskets', {
+        total_buy_quote: summary.buyQuote,
+        total_sell_quote: summary.sellQuote,
+        total_bought_qty: summary.boughtQty,
+        total_sold_qty: summary.soldQty,
+        open_qty: summary.openQty,
+        avg_price: summary.avgBuyPrice,
+        last_buy_price: summary.lastBuyPrice,
+        last_buy_quote: summary.lastBuyQuote,
+        recovery_level: summary.recoveryLevel,
+        normal_used_usdt: Math.max(usage.normalUsed, summary.buyQuote),
+        metadata: { ...(basket.metadata || {}), adopted_legacy_orders: true, adopted_at: new Date().toISOString() }
+      }, [eqFilter('id', basket.id)]).catch(() => null);
+      await log('info', 'legacy_basket_adopted', `Cesta existente de ${symbol} foi assumida pelo controle persistente.`, {
+        basketId: basket.id,
+        openQty: summary.openQty,
+        buyQuote: summary.buyQuote
+      }, { user_id: userId });
+    }
+  }
+}
+
+async function reconcilePersistentBaskets() {
+  const { data: baskets, error } = await selectRows('real_baskets', {
+    select: '*',
+    filters: [eqFilter('status', 'active')],
+    order: 'opened_at.asc',
+    limit: 100
+  });
+  if (error) return;
+
+  for (let basket of baskets || []) {
     try {
-      const symbols = await symbolsTouchedByBot(userId, environment);
-      if (!symbols.length) continue;
+      const environment = basket.environment === 'testnet' ? 'testnet' : 'live';
+      const credential = await getCredential(basket.user_id, environment);
       const apiKey = decryptSecret(credential.api_key_encrypted);
       const apiSecret = decryptSecret(credential.api_secret_encrypted);
-      const account = await signedAccount({ apiKey, apiSecret, environment });
-      if (!account.ok) continue;
-      const balances = Array.isArray(account.payload?.balances) ? account.payload.balances : [];
+      const filters = await exchangeInfo(basket.symbol, environment);
+      let orders = await basketOrders(basket.id);
+      if (!orders.length && basket.metadata?.manual_reconciliation_required) {
+        const recoveredMetadata = await recoverBasketOrdersFromMetadata({ basket, apiKey, apiSecret, environment });
+        if (recoveredMetadata) basket = { ...basket, metadata: recoveredMetadata };
+        orders = await basketOrders(basket.id);
+      }
+      if (basket.metadata?.untracked_take_profit || basket.metadata?.untracked_order_list) {
+        const recoveredMetadata = await recoverUntrackedMetadataRows({ basket, existingOrders: orders });
+        if (recoveredMetadata) basket = { ...basket, metadata: recoveredMetadata };
+        orders = await basketOrders(basket.id);
+      }
+      await refreshBasketRemoteOrders({ basket, orders, apiKey, apiSecret, environment });
+      orders = await basketOrders(basket.id);
+      let summary = summarizeBasketOrders(orders);
+      const usage = basketBucketUsage(orders);
+      const openOrders = await signedOpenOrders({ apiKey, apiSecret, environment, symbol: basket.symbol });
+      if (!openOrders.ok) throw new Error(`Falha ao ler ordens abertas: ${JSON.stringify(openOrders.payload)}`);
 
-      for (const symbol of symbols) {
-        const filters = await exchangeInfo(symbol, environment).catch(() => null);
-        if (!filters || filters.status !== 'TRADING') continue;
-        const baseAsset = baseAssetFromSymbol(symbol);
-        const balance = balances.find(item => item.asset === baseAsset);
-        const freeBase = Number(balance?.free || 0);
-        if (freeBase <= 0) continue;
+      if (summary.openQty < filters.minQty) {
+        if (summary.boughtQty > 0 && summary.soldQty >= summary.boughtQty - filters.stepSize) {
+          await closeBasketAndRecordProfit({ basket, summary, orders, credential, apiKey, apiSecret, environment, openOrdersPayload: openOrders.payload });
+        }
+        continue;
+      }
 
-        const openOrders = await signedOpenOrders({ apiKey, apiSecret, environment, symbol });
-        if (openOrders.ok && hasOpenSellOrder(openOrders.payload, symbol)) continue;
+      const reconciledIds = new Set(Array.isArray(basket.metadata?.reconciled_protection_buys) ? basket.metadata.reconciled_protection_buys : []);
+      const newFilledProtectionBuys = orders.filter(order =>
+        String(order.side || '').toUpperCase() === 'BUY' &&
+        String(order.protection_role || '') === 'protection_buy' &&
+        String(order.status || '').toLowerCase() === 'filled' &&
+        !reconciledIds.has(String(order.binance_order_id || order.id))
+      );
 
-        const pricePayload = await ticker(symbol);
-        const lastPrice = Number(pricePayload.payload?.lastPrice || pricePayload.payload?.weightedAvgPrice || 0);
-        if (!lastPrice || lastPrice <= 0) continue;
+      const trackedOpen = botOpenOrdersForBasket(openOrders.payload, orders);
+      const sellCoverage = trackedOpen
+        .filter(order => String(order.side || '').toUpperCase() === 'SELL')
+        .reduce((sum, order) => sum + Math.max(0, Number(order.origQty || 0) - Number(order.executedQty || 0)), 0);
+      const coverageMismatch = Math.abs(sellCoverage - summary.openQty) > filters.stepSize * 1.5;
 
-        const sellQty = floorToStep(freeBase, filters.stepSize);
-        const avgBuy = await estimateAverageBuyPrice({ apiKey, apiSecret, environment, symbol, neededQty: sellQty }).catch(() => 0);
-        const targetBase = Math.max(avgBuy || 0, lastPrice);
-        const sellPrice = ceilToStep(targetBase * 1.006, filters.tickSize);
-        const sellNotional = sellQty * sellPrice;
-        if (sellQty < filters.minQty || sellNotional < filters.minNotional) continue;
-
-        const clientOrderId = `INVPROTECT_${Date.now().toString(36)}_${symbol.slice(0, 5)}`;
-        const sell = await signedOrder({
+      if (newFilledProtectionBuys.length || coverageMismatch) {
+        await cancelTrackedBasketOrders({
+          basket,
+          orders,
+          openOrdersPayload: openOrders.payload,
           apiKey,
           apiSecret,
           environment,
-          params: {
-            symbol,
-            side: 'SELL',
-            type: 'LIMIT',
-            timeInForce: 'GTC',
-            quantity: formatDecimal(sellQty, filters.stepSize),
-            price: formatDecimal(sellPrice, filters.tickSize),
-            newClientOrderId: clientOrderId.slice(0, 36),
-            newOrderRespType: 'FULL'
-          }
+          sides: ['SELL']
         });
-        if (!sell.ok) {
-          await log('warn', 'free_balance_sell_rejected', `Venda de protecao rejeitada para ${symbol}: ${JSON.stringify(sell.payload)}`, { sellQty, sellPrice }, { user_id: userId });
-          continue;
-        }
-        await insertRealOrders([{
-          user_id: userId,
-          environment,
-          symbol,
-          side: 'SELL',
-          order_type: 'LIMIT',
-          status: String(sell.payload?.status || 'NEW').toLowerCase(),
-          protection_role: 'recovery_take_profit',
-          timeframe: 'auto',
-          client_order_id: clientOrderId.slice(0, 36),
-          binance_order_id: String(sell.payload?.orderId || ''),
-          quantity: sellQty,
-          price: sellPrice,
-          reason: `Venda protegida automatica para saldo livre. Media ${avgBuy ? avgBuy.toFixed(8) : 'nao estimada'} + alvo 0.6%.`,
-          raw_response: sell.payload
-        }]);
-        await refreshCredentialBalance(credential, apiKey, apiSecret, environment).catch(() => null);
-        await log('info', 'free_balance_sell_created', `Venda protegida criada para saldo livre ${symbol}`, { sellQty, sellPrice, avgBuy, lastPrice }, { user_id: userId });
+        orders = await basketOrders(basket.id);
+        summary = summarizeBasketOrders(orders);
+        const newIds = newFilledProtectionBuys.map(order => String(order.binance_order_id || order.id));
+        basket = {
+          ...basket,
+          metadata: {
+            ...(basket.metadata || {}),
+            reconciled_protection_buys: [...new Set([...reconciledIds, ...newIds])],
+            last_reconciled_at: new Date().toISOString()
+          }
+        };
+        await updateRows('real_baskets', { metadata: basket.metadata }, [eqFilter('id', basket.id)]);
+        await placeBasketTakeProfit({ basket, summary, orders, credential, apiKey, apiSecret, environment, filters });
+        orders = await basketOrders(basket.id);
       }
+
+      basket = {
+        ...basket,
+        normal_used_usdt: usage.normalUsed,
+        emergency_used_usdt: usage.emergencyUsed,
+        total_buy_quote: summary.buyQuote,
+        total_sell_quote: summary.sellQuote,
+        total_bought_qty: summary.boughtQty,
+        total_sold_qty: summary.soldQty,
+        open_qty: summary.openQty,
+        avg_price: summary.avgBuyPrice,
+        last_buy_price: summary.lastBuyPrice || basket.last_buy_price,
+        last_buy_quote: summary.lastBuyQuote || basket.last_buy_quote,
+        recovery_level: summary.recoveryLevel
+      };
+      await updateRows('real_baskets', {
+        normal_used_usdt: usage.normalUsed,
+        emergency_used_usdt: usage.emergencyUsed,
+        total_buy_quote: summary.buyQuote,
+        total_sell_quote: summary.sellQuote,
+        total_bought_qty: summary.boughtQty,
+        total_sold_qty: summary.soldQty,
+        open_qty: summary.openQty,
+        avg_price: summary.avgBuyPrice,
+        last_buy_price: basket.last_buy_price,
+        last_buy_quote: basket.last_buy_quote,
+        recovery_level: summary.recoveryLevel
+      }, [eqFilter('id', basket.id)]);
+
+      await placeNextOfflineProtection({ basket, orders, credential, apiKey, apiSecret, environment, filters }).catch(async error => {
+        await log('warn', 'offline_protection_reconcile_error', String(error?.message || error), { basketId: basket.id }, { user_id: basket.user_id });
+      });
+      await refreshCredentialBalance(credential, apiKey, apiSecret, environment).catch(() => null);
     } catch (error) {
-      await log('warn', 'free_balance_recovery_error', String(error?.message || error), { credentialId: credential.id }, { user_id: userId });
+      await log('warn', 'basket_reconciliation_error', String(error?.message || error), { basketId: basket.id, symbol: basket.symbol }, { user_id: basket.user_id });
     }
   }
+}
+
+async function recoverFailedProtectedBuys() {
+  // Fluxo legado desativado: a reconciliacao por basket_id protege apenas quantidades do robo.
+  return;
+}
+
+async function recoverUnprotectedBotBalances() {
+  // Fluxo legado desativado para impedir venda de saldo manual da conta.
+  return;
 }
 
 async function executeCommand(command) {
@@ -1121,9 +1902,9 @@ async function processLoop() {
 
   try {
   await heartbeat('online', { pid: process.pid });
+  await adoptLegacyBotBaskets();
+  await reconcilePersistentBaskets();
   await monitorProtectedSells();
-  await recoverFailedProtectedBuys();
-  await recoverUnprotectedBotBalances();
   const command = await claimNextCommand();
   if (!command) {
     dashboard.lastCommand = 'Aguardando comandos';

@@ -6,7 +6,7 @@ import { supabase, hasSupabase } from '../lib/supabase.js';
 import { Activity, BarChart3, Bot, Brain, CheckCircle2, CreditCard, Gauge, History, KeyRound, MonitorPlay, Pause, Play, RefreshCw, Settings, ShieldCheck, SlidersHorizontal, Sparkles, StopCircle, TrendingUp, Wallet } from 'lucide-react';
 
 const allowedSymbols = ['BTCUSDT','ETHUSDT','BNBUSDT','SOLUSDT','XRPUSDT','ADAUSDT','AVAXUSDT','DOGEUSDT','LINKUSDT','DOTUSDT','LTCUSDT','TRXUSDT'];
-const MIN_REAL_ORDER_USDT = 6.5;
+const MIN_REAL_ORDER_USDT = 10;
 const radarSeed = {
   BTCUSDT:{hold:94,liquidity:96}, ETHUSDT:{hold:91,liquidity:94}, BNBUSDT:{hold:86,liquidity:88}, SOLUSDT:{hold:78,liquidity:90}, XRPUSDT:{hold:74,liquidity:86}, ADAUSDT:{hold:72,liquidity:78}, AVAXUSDT:{hold:70,liquidity:76}, DOGEUSDT:{hold:68,liquidity:82}, LINKUSDT:{hold:76,liquidity:74}, DOTUSDT:{hold:69,liquidity:70}, LTCUSDT:{hold:73,liquidity:72}, TRXUSDT:{hold:71,liquidity:73}
 };
@@ -56,23 +56,43 @@ function mergeRealOrders(existing, realOrders){
 export default function ClientPanel({user}){
   const [activeTab,setActiveTab]=useState('dashboard');
   const [symbol,setSymbol]=useState('BTCUSDT');
-  const [timeframe,setTimeframe]=useState('15m');
+  const [timeframe,setTimeframe]=useState('5m');
   const [candles,setCandles]=useState([]);
-  const [state,setState]=useState(()=>JSON.parse(localStorage.getItem('df_paper_state')||'null') || initialPaperState(Number(import.meta.env.VITE_DEFAULT_PAPER_BALANCE_USD||1000)));
+  const [state,setState]=useState(()=>{
+    const saved = JSON.parse(localStorage.getItem('df_paper_state')||'null');
+    return { ...(saved || initialPaperState(Number(import.meta.env.VITE_DEFAULT_PAPER_BALANCE_USD||1000))), active:false };
+  });
   const [selectionMode,setSelectionMode]=useState('recommended');
   const [accountMode,setAccountMode]=useState(()=>localStorage.getItem('df_account_mode') || state.accountMode || 'demo');
   const [liveTicker,setLiveTicker]=useState(null);
   const [marketStatus,setMarketStatus]=useState('Sincronizando mercado');
   const [analysisSplash,setAnalysisSplash]=useState(false);
   const [balanceRefreshing,setBalanceRefreshing]=useState(false);
+  const [marketDataReal,setMarketDataReal]=useState(false);
   const autoOrderRef = useRef('');
   const lastPrice=Number(liveTicker?.lastPrice || liveTicker?.price || candles.at(-1)?.close || 0);
-  const analysis = useMemo(()=>analyzeMarket(candles),[candles]);
+  const analysis = useMemo(()=>analyzeMarket(candles.length > 1 ? candles.slice(0,-1) : candles),[candles]);
   const radar = useMemo(()=>buildRadar(analysis),[analysis]);
   const recommended = radar[0] || {symbol:'BTCUSDT',score:0,hold:0};
 
   useEffect(()=>{localStorage.setItem('df_paper_state',JSON.stringify({...state,symbol,accountMode}))},[state,symbol,accountMode]);
   useEffect(()=>{localStorage.setItem('df_account_mode',accountMode); setState(s=>({...s,accountMode}));},[accountMode]);
+  useEffect(()=>{
+    if(!hasSupabase || !user?.id) return;
+    let closed=false;
+    async function loadProfile(){
+      const { data } = await supabase
+        .from('bot_instances')
+        .select('profile_name')
+        .eq('user_id',user.id)
+        .order('updated_at',{ascending:false})
+        .limit(1)
+        .maybeSingle();
+      if(!closed && data?.profile_name) setState(s=>({...s,profileName:String(data.profile_name).toLowerCase()}));
+    }
+    loadProfile().catch(()=>null);
+    return()=>{closed=true};
+  },[user?.id]);
   useEffect(()=>{
     if(state.active && selectionMode === 'recommended' && recommended.symbol && recommended.symbol !== symbol){
       setSymbol(recommended.symbol);
@@ -159,8 +179,11 @@ export default function ClientPanel({user}){
           if (r.ok) data=await r.json();
         }
         const normalized = normalizeKlines(data);
-        if(!closed) setCandles(normalized.length ? normalized : fallbackCandles(symbol,timeframe));
-      } catch(e){ if(!closed) setCandles(fallbackCandles(symbol,timeframe)); }
+        if(!closed){
+          setMarketDataReal(Boolean(normalized.length));
+          setCandles(normalized.length ? normalized : fallbackCandles(symbol,timeframe));
+        }
+      } catch(e){ if(!closed){ setMarketDataReal(false); setCandles(fallbackCandles(symbol,timeframe)); } }
     }
     load(); const t=setInterval(load,12000); return()=>{closed=true;clearInterval(t)};
   },[symbol,timeframe]);
@@ -203,12 +226,12 @@ export default function ClientPanel({user}){
     }
   },[state.active,candles,symbol,accountMode]);
   useEffect(()=>{
-    if(!hasSupabase || !state.active || accountMode !== 'live') return;
+    if(!hasSupabase || !state.active || accountMode !== 'live' || !marketDataReal) return;
     if(!analysis?.orderPlan || analysis.action !== 'BUY' || Number(analysis.score || 0) < 78) return;
     if(!state.apiConnected || !state.binanceCanTrade || Number(state.envBalance || 0) <= 0) return;
     const plan = analysis.orderPlan;
     const liveBalance = Number(state.binanceUsdtBalance || 0);
-    const quoteOrderQty = liveBalance >= MIN_REAL_ORDER_USDT ? Math.min(10, Math.max(MIN_REAL_ORDER_USDT, liveBalance * 0.75)) : 0;
+    const quoteOrderQty = liveBalance >= MIN_REAL_ORDER_USDT ? 10 : 0;
     if(quoteOrderQty < MIN_REAL_ORDER_USDT) return;
     const activeRealSells = (state.orders || []).filter(order => {
       const orderSymbol = String(order.symbol || '').replace('/','').toUpperCase();
@@ -220,30 +243,11 @@ export default function ClientPanel({user}){
       return liveOrder && sellOrder && openStatus && orderSymbol === symbol;
     });
     if(activeRealSells.length) {
-      const lowestSellPrice = activeRealSells.reduce((min, order) => {
-        const price = Number(order.price || 0);
-        return price > 0 ? Math.min(min, price) : min;
-      }, Infinity);
-      const estimatedAverage = Number.isFinite(lowestSellPrice) ? lowestSellPrice / 1.005 : 0;
-      const recoveryTrigger = estimatedAverage > 0 ? estimatedAverage * 0.996 : 0;
-      const since = Date.now() - 24 * 60 * 60 * 1000;
-      const buyCount = (state.orders || []).filter(order => {
-        const orderSymbol = String(order.symbol || '').replace('/','').toUpperCase();
-        const side = String(order.side || order.rawSide || '').toUpperCase();
-        const at = new Date(order.at || order.created_at || 0).getTime();
-        return orderSymbol === symbol && (order.accountMode === 'live' || side.startsWith('REAL_')) && side.includes('BUY') && at >= since;
-      }).length;
-      const canRecover = recoveryTrigger > 0 && Number(lastPrice || 0) > 0 && Number(lastPrice) <= recoveryTrigger && buyCount < 3;
-      if(!canRecover) {
-        const reason = buyCount >= 3
-          ? `Cesta ativa em ${symbol}: limite de 3 mãos atingido.`
-          : `Cesta ativa em ${symbol}: aguardando gatilho de recuperação.`;
-        setState(s=>({
-          ...s,
-          lastAutoRealStatus: reason
-        }));
-        return;
-      }
+      setState(s=>({
+        ...s,
+        lastAutoRealStatus:`Cesta ativa em ${symbol}: venda e proteções administradas diretamente na Binance.`
+      }));
+      return;
     }
     const setupKey = `${user?.id || 'user'}:${symbol}:${timeframe}:${Math.round(plan.entry * 1000000)}:${Math.round(plan.recoveryTarget * 1000000)}:${analysis.score}`;
     if(autoOrderRef.current === setupKey || state.lastAutoRealSetupKey === setupKey) return;
@@ -329,7 +333,7 @@ export default function ClientPanel({user}){
     }
     queueAutoOrder();
     return()=>{cancelled=true};
-  },[state.active,accountMode,analysis,symbol,timeframe,state.apiConnected,state.binanceCanTrade,state.envBalance,state.binanceUsdtBalance,state.orders,user?.id]);
+  },[state.active,accountMode,analysis,symbol,timeframe,state.apiConnected,state.binanceCanTrade,state.envBalance,state.binanceUsdtBalance,state.orders,user?.id,marketDataReal]);
 
   function operateRecommended(){ setAnalysisSplash(true); setActiveTab('dashboard'); setSymbol(recommended.symbol); setSelectionMode('recommended'); setState(s=>({...s,active:true,symbol:recommended.symbol,accountMode,selectionMode:'recommended'})); }
   function operateSelected(){ setAnalysisSplash(false); setSelectionMode('manual_assisted'); setState(s=>({...s,active:true,symbol,accountMode,selectionMode:'manual_assisted'})); }
@@ -453,7 +457,7 @@ function RobotStatusBar({state,analysis,accountMode,marketStatus,lastPrice}){
   const detail = operating
     ? `Cesta aberta na mão ${state.positions[0]?.ladderLevel || 1}; buscando saída com +0,5% sobre preço médio.`
     : analysis?.orderPlan
-      ? `Setup monitorado: ${analysis.reason}. Confira entrada, alvo e martingale controlado.`
+      ? `Setup monitorado: ${analysis.reason}. Confira entrada, alvo e proteções da cesta.`
       : `${marketStatus}. Aguardando confirmação de score, volume e tendência.`;
   return <div className="alert"><b>{status}</b><p>{detail}</p><p><span>Modo:</span> <b>{accountMode==='live'?'Conta real':'Conta demo'}</b> - <span>Preço:</span> <b>{lastPrice?lastPrice.toFixed(6):'...'}</b> - <span>Score:</span> <b>{analysis?.score || 0}/100</b></p></div>
 }
@@ -629,9 +633,9 @@ function TargetOrderPreview({state,symbol,timeframe,analysis,createTargetOrder,a
   if(!order && !plan){
     return <div className="info-card panel-glow"><h3>Ordem alvo 1</h3><p className="muted">A IA ainda não encontrou setup de compra com risco/retorno suficiente para criar uma ordem de visualização.</p><p><b>Ação:</b> {analysis?.action || 'WAIT'}</p><p><b>Score:</b> {analysis?.score || 0}/100</p></div>
   }
-  const demoBaseValue = Math.min(state.balanceUsd - 1000, Math.max(10, (state.balanceUsd - 1000) * 0.05));
+  const demoBaseValue = Number(state.balanceUsd || 0) >= 10 ? 10 : 0;
   const liveBalance = Number(state.binanceUsdtBalance || 0);
-  const liveBaseValue = liveBalance >= MIN_REAL_ORDER_USDT ? Math.min(10, Math.max(MIN_REAL_ORDER_USDT, liveBalance * 0.75)) : 0;
+  const liveBaseValue = liveBalance >= MIN_REAL_ORDER_USDT ? 10 : 0;
   const baseValue = accountMode === 'live' ? liveBaseValue : demoBaseValue;
   const view = order || {
     status:'PLANO',
@@ -699,7 +703,7 @@ function TargetOrderPreview({state,symbol,timeframe,analysis,createTargetOrder,a
     }
   }
 
-  return <div className="info-card panel-glow"><h3>Ordem alvo 1</h3><div className="pair-row"><span className="badge ok">{view.status}</span><strong>{symbol.replace('USDT','/USDT')}</strong></div><p><span>Timeframe:</span><b>{String(view.timeframe || '15m').toUpperCase()}</b></p><p><span>Tipo:</span><b>{accountMode==='live'?'Compra mercado + venda limite Binance':'Compra limite paper'}</b></p><p><span>Entrada mão 1:</span><b>{view.price.toFixed(6)}</b></p><p><span>Quantidade estimada:</span><b>{num(view.qty,8)}</b></p><p><span>Valor mão 1:</span><b>{usd(view.valueUsd)}</b></p><p><span>Stop estrutural:</span><b>{view.stopLoss.toFixed(6)}</b></p><p><span>Alvo 1:</span><b>{view.target1.toFixed(6)}</b></p><p><span>Venda protegida:</span><b>{view.recoveryTarget?.toFixed?.(6) || '-'}</b></p><p><span>Risco / ganho alvo 1:</span><b>{usd(view.riskUsd)} / {usd(view.potentialProfitUsd)}</b></p><p><span>R/R:</span><b>{num(view.riskReward,2)}</b></p><p><span>Confiança:</span><b>{view.confidence}/100</b></p>{view.ladder?.length&&<div><h4>Martingale controlado</h4>{view.ladder.map(hand=><p key={hand.level}><span>{hand.label} x{hand.multiplier}:</span><b>{hand.entry.toFixed(6)}</b></p>)}</div>}<button className="btn primary small" type="button" onClick={createTargetOrder}>Salvar prévia alvo 1</button>{accountMode==='live'&&<button className="btn danger small" type="button" onClick={sendProtectedOrder} disabled={sending || state.active}>{sending?'Enviando...':state.active?'Envio automático ativo':'Enviar compra agora (manual)'}</button>}{message&&<div className="alert">{message}</div>}</div>
+  return <div className="info-card panel-glow"><h3>Ordem alvo 1</h3><div className="pair-row"><span className="badge ok">{view.status}</span><strong>{symbol.replace('USDT','/USDT')}</strong></div><p><span>Timeframe:</span><b>{String(view.timeframe || '15m').toUpperCase()}</b></p><p><span>Tipo:</span><b>{accountMode==='live'?'Compra mercado + venda limite Binance':'Compra limite paper'}</b></p><p><span>Entrada mão 1:</span><b>{view.price.toFixed(6)}</b></p><p><span>Quantidade estimada:</span><b>{num(view.qty,8)}</b></p><p><span>Valor mão 1:</span><b>{usd(view.valueUsd)}</b></p><p><span>Stop estrutural:</span><b>{view.stopLoss.toFixed(6)}</b></p><p><span>Alvo 1:</span><b>{view.target1.toFixed(6)}</b></p><p><span>Venda protegida:</span><b>{view.recoveryTarget?.toFixed?.(6) || '-'}</b></p><p><span>Risco / ganho alvo 1:</span><b>{usd(view.riskUsd)} / {usd(view.potentialProfitUsd)}</b></p><p><span>R/R:</span><b>{num(view.riskReward,2)}</b></p><p><span>Confiança:</span><b>{view.confidence}/100</b></p>{view.ladder?.length&&<div><h4>Proteções da cesta</h4>{view.ladder.map(hand=><p key={hand.level}><span>{hand.label} x{hand.multiplier}:</span><b>{hand.entry.toFixed(6)}</b></p>)}</div>}<button className="btn primary small" type="button" onClick={createTargetOrder}>Salvar prévia alvo 1</button>{accountMode==='live'&&<button className="btn danger small" type="button" onClick={sendProtectedOrder} disabled={sending || state.active}>{sending?'Enviando...':state.active?'Envio automático ativo':'Enviar compra agora (manual)'}</button>}{message&&<div className="alert">{message}</div>}</div>
 }
 function RecommendedCard({recommended,symbol,analysis,setSymbol,operateRecommended}){
   const isCurrent = recommended.symbol === symbol;

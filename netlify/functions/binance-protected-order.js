@@ -12,6 +12,8 @@ function json(statusCode, body) {
 }
 
 const allowedSymbols = new Set(['BTCUSDT','ETHUSDT','BNBUSDT','SOLUSDT','XRPUSDT','ADAUSDT','AVAXUSDT','DOGEUSDT','LINKUSDT','DOTUSDT','LTCUSDT','TRXUSDT']);
+const INITIAL_ENTRY_USDT = 10;
+const PROFILE_LIMITS = { conservador: 1, moderado: 1, arrojado: 1, alavancagem: 5 };
 
 export async function handler(event) {
   if (event.httpMethod === 'OPTIONS') return { statusCode: 204, headers: jsonHeaders, body: '' };
@@ -28,15 +30,13 @@ export async function handler(event) {
   const manualEmail = String(body.manualEmail || '').trim().toLowerCase();
   const environment = body.environment === 'testnet' ? 'testnet' : 'live';
   const symbol = String(body.symbol || '').trim().toUpperCase();
-  const quoteOrderQty = Number(body.quoteOrderQty || body.valueUsdt || 0);
+  const quoteOrderQty = INITIAL_ENTRY_USDT;
   const targetPrice = Number(body.targetPrice || body.recoveryTarget || 0);
-  const timeframe = String(body.timeframe || '15m').trim();
+  const timeframe = String(body.timeframe || '5m').trim();
   const score = Number(body.score || 0);
   const reason = String(body.reason || 'Entrada protegida INVCRIPTO').slice(0, 500);
 
   if (!allowedSymbols.has(symbol)) return json(400, { error: 'Par nao permitido para operacao real.' });
-  if (!quoteOrderQty || quoteOrderQty <= 0) return json(400, { error: 'Valor da compra em USDT obrigatorio.' });
-  if (!targetPrice || targetPrice <= 0) return json(400, { error: 'Preco alvo de venda obrigatorio.' });
   if (environment === 'live' && score < 78) return json(400, { error: 'Score insuficiente para conta real.' });
 
   const supabase = createClient(supabaseUrl, serviceKey, { auth: { persistSession: false } });
@@ -69,6 +69,49 @@ export async function handler(event) {
   if (credentialError) return json(400, { error: credentialError.message });
   if (!credential) return json(404, { error: 'Nenhuma API Binance salva para este ambiente.' });
   if (!credential.can_trade) return json(400, { error: 'API Binance salva esta sem permissao de trading.' });
+  if (Number(credential.real_usdt_free || 0) < INITIAL_ENTRY_USDT) return json(400, { error: `Saldo minimo de ${INITIAL_ENTRY_USDT.toFixed(2)} USDT necessario para a entrada inicial.` });
+
+  const { data: bot } = await supabase
+    .from('bot_instances')
+    .select('profile_name,updated_at')
+    .eq('user_id', userId)
+    .order('updated_at', { ascending: false })
+    .limit(1)
+    .maybeSingle();
+  const profileName = PROFILE_LIMITS[String(bot?.profile_name || '').toLowerCase()]
+    ? String(bot.profile_name).toLowerCase()
+    : 'conservador';
+  const maxConcurrentBaskets = PROFILE_LIMITS[profileName];
+
+  const { data: activeBaskets, error: basketError } = await supabase
+    .from('real_baskets')
+    .select('id,symbol,status')
+    .eq('user_id', userId)
+    .eq('environment', environment)
+    .eq('status', 'active');
+  if (basketError) return json(400, { error: `Execute o SQL 12_cestas_offline_binance.sql antes de operar: ${basketError.message}` });
+  const sameSymbolBasket = (activeBaskets || []).find(item => String(item.symbol || '').toUpperCase() === symbol);
+  if (sameSymbolBasket) {
+    return json(200, {
+      ok: true,
+      skipped: true,
+      reason: 'active_basket_managed_by_connector',
+      basketId: sameSymbolBasket.id,
+      message: `A cesta de ${symbol} ja esta ativa. O conector controla a venda e as proximas protecoes diretamente na Binance.`
+    });
+  }
+  if ((activeBaskets || []).length >= maxConcurrentBaskets) {
+    return json(200, {
+      ok: true,
+      skipped: true,
+      reason: 'max_concurrent_baskets',
+      profileName,
+      maxConcurrentBaskets,
+      message: profileName === 'alavancagem'
+        ? `O limite de ${maxConcurrentBaskets} cestas simultaneas foi atingido.`
+        : `O perfil ${profileName} opera somente uma moeda por vez.`
+    });
+  }
 
   const { data: recentCommands, error: recentError } = await supabase
     .from('connector_commands')
@@ -108,7 +151,11 @@ export async function handler(event) {
         targetPrice,
         timeframe,
         score,
-        reason
+        reason,
+        profileName,
+        targetNetPct: 0.5,
+        normalReservePct: 80,
+        emergencyReservePct: 20
       },
       status: 'pending'
     })
@@ -126,6 +173,8 @@ export async function handler(event) {
     symbol,
     quoteOrderQty,
     targetPrice,
+    profileName,
+    maxConcurrentBaskets,
     message: 'Ordem protegida enviada ao conector local. A compra e a venda serao criadas pela Binance via conector.'
   });
 }

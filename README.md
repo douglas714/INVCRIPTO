@@ -1,16 +1,22 @@
-# INVCRIPTO IA
+# INVCRIPTO IA 1.1
 
-Plataforma web para robô de cripto com layout premium verde/dourado, painel cliente, painel administrador, Supabase Auth, créditos INV, modo Paper Trade e scanner IA.
+Plataforma web para operação Spot em cestas, com painel cliente/administrador, Supabase, conector local e execução direta na Binance. O layout visual desta versão foi preservado.
 
-## Novidades desta versão
+## Motor operacional desta versão
 
-- Logo INVCRIPTO aplicada no painel.
-- Favicon configurado em PNG/ICO.
-- Layout premium baseado na paleta verde escuro + dourado.
-- Dashboard com gráfico real, suporte/resistência, trading control e cards de análise.
-- Radar IA com moedas fortes: BTC, ETH, BNB, SOL, XRP, ADA, AVAX, DOGE, LINK, DOT, LTC e TRX.
-- Cliente pode seguir a recomendação da IA ou escolher manualmente a moeda.
-- Mantém Supabase, CPF/telefone obrigatório, admin com bloqueio de usuário e créditos INV.
+- Entrada inicial real fixa em **US$ 10**.
+- Meta de **0,5% líquido por cesta**.
+- Capital da cesta dividido em **80% recuperação normal / 20% reserva extraordinária**.
+- Conservador: 1 moeda, proteção a cada 1,00%.
+- Moderado: 1 moeda, proteção a cada 0,50%.
+- Arrojado: 1 moeda, proteção a cada 0,30%.
+- Alavancagem: até 5 moedas, proteção a cada 0,15%.
+- Compra, venda GTC e próxima proteção são enviadas diretamente para a Binance.
+- Reconciliação automática de saldo, ordens e cestas ao religar o conector.
+- Controle por `basket_id`, sem vender saldo manual do usuário.
+- Robô abre pausado; candles sintéticos não podem gerar ordem real.
+
+Detalhes: `docs/ALTERACOES_CESTAS_OFFLINE.md`.
 
 ## Instalação
 
@@ -28,29 +34,14 @@ Publish directory: dist
 
 ## Supabase
 
-Execute no Supabase SQL Editor:
+Em uma instalação já existente, execute obrigatoriamente:
 
 ```text
-supabase/schema.sql
+supabase/12_cestas_offline_binance.sql
 ```
 
-Depois cadastre seu usuário e rode:
-
-```text
-supabase/02_promover_admin.sql
-```
+Em uma instalação nova, execute primeiro o schema e os scripts anteriores em ordem numérica, finalizando com o script 12.
 
 ## Variáveis de ambiente
 
-Use `.env.example` apenas como modelo. Não suba chaves reais para o GitHub.
-Cadastre as chaves reais no Netlify em `Site settings > Environment variables`.
-
-
-## Atualização USDT/ENV
-
-- O robô opera pares contra USDT.
-- Ao conectar a API Binance, o backend deve consultar e exibir o saldo USDT disponível.
-- O painel usa dólar/USDT para saldo, lucro e taxa.
-- Créditos ENV: 1 ENV = US$ 1,00.
-- Pagamentos em BRL devem converter para ENV pela cotação do dólar/USDT no momento da confirmação.
-- Gráfico nativo SVG corrigido com candles visíveis, sem dependência externa.
+Use `.env.example` apenas como modelo. Não publique chaves reais no GitHub. Cadastre os segredos no Netlify e no `.env` local do conector.

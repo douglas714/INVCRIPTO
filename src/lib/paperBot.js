@@ -16,6 +16,7 @@ export function initialPaperState(balanceUsd=1000) {
     symbol: 'BTCUSDT',
     mode: 'paper',
     accountMode: 'demo',
+    profileName: 'conservador',
     binanceUsdtBalance: 0,
     apiConnected: false
   };
@@ -40,7 +41,7 @@ export function createTargetPreviewOrder(state, symbol, analysis, timeframe = '1
   const plan = analysis?.orderPlan;
   if (!plan || plan.side !== 'BUY') return next;
 
-  const valueUsd = Math.min(next.balanceUsd, Math.max(10, next.balanceUsd * 0.05));
+  const valueUsd = next.balanceUsd >= 10 ? 10 : 0;
   if (valueUsd < 10 || plan.entry <= 0) return next;
 
   const qty = valueUsd / plan.entry;
@@ -82,10 +83,13 @@ export function runPaperDecision(state, candles) {
 
   if (analysis.action === 'BUY' && analysis.score >= 78 && next.positions.length === 0) {
     const plan = analysis.orderPlan;
-    const valueUsd = Math.min(next.balanceUsd, Math.max(10, next.balanceUsd * 0.05));
+    const valueUsd = next.balanceUsd >= 10 ? 10 : 0;
     if (valueUsd < 10) return next;
     const entryPrice = plan?.entry || price;
     const qty = valueUsd / entryPrice;
+    const profileGaps = { conservador:1, moderado:0.5, arrojado:0.3, alavancagem:0.15 };
+    const profileName = profileGaps[next.profileName] ? next.profileName : 'conservador';
+    const basketBudget = profileName === 'alavancagem' ? next.balanceUsd / 5 : next.balanceUsd;
     next.balanceUsd -= valueUsd;
     next.positions.push({
       id: crypto.randomUUID(),
@@ -96,41 +100,61 @@ export function runPaperDecision(state, candles) {
       openedAt: now,
       ladderLevel: 1,
       baseHandUsd: valueUsd,
-      recoveryTarget: entryPrice * 1.005,
-      martingalePlan: plan?.ladder || []
+      lastHandUsd: valueUsd,
+      lastBuyPrice: entryPrice,
+      profileName,
+      protectionGapPct: profileGaps[profileName],
+      normalBudgetUsd: basketBudget * 0.80,
+      emergencyBudgetUsd: basketBudget * 0.20,
+      normalUsedUsd: valueUsd,
+      emergencyUsedUsd: 0,
+      recoveryTarget: entryPrice * 1.008,
+      martingalePlan: []
     });
     next.orders.unshift({ id: crypto.randomUUID(), at: now, side:'BUY_M1', symbol:state.symbol, qty, price:entryPrice, valueUsd, reason: analysis.reason });
   } else if (next.positions.length > 0) {
     const p = next.positions[0];
-    const plan = analysis.orderPlan?.ladder?.length ? analysis.orderPlan.ladder : p.martingalePlan || [];
-    const ladderLevel = Number(p.ladderLevel || 1);
-    const nextHand = plan.find(item => item.level === ladderLevel + 1);
+    const normalRemaining = Math.max(0, Number(p.normalBudgetUsd || 0) - Number(p.normalUsedUsd || 0));
+    const emergencyRemaining = Math.max(0, Number(p.emergencyBudgetUsd || 0) - Number(p.emergencyUsedUsd || 0));
+    const desiredHand = Math.max(10, Number(p.lastHandUsd || 10) * 1.35);
+    const useNormal = normalRemaining >= 10;
+    const useEmergency = !useNormal && emergencyRemaining >= 10;
+    const gapMultiplier = useEmergency ? 3 : 1;
+    const trigger = Number(p.lastBuyPrice || p.avgPrice) * (1 - (Number(p.protectionGapPct || 1) / 100) * gapMultiplier);
 
-    if (nextHand && price <= nextHand.entry && next.balanceUsd >= 10) {
-      const valueUsd = Math.min(next.balanceUsd, Math.max(10, Number(p.baseHandUsd || 10) * nextHand.multiplier));
+    if ((useNormal || useEmergency) && price <= trigger && next.balanceUsd >= 10) {
+      const remaining = useNormal ? normalRemaining : emergencyRemaining;
+      const valueUsd = Math.min(next.balanceUsd, remaining, desiredHand);
+      if (valueUsd < 10) return next;
       const qty = valueUsd / price;
       const investedUsd = Number(p.investedUsd || 0) + valueUsd;
       const totalQty = Number(p.qty || 0) + qty;
       p.qty = totalQty;
       p.investedUsd = investedUsd;
       p.avgPrice = investedUsd / totalQty;
-      p.ladderLevel = nextHand.level;
-      p.recoveryTarget = p.avgPrice * 1.005;
+      p.ladderLevel = Number(p.ladderLevel || 1) + 1;
+      p.lastHandUsd = valueUsd;
+      p.lastBuyPrice = price;
+      if (useNormal) p.normalUsedUsd = Number(p.normalUsedUsd || 0) + valueUsd;
+      else p.emergencyUsedUsd = Number(p.emergencyUsedUsd || 0) + valueUsd;
+      p.recoveryTarget = p.avgPrice * 1.008;
       next.balanceUsd -= valueUsd;
-      next.orders.unshift({ id: crypto.randomUUID(), at: now, side:`BUY_M${nextHand.level}`, symbol:state.symbol, qty, price, valueUsd, reason:`Martingale controlado: ${nextHand.label}` });
+      next.orders.unshift({ id: crypto.randomUUID(), at: now, side:`BUY_M${p.ladderLevel}`, symbol:state.symbol, qty, price, valueUsd, reason:`Protecao ${useNormal ? 'normal' : 'extraordinaria'} da cesta` });
       return next;
     }
 
-    const grossUsd = ((price - p.avgPrice) * p.qty);
-    const target = Math.max(0.25, Number(p.investedUsd || 0) * 0.005);
-    if (grossUsd >= target && price >= Number(p.recoveryTarget || p.avgPrice * 1.005)) {
-      const fee = grossUsd * 0.10;
-      next.realizedProfitUsd += grossUsd;
+    const saleValue = price * p.qty;
+    const estimatedBinanceCosts = Number(p.investedUsd || 0) * 0.001 + saleValue * 0.0015;
+    const netProfitUsd = saleValue - Number(p.investedUsd || 0) - estimatedBinanceCosts;
+    const target = Number(p.investedUsd || 0) * 0.005;
+    if (netProfitUsd >= target && price >= Number(p.recoveryTarget || p.avgPrice * 1.008)) {
+      const fee = netProfitUsd * 0.10;
+      next.realizedProfitUsd += netProfitUsd;
       next.feesEnv += fee;
       if (next.accountMode === 'live') next.envBalance = Math.max(0, next.envBalance - fee);
       const valueUsd = p.qty * price;
       next.balanceUsd += valueUsd;
-      next.orders.unshift({ id: crypto.randomUUID(), at: now, side:'SELL_RECOVERY', symbol:state.symbol, qty:p.qty, price, valueUsd, profitUsd:grossUsd, feeEnv:fee, reason:'Saída da cesta com +0,5% sobre preço médio' });
+      next.orders.unshift({ id: crypto.randomUUID(), at: now, side:'SELL_RECOVERY', symbol:state.symbol, qty:p.qty, price, valueUsd, profitUsd:netProfitUsd, feeEnv:fee, reason:'Saída da cesta com +0,5% líquido estimado' });
       next.positions = [];
       if (next.accountMode === 'live' && next.envBalance <= 0) next.active = false;
     }

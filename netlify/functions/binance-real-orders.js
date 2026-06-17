@@ -16,7 +16,7 @@ function isSchemaCacheColumnError(error) {
 }
 
 async function fetchRealOrders(supabase, userId, environment, limit) {
-  const fullSelect = 'id,created_at,environment,symbol,side,order_type,status,protection_role,timeframe,quantity,price,quote_order_qty,executed_qty,cummulative_quote_qty,reason,binance_order_id,linked_order_id';
+  const fullSelect = 'id,created_at,environment,symbol,side,order_type,status,protection_role,timeframe,quantity,price,quote_order_qty,executed_qty,cummulative_quote_qty,reason,binance_order_id,linked_order_id,basket_id,order_list_id,profile_name';
   const legacySelect = 'id,created_at,environment,symbol,side,order_type,status,quantity,price,quote_order_qty,executed_qty,cummulative_quote_qty,reason,binance_order_id';
   const query = select => supabase
     .from('real_orders')
@@ -87,7 +87,10 @@ export async function handler(event) {
       valueUsd: Number(order.cummulative_quote_qty || order.quote_order_qty || (Number(order.quantity || 0) * Number(order.price || 0)) || 0),
       reason: order.reason,
       binanceOrderId: order.binance_order_id,
-      linkedOrderId: order.linked_order_id
+      linkedOrderId: order.linked_order_id,
+      basketId: order.basket_id,
+      orderListId: order.order_list_id,
+      profileName: order.profile_name
     }))
   });
 }

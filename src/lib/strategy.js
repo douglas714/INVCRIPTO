@@ -68,15 +68,22 @@ function orderPlan({ action, price, support, resistance, atrValue, score }) {
   const stopLoss = Math.max(0, entry - volatility * 1.4);
   const target1 = Math.max(entry + volatility * 1.35, Math.min(resistance, entry + volatility * 2));
   const target2 = Math.max(target1 + volatility * 0.9, resistance);
-  const ladder = [
-    { level: 1, label: 'Mão 1', multiplier: 1, entry },
-    { level: 2, label: 'Mão 2', multiplier: 1.6, entry: Math.max(0, entry - volatility * 0.85) },
-    { level: 3, label: 'Mão 3', multiplier: 2.4, entry: Math.max(0, entry - volatility * 1.6) }
-  ];
+  // Apenas uma previa visual. A execucao real usa o perfil salvo,
+  // crescimento dinamico de 1,35x e para somente quando o orcamento 80/20 da
+  // cesta termina. Mostramos cinco niveis para nao sugerir limite de 3 maos.
+  const previewGap = 0.01;
+  const ladder = Array.from({ length: 5 }, (_, index) => ({
+    level: index + 1,
+    label: `Proteção ${index}`,
+    multiplier: Number((1.35 ** index).toFixed(4)),
+    entry: Math.max(0, entry * ((1 - previewGap) ** index))
+  }));
+  ladder[0].label = 'Entrada inicial';
   const weightedCost = ladder.reduce((sum, item) => sum + item.entry * item.multiplier, 0);
   const totalWeight = ladder.reduce((sum, item) => sum + item.multiplier, 0);
   const fullBasketAvg = weightedCost / totalWeight;
-  const recoveryTarget = fullBasketAvg * 1.005;
+  // Previa conservadora: 0,5% liquido + margem estimada para taxas/slippage.
+  const recoveryTarget = fullBasketAvg * 1.008;
   const risk = Math.max(0.00000001, entry - stopLoss);
   const reward = target1 - entry;
   return {
@@ -92,14 +99,14 @@ function orderPlan({ action, price, support, resistance, atrValue, score }) {
     ladder,
     martingale: {
       enabled: true,
-      maxHands: ladder.length,
+      maxHands: null,
       profitTargetPct: 0.5,
       multipliers: ladder.map(item => item.multiplier)
     },
     risk,
     reward,
     riskReward: reward / risk,
-    note: 'Prévia paper. Envio real deve passar por backend, saldo USDT, permissões e limite de risco.'
+    note: 'Prévia visual. A execução real usa o intervalo do perfil, orçamento 80/20, saldo e filtros da Binance.'
   };
 }
 
@@ -120,7 +127,9 @@ export function analyzeMarket(candles) {
   const last = candles[candles.length - 1];
   const prev = candles[candles.length - 2];
   const i = closes.length - 1;
-  const { support, resistance } = supportResistance(candles, 48);
+  // Suporte/resistencia usam apenas candles anteriores; assim o candle atual
+  // pode confirmar um rompimento real sem estar incluido na propria resistencia.
+  const { support, resistance } = supportResistance(candles.slice(0, -1), 48);
   const longTrend = ema21[i] > ema50[i] && last.close > ema50[i];
   const macroTrend = ema200[i] ? last.close > ema200[i] : longTrend;
   const shortTrend = ema9[i] > ema21[i];
@@ -131,7 +140,7 @@ export function analyzeMarket(candles) {
   const momentumOk = rsi14[i] >= 48 && rsi14[i] <= 68;
   const rsiRecovering = rsi14[i] > rsi14[i - 1] && rsi14[i - 1] < 55;
   const candleStrength = last.close > last.open && (last.close - last.low) / range > 0.58;
-  const rejectionBuy = last.low < support * 1.0025 && last.close > support && candleStrength;
+  const rejectionBuy = macroTrend && !trendDown && last.low < support * 1.0025 && last.close > support && candleStrength;
   const rejectionSell = last.high > resistance * 0.998 && last.close < resistance && (last.high - last.close) / range > 0.55;
   const pullbackBuy = trendUp && last.low <= ema21[i] && last.close > ema9[i] && momentumOk;
   const breakoutBuy = last.close > resistance * 1.001 && prev.close <= resistance && volumeOk && rsi14[i] < 74;
@@ -141,7 +150,10 @@ export function analyzeMarket(candles) {
   let action = 'WAIT';
   let reason = 'Sem setup';
 
-  if (pullbackBuy || rejectionBuy || breakoutBuy) {
+  const distanceToResistancePct = resistance > last.close ? ((resistance / last.close) - 1) * 100 : 0;
+  const enoughRoomToResistance = breakoutBuy || distanceToResistancePct >= 0.9;
+
+  if ((pullbackBuy || rejectionBuy || breakoutBuy) && enoughRoomToResistance) {
     score = 58;
     if (trendUp) score += 12;
     if (macroTrend) score += 8;
@@ -178,6 +190,7 @@ export function analyzeMarket(candles) {
     rsi14: rsi14[i],
     atr14: atrValue,
     volumeOk,
+    distanceToResistancePct,
     price: last.close,
     orderPlan: plan
   };

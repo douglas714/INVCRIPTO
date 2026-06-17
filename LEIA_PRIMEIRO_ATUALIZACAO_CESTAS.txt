@@ -1,0 +1,13 @@
+INVCRIPTO 1.1 - ATUALIZACAO DE CESTAS OFFLINE
+
+1) Execute no Supabase SQL Editor:
+   supabase/12_cestas_offline_binance.sql
+
+2) Publique o painel normalmente no Netlify.
+
+3) Substitua o conector antigo pelo arquivo:
+   public/downloads/ENVCRIPTO_CONNECTOR_LOCAL.zip
+
+4) Preserve seu .env local. Nao publique nem envie esse arquivo.
+
+5) Valide primeiro em testnet. O layout foi mantido; as alteracoes estao no motor operacional.

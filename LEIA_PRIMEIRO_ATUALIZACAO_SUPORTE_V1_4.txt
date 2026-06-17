@@ -1,0 +1,20 @@
+INVCRIPTO V1.4 - CESTAS GUIADAS POR SUPORTE
+
+1. O layout principal foi preservado.
+2. A entrada real de US$ 10 agora e LIMIT FOK com teto de preco na zona de suporte.
+3. Se o preco subir acima da zona, a compra e cancelada sem perseguir o mercado.
+4. Os percentuais dos perfis sao apenas a distancia minima para liberar uma protecao:
+   - Conservador: 1,00%
+   - Moderado: 0,50%
+   - Arrojado: 0,30%
+   - Alavancagem: 0,15%
+5. A protecao e posicionada no proximo suporte abaixo desse gatilho.
+6. Se surgir suporte mais baixo, a ordem antiga e cancelada e reposicionada para baixo.
+7. Uma protecao nunca e movida para cima.
+8. O suporte do grafico e exatamente o mesmo suporte usado pela estrategia.
+9. Velas esticadas e pavios no suporte permanecem validos por uma janela curta de candles fechados.
+10. Entradas sem espaco para 0,5% liquido antes da resistencia sao bloqueadas.
+11. Compras executadas aparecem como marcadores; apenas ordens abertas permanecem como linhas horizontais.
+12. Nao ha SQL novo. O script supabase/12_cestas_offline_binance.sql continua obrigatorio.
+13. Substitua tambem o conector local pelo ZIP em public/downloads.
+14. Valide primeiro em Testnet antes de liberar conta real.

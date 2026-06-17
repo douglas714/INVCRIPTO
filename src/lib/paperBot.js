@@ -1,4 +1,4 @@
-import { analyzeMarket } from './strategy.js';
+import { analyzeMarket, marketStructure } from './strategy.js';
 
 export function initialPaperState(balanceUsd=1000) {
   return {
@@ -73,15 +73,16 @@ export function createTargetPreviewOrder(state, symbol, analysis, timeframe = '1
 }
 
 export function runPaperDecision(state, candles) {
-  const analysis = analyzeMarket(candles);
+  const closedCandles = candles.length > 1 ? candles.slice(0, -1) : candles;
+  const analysis = analyzeMarket(closedCandles);
   const next = structuredClone(normalizeState(state));
-  const price = analysis.price || candles.at(-1)?.close || 0;
+  const price = Number(candles.at(-1)?.close || analysis.price || 0);
   const now = new Date().toISOString();
   next.decisions.unshift({ at: now, symbol: state.symbol, ...analysis });
   next.decisions = next.decisions.slice(0, 50);
   if (!next.active || (next.accountMode === 'live' && next.envBalance <= 0) || price <= 0) return next;
 
-  if (analysis.action === 'BUY' && analysis.score >= 78 && next.positions.length === 0) {
+  if (analysis.action === 'BUY' && analysis.score >= 78 && next.positions.length === 0 && price <= Number(analysis.maxEntryPrice || Infinity)) {
     const plan = analysis.orderPlan;
     const valueUsd = next.balanceUsd >= 10 ? 10 : 0;
     if (valueUsd < 10) return next;
@@ -121,8 +122,19 @@ export function runPaperDecision(state, candles) {
     const useEmergency = !useNormal && emergencyRemaining >= 10;
     const gapMultiplier = useEmergency ? 3 : 1;
     const trigger = Number(p.lastBuyPrice || p.avgPrice) * (1 - (Number(p.protectionGapPct || 1) / 100) * gapMultiplier);
+    const structure = marketStructure(closedCandles, { lookback: useEmergency ? 260 : 180, currentPrice: price });
+    const supportCandidate = (structure.supports || []).find(level => Number(level.level || 0) <= trigger / 1.0008);
+    const fallbackSupport = closedCandles
+      .slice(-(useEmergency ? 180 : 90))
+      .map(candle => Number(candle.low || 0))
+      .filter(level => level > 0 && level <= trigger / 1.0008)
+      .sort((a,b)=>b-a)[0];
+    const supportPrice = Number(supportCandidate?.level || fallbackSupport || 0);
+    const protectionPrice = supportPrice > 0 ? Math.min(trigger, supportPrice * 1.0008) : 0;
+    p.nextProtectionPrice = protectionPrice || null;
+    p.nextProtectionSupport = supportPrice || null;
 
-    if ((useNormal || useEmergency) && price <= trigger && next.balanceUsd >= 10) {
+    if ((useNormal || useEmergency) && protectionPrice > 0 && price <= protectionPrice && next.balanceUsd >= 10) {
       const remaining = useNormal ? normalRemaining : emergencyRemaining;
       const valueUsd = Math.min(next.balanceUsd, remaining, desiredHand);
       if (valueUsd < 10) return next;
@@ -139,7 +151,7 @@ export function runPaperDecision(state, candles) {
       else p.emergencyUsedUsd = Number(p.emergencyUsedUsd || 0) + valueUsd;
       p.recoveryTarget = p.avgPrice * 1.008;
       next.balanceUsd -= valueUsd;
-      next.orders.unshift({ id: crypto.randomUUID(), at: now, side:`BUY_M${p.ladderLevel}`, symbol:state.symbol, qty, price, valueUsd, reason:`Protecao ${useNormal ? 'normal' : 'extraordinaria'} da cesta` });
+      next.orders.unshift({ id: crypto.randomUUID(), at: now, side:`BUY_M${p.ladderLevel}`, symbol:state.symbol, qty, price, valueUsd, reason:`Proteção ${useNormal ? 'normal' : 'extraordinária'} executada no suporte ${supportPrice.toFixed(6)}` });
       return next;
     }
 

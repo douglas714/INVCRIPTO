@@ -94,6 +94,8 @@ insert into public.system_settings(key, value) values
     "arrojado": {"protection_gap_pct": 0.3, "max_concurrent_baskets": 1},
     "alavancagem": {"protection_gap_pct": 0.15, "max_concurrent_baskets": 5}
   },
-  "offline_protection": "Binance OPO: compra LIMIT de protecao + venda LIMIT automatica da nova mao"
+  "offline_protection": "Binance OPO: compra LIMIT no proximo suporte abaixo do intervalo minimo + venda LIMIT automatica da nova mao",
+  "support_aware_entry": true,
+  "reprice_protection_only_down": true
 }'::jsonb)
 on conflict (key) do update set value = excluded.value, updated_at = now();

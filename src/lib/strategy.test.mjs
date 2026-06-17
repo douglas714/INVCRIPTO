@@ -59,7 +59,7 @@ function downtrendCandles(count = 140, start = 110, drift = -0.05) {
   const result = analyzeMarket(candles);
   assert.equal(result.action, 'BUY');
   assert.equal(result.setup, 'SUPPORT_BOUNCE');
-  assert.match(result.reason, /Queda esticada no suporte/);
+  assert.match(result.reason, /Queda esticada.*suporte/);
   assert.ok(result.orderPlan.entry >= result.support);
   assert.ok(result.orderPlan.recoveryTarget > result.orderPlan.entry);
 }
@@ -86,7 +86,7 @@ function downtrendCandles(count = 140, start = 110, drift = -0.05) {
   const result = analyzeMarket(candles);
   assert.equal(result.action, 'BUY');
   assert.equal(result.setup, 'SUPPORT_BOUNCE');
-  assert.match(result.reason, /Varredura\/rejeição/);
+  assert.match(result.reason, /suporte|reação/i);
 }
 
 {

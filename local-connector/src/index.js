@@ -5,12 +5,14 @@ import {
   TARGET_NET_PCT,
   allocateBasketBudget,
   netTargetPrice,
-  nextProtectionPrice,
   nextProtectionQuote,
+  normalizeKlineRows,
   normalizeProfileName,
   profileRules,
   roundTripRates,
-  summarizeBasketOrders
+  summarizeBasketOrders,
+  supportAwareProtectionPrice,
+  supportEntryContext
 } from './basket-policy.js';
 
 process.stdout?.on?.('error', error => {
@@ -300,7 +302,7 @@ async function heartbeat(status = 'online', metadata = {}) {
     name: cfg.nodeName,
     status,
     public_ip: ip,
-    app_version: '1.1.0-baskets-offline',
+    app_version: '1.2.0-support-aware-baskets',
     last_seen_at: new Date().toISOString(),
     metadata
   };
@@ -439,6 +441,25 @@ async function signedCancelOrder({ apiKey, apiSecret, environment, symbol, order
   return { ok: response.ok, status: response.status, payload };
 }
 
+async function signedCancelOrderList({ apiKey, apiSecret, environment, symbol, orderListId }) {
+  const query = new URLSearchParams({
+    symbol,
+    orderListId: String(orderListId),
+    timestamp: String(Date.now()),
+    recvWindow: '5000'
+  }).toString();
+  const signature = sign(query, apiSecret);
+  const url = `${binanceBase(environment)}/api/v3/orderList?${query}&signature=${signature}`;
+  const response = await fetch(url, {
+    method: 'DELETE',
+    headers: { 'X-MBX-APIKEY': apiKey }
+  });
+  const text = await response.text();
+  let payload;
+  try { payload = JSON.parse(text); } catch { payload = { raw: text }; }
+  return { ok: response.ok, status: response.status, payload };
+}
+
 async function signedOpenOrders({ apiKey, apiSecret, environment, symbol }) {
   const params = { timestamp: String(Date.now()), recvWindow: '5000' };
   if (symbol) params.symbol = symbol;
@@ -536,6 +557,18 @@ async function klines(symbol, interval = '15m', limit = 320) {
   const response = await fetch(`${cfg.spotUrl}/api/v3/klines?symbol=${encodeURIComponent(symbol)}&interval=${encodeURIComponent(interval)}&limit=${Number(limit || 320)}`);
   const payload = await response.json().catch(() => []);
   return { ok: response.ok, status: response.status, payload };
+}
+
+async function closedMarketCandles(symbol, interval = '5m', limit = 320) {
+  const response = await klines(symbol, interval, limit);
+  if (!response.ok || !Array.isArray(response.payload)) {
+    throw new Error(`Falha ao ler candles ${symbol}/${interval}: ${JSON.stringify(response.payload)}`);
+  }
+  const rows = normalizeKlineRows(response.payload);
+  if (!rows.length) throw new Error(`Nenhum candle valido para ${symbol}/${interval}.`);
+  const now = Date.now();
+  const last = rows.at(-1);
+  return last?.closeTime && last.closeTime > now ? rows.slice(0, -1) : rows;
 }
 
 function baseAssetFromSymbol(symbol) {
@@ -1053,14 +1086,62 @@ async function placeBasketTakeProfit({ basket, summary, orders, credential, apiK
   return { sellOrderId: sell.payload?.orderId, sellPrice, sellQty: openQty };
 }
 
-async function placeNextOfflineProtection({ basket, orders, credential, apiKey, apiSecret, environment, filters, command = null }) {
-  const activeProtection = (orders || []).find(order =>
-    String(order.side || '').toUpperCase() === 'BUY' &&
-    String(order.protection_role || '') === 'protection_buy' &&
-    ['new', 'open', 'pending_new', 'partially_filled'].includes(String(order.status || '').toLowerCase())
-  );
-  if (activeProtection) return { skipped: true, reason: 'protection_already_open', orderId: activeProtection.binance_order_id };
+async function cancelOpenProtectionOrderList({ basket, activeProtection, orders, apiKey, apiSecret, environment }) {
+  const listId = String(activeProtection?.order_list_id || '');
+  let response;
+  if (listId) {
+    response = await signedCancelOrderList({
+      apiKey,
+      apiSecret,
+      environment,
+      symbol: basket.symbol,
+      orderListId: listId
+    });
+  } else {
+    response = await signedCancelOrder({
+      apiKey,
+      apiSecret,
+      environment,
+      symbol: basket.symbol,
+      orderId: activeProtection.binance_order_id
+    });
+  }
+  if (!response.ok && ![-2011, -2026].includes(Number(response.payload?.code))) {
+    throw new Error(`Falha ao reposicionar protecao antiga: ${JSON.stringify(response.payload)}`);
+  }
+  if (listId) {
+    for (const row of (orders || []).filter(item => String(item.order_list_id || '') === listId)) {
+      await updateRows('real_orders', {
+        status: 'canceled',
+        raw_response: {
+          ...(row.raw_response || {}),
+          cancel_response: response.payload,
+          invcripto: {
+            ...(row.raw_response?.invcripto || {}),
+            canceled_for_lower_support: true,
+            canceled_at: new Date().toISOString()
+          }
+        }
+      }, [eqFilter('id', row.id)]).catch(() => null);
+    }
+  } else if (activeProtection?.id) {
+    await updateRows('real_orders', {
+      status: 'canceled',
+      raw_response: {
+        ...(activeProtection.raw_response || {}),
+        cancel_response: response.payload,
+        invcripto: {
+          ...(activeProtection.raw_response?.invcripto || {}),
+          canceled_for_lower_support: true,
+          canceled_at: new Date().toISOString()
+        }
+      }
+    }, [eqFilter('id', activeProtection.id)]).catch(() => null);
+  }
+  return response;
+}
 
+async function placeNextOfflineProtection({ basket, orders, credential, apiKey, apiSecret, environment, filters, command = null }) {
   const usage = basketBucketUsage(orders);
   const normalRemaining = Math.max(0, Number(basket.normal_budget_usdt || 0) - usage.normalUsed);
   const emergencyRemaining = Math.max(0, Number(basket.emergency_budget_usdt || 0) - usage.emergencyUsed);
@@ -1083,13 +1164,82 @@ async function placeNextOfflineProtection({ basket, orders, credential, apiKey, 
 
   const basePrice = Number(basket.last_buy_price || 0);
   if (!basePrice) return { skipped: true, reason: 'missing_last_buy_price' };
-  const rawProtectionPrice = nextProtectionPrice({
+  const rules = profileRules(basket.profile_name);
+  const marketInterval = next.emergency ? '1h' : rules.timeframe;
+  const marketCandles = await closedMarketCandles(basket.symbol, marketInterval, next.emergency ? 500 : 360);
+  const liveTicker = await ticker(basket.symbol).catch(() => null);
+  const currentPrice = Number(liveTicker?.payload?.lastPrice || marketCandles.at(-1)?.close || 0);
+  const supportPlan = supportAwareProtectionPrice({
+    candles: marketCandles,
     lastBuyPrice: basePrice,
-    gapPct: Number(basket.protection_gap_pct || 1),
-    emergency: next.emergency
+    gapPct: Number(basket.protection_gap_pct || rules.protectionGapPct),
+    emergency: next.emergency,
+    entryBufferPct: next.emergency ? 0.03 : 0.08,
+    currentPrice
   });
-  const protectionPrice = floorToStep(rawProtectionPrice, filters.tickSize);
-  let quantity = floorToStep(next.quote / protectionPrice, filters.stepSize);
+  if (!supportPlan.price || !supportPlan.support) {
+    await updateRows('real_baskets', {
+      next_protection_price: null,
+      next_protection_quote: next.quote,
+      next_protection_bucket: next.bucket,
+      metadata: {
+        ...(basket.metadata || {}),
+        protection_waiting_for_support: {
+          reason: supportPlan.reason,
+          triggerPrice: supportPlan.triggerPrice,
+          currentPrice,
+          interval: marketInterval,
+          checkedAt: new Date().toISOString()
+        }
+      }
+    }, [eqFilter('id', basket.id)]).catch(() => null);
+    return { skipped: true, reason: supportPlan.reason, triggerPrice: supportPlan.triggerPrice };
+  }
+
+  const protectionPrice = floorToStep(supportPlan.price, filters.tickSize);
+  if (!protectionPrice || protectionPrice >= basePrice) {
+    return { skipped: true, reason: 'invalid_support_protection_price', protectionPrice, basePrice };
+  }
+
+  const activeProtection = (orders || []).find(order =>
+    String(order.side || '').toUpperCase() === 'BUY' &&
+    String(order.protection_role || '') === 'protection_buy' &&
+    ['new', 'open', 'pending_new', 'partially_filled'].includes(String(order.status || '').toLowerCase())
+  );
+  if (activeProtection) {
+    const activePrice = Number(activeProtection.price || 0);
+    const partiallyFilled = Number(activeProtection.executed_qty || 0) > 0
+      || String(activeProtection.status || '').toLowerCase() === 'partially_filled';
+    // Nunca movemos uma protecao para cima. Reposicionamos somente quando o
+    // suporte novo exige uma compra materialmente mais baixa.
+    if (partiallyFilled || activePrice <= protectionPrice * 1.0012) {
+      return {
+        skipped: true,
+        reason: 'protection_already_open_at_support_or_lower',
+        orderId: activeProtection.binance_order_id,
+        activePrice,
+        desiredPrice: protectionPrice,
+        support: supportPlan.support
+      };
+    }
+    await cancelOpenProtectionOrderList({
+      basket,
+      activeProtection,
+      orders,
+      apiKey,
+      apiSecret,
+      environment
+    });
+    await log('info', 'offline_protection_repriced', `Protecao de ${basket.symbol} foi movida para suporte mais baixo.`, {
+      basketId: basket.id,
+      oldPrice: activePrice,
+      newPrice: protectionPrice,
+      support: supportPlan.support,
+      triggerPrice: supportPlan.triggerPrice
+    }, command || { user_id: basket.user_id });
+  }
+
+  const quantity = floorToStep(next.quote / protectionPrice, filters.stepSize);
   if (quantity < filters.minQty || quantity * protectionPrice < filters.minNotional) {
     return { skipped: true, reason: 'protection_below_binance_minimum', quantity, protectionPrice };
   }
@@ -1149,8 +1299,6 @@ async function placeNextOfflineProtection({ basket, orders, credential, apiKey, 
         pendingSide: 'SELL',
         pendingClientOrderId: sellClientOrderId,
         pendingPrice: formatDecimal(handTargetPrice, filters.tickSize),
-        // OTO exige quantidade explicita. Mantemos uma pequena folga para o
-        // caso de a comissao da compra ser debitada no proprio ativo-base.
         pendingQuantity: formatDecimal(
           floorToStep(quantity * Math.max(0.995, 1 - rates.buyRate - 0.0002), filters.stepSize),
           filters.stepSize
@@ -1173,7 +1321,12 @@ async function placeNextOfflineProtection({ basket, orders, credential, apiKey, 
     bucket: next.bucket,
     list_type: listType,
     quote_planned: next.quote,
-    rates
+    rates,
+    support: supportPlan.support,
+    trigger_price: supportPlan.triggerPrice,
+    current_price_when_planned: currentPrice,
+    market_interval: marketInterval,
+    support_reason: supportPlan.reason
   };
 
   const protectionRows = [{
@@ -1187,7 +1340,7 @@ async function placeNextOfflineProtection({ basket, orders, credential, apiKey, 
     order_type: 'LIMIT',
     status: String(buyReport.status || 'NEW').toLowerCase(),
     protection_role: 'protection_buy',
-    timeframe: 'auto',
+    timeframe: marketInterval,
     client_order_id: String(buyReport.clientOrderId || buyClientOrderId),
     binance_order_id: String(buyReport.orderId || orderList.payload?.orders?.[0]?.orderId || ''),
     quote_order_qty: next.quote,
@@ -1195,7 +1348,7 @@ async function placeNextOfflineProtection({ basket, orders, credential, apiKey, 
     price: protectionPrice,
     executed_qty: Number(buyReport.executedQty || 0),
     cummulative_quote_qty: Number(buyReport.cummulativeQuoteQty || 0),
-    reason: `Protecao ${next.bucket} a ${Number(basket.protection_gap_pct || 0).toFixed(2)}% da ultima compra.`,
+    reason: `Protecao ${next.bucket}: intervalo minimo ${Number(basket.protection_gap_pct || 0).toFixed(2)}%, posicionada no suporte ${Number(supportPlan.support).toFixed(8)}.`,
     raw_response: { ...buyReport, invcripto: commonMeta }
   }, {
     user_id: basket.user_id,
@@ -1208,14 +1361,14 @@ async function placeNextOfflineProtection({ basket, orders, credential, apiKey, 
     order_type: 'LIMIT',
     status: String(sellReport.status || 'PENDING_NEW').toLowerCase(),
     protection_role: 'protection_hand_take_profit',
-    timeframe: 'auto',
+    timeframe: marketInterval,
     client_order_id: String(sellReport.clientOrderId || sellClientOrderId),
     binance_order_id: String(sellReport.orderId || orderList.payload?.orders?.[1]?.orderId || ''),
     quantity: listType === 'OTO'
       ? floorToStep(quantity * Math.max(0.995, 1 - rates.buyRate - 0.0002), filters.stepSize)
       : quantity,
     price: handTargetPrice,
-    reason: `Venda automatica da nova mao, ativada pela Binance mesmo sem internet local.`,
+    reason: 'Venda automatica da nova mao, ativada pela Binance mesmo sem internet local.',
     raw_response: { ...sellReport, invcripto: commonMeta }
   }];
   try {
@@ -1239,6 +1392,15 @@ async function placeNextOfflineProtection({ basket, orders, credential, apiKey, 
     emergency_used_usdt: usage.emergencyUsed,
     metadata: {
       ...(basket.metadata || {}),
+      next_support_plan: {
+        support: supportPlan.support,
+        triggerPrice: supportPlan.triggerPrice,
+        protectionPrice,
+        currentPrice,
+        interval: marketInterval,
+        reason: supportPlan.reason,
+        plannedAt: new Date().toISOString()
+      },
       last_offline_protection: {
         listType,
         orderListId,
@@ -1248,15 +1410,28 @@ async function placeNextOfflineProtection({ basket, orders, credential, apiKey, 
       }
     }
   }, [eqFilter('id', basket.id)]);
-  await log('info', 'offline_protection_created', `Proxima protecao de ${basket.symbol} ficou posicionada na Binance.`, {
+  await log('info', 'offline_protection_created', `Proxima protecao de ${basket.symbol} ficou posicionada no suporte da Binance.`, {
     basketId: basket.id,
     listType,
     protectionPrice,
+    support: supportPlan.support,
+    triggerPrice: supportPlan.triggerPrice,
     quote: next.quote,
     bucket: next.bucket,
-    handTargetPrice
+    handTargetPrice,
+    marketInterval
   }, command || { user_id: basket.user_id });
-  return { listType, orderListId, protectionPrice, quote: next.quote, bucket: next.bucket, handTargetPrice };
+  return {
+    listType,
+    orderListId,
+    protectionPrice,
+    support: supportPlan.support,
+    triggerPrice: supportPlan.triggerPrice,
+    quote: next.quote,
+    bucket: next.bucket,
+    handTargetPrice,
+    marketInterval
+  };
 }
 
 async function handleProtectedSpotBuy(command) {
@@ -1320,7 +1495,77 @@ async function handleProtectedSpotBuy(command) {
     throw new Error(`Saldo USDT insuficiente. Necessario ${quoteOrderQty.toFixed(2)} USDT, disponivel ${availableUsdt.toFixed(8)} USDT.`);
   }
 
+  // Revalida a oportunidade no conector imediatamente antes da ordem. O
+  // navegador pode estar com alguns segundos de atraso; a Binance não recebe
+  // compra se o preço já saiu da zona de suporte ou encostou na resistência.
+  const marketContextFromPanel = payload.marketContext && typeof payload.marketContext === 'object'
+    ? payload.marketContext
+    : {};
+  const entryCandles = await closedMarketCandles(symbol, rules.timeframe, 360);
+  const liveTicker = await ticker(symbol);
+  if (!liveTicker.ok) throw new Error(`Falha ao confirmar preco atual de ${symbol}: ${JSON.stringify(liveTicker.payload)}`);
+  const currentPrice = Number(liveTicker.payload?.lastPrice || entryCandles.at(-1)?.close || 0);
+  const liveEntry = supportEntryContext(entryCandles, {
+    currentPrice,
+    windowBars: rules.timeframe === '1m' ? 6 : 4,
+    lookback: 180
+  });
+  const panelMaxEntry = Number(marketContextFromPanel.maxEntryPrice || 0);
+  const liveMaxEntry = Number(liveEntry.maxEntryPrice || 0);
+  const entryCeiling = Math.min(
+    liveMaxEntry || Number.POSITIVE_INFINITY,
+    panelMaxEntry || Number.POSITIVE_INFINITY
+  );
+  const resistanceRoom = Math.min(
+    Number(liveEntry.distanceToResistancePct || 0),
+    Number(marketContextFromPanel.distanceToResistancePct || liveEntry.distanceToResistancePct || 0)
+  );
+  const requiredRoom = Math.max(
+    Number(liveEntry.requiredRoomPct || 0),
+    Number(marketContextFromPanel.requiredRoomPct || 0)
+  );
+  if (!liveEntry.valid || !Number.isFinite(entryCeiling) || currentPrice > entryCeiling || resistanceRoom < requiredRoom) {
+    return {
+      environment,
+      symbol,
+      skipped: true,
+      reason: liveEntry.reason || 'entry_outside_support_zone',
+      currentPrice,
+      support: liveEntry.support,
+      maxEntryPrice: Number.isFinite(entryCeiling) ? entryCeiling : liveMaxEntry,
+      resistance: liveEntry.resistance,
+      distanceToResistancePct: resistanceRoom,
+      requiredRoomPct: requiredRoom,
+      message: 'Compra cancelada antes de chegar à Binance: o preço saiu da zona de suporte ou a resistência ficou próxima.'
+    };
+  }
+
   let basket = await createRealBasket({ userId: command.user_id, environment, symbol, profileName, accountUsdt });
+  basket = {
+    ...basket,
+    metadata: {
+      ...(basket.metadata || {}),
+      entry_market_context: {
+        panel: marketContextFromPanel,
+        connector: liveEntry,
+        currentPrice,
+        entryCeiling,
+        checkedAt: new Date().toISOString()
+      }
+    }
+  };
+  await updateRows('real_baskets', { metadata: basket.metadata }, [eqFilter('id', basket.id)]).catch(() => null);
+
+  const buyLimitPrice = floorToStep(entryCeiling, filters.tickSize);
+  const buyQuantity = floorToStep(quoteOrderQty / buyLimitPrice, filters.stepSize);
+  if (buyQuantity < filters.minQty || buyQuantity * buyLimitPrice < filters.minNotional) {
+    await updateRows('real_baskets', {
+      status: 'error',
+      metadata: { ...(basket.metadata || {}), entry_error: 'below_binance_minimum', buyLimitPrice, buyQuantity }
+    }, [eqFilter('id', basket.id)]).catch(() => null);
+    throw new Error('Entrada de US$ 10 ficou abaixo do mínimo permitido pela Binance após o arredondamento.');
+  }
+
   const compactId = command.id.replaceAll('-', '');
   const buyClientOrderId = `INVBUY_${compactId.slice(0, 24)}`;
   const buy = await signedOrder({
@@ -1330,19 +1575,40 @@ async function handleProtectedSpotBuy(command) {
     params: {
       symbol,
       side: 'BUY',
-      type: 'MARKET',
-      quoteOrderQty: quoteOrderQty.toFixed(2),
+      type: 'LIMIT',
+      timeInForce: 'FOK',
+      quantity: formatDecimal(buyQuantity, filters.stepSize),
+      price: formatDecimal(buyLimitPrice, filters.tickSize),
       newClientOrderId: buyClientOrderId,
       newOrderRespType: 'FULL'
     }
   });
-  if (!buy.ok) {
-    await updateRows('real_baskets', { status: 'error', metadata: { ...(basket.metadata || {}), buy_error: buy.payload } }, [eqFilter('id', basket.id)]).catch(() => null);
-    throw new Error(`Compra Binance rejeitada: ${JSON.stringify(buy.payload)}`);
+  const buyStatus = String(buy.payload?.status || '').toUpperCase();
+  if (!buy.ok || buyStatus !== 'FILLED') {
+    await updateRows('real_baskets', {
+      status: 'closed',
+      closed_at: new Date().toISOString(),
+      metadata: {
+        ...(basket.metadata || {}),
+        entry_not_filled: true,
+        buy_error: buy.payload,
+        buyLimitPrice,
+        currentPrice
+      }
+    }, [eqFilter('id', basket.id)]).catch(() => null);
+    return {
+      environment,
+      symbol,
+      skipped: true,
+      reason: 'support_limit_not_filled',
+      currentPrice,
+      buyLimitPrice,
+      message: 'A compra limitada ao suporte não encontrou execução completa e foi cancelada sem perseguir o preço.'
+    };
   }
 
   const executedQty = Number(buy.payload?.executedQty || 0);
-  const cummulativeQuoteQty = Number(buy.payload?.cummulativeQuoteQty || quoteOrderQty);
+  const cummulativeQuoteQty = Number(buy.payload?.cummulativeQuoteQty || (executedQty * buyLimitPrice));
   const avgPrice = executedQty > 0 ? cummulativeQuoteQty / executedQty : 0;
   try {
     await insertBasketOrder({
@@ -1352,19 +1618,28 @@ async function handleProtectedSpotBuy(command) {
       basket_id: basket.id,
       profile_name: profileName,
       side: 'BUY',
-      order_type: 'MARKET',
+      order_type: 'LIMIT',
       status: String(buy.payload?.status || 'FILLED').toLowerCase(),
       protection_role: 'entry',
       timeframe,
       client_order_id: buyClientOrderId,
       binance_order_id: String(buy.payload?.orderId || ''),
-      quote_order_qty: quoteOrderQty,
+      quote_order_qty: cummulativeQuoteQty,
       quantity: executedQty,
       price: avgPrice,
       executed_qty: executedQty,
       cummulative_quote_qty: cummulativeQuoteQty,
       reason,
-      raw_response: { ...buy.payload, invcripto: { basket_id: basket.id, bucket: 'normal', profile_name: profileName } }
+      raw_response: { ...buy.payload, invcripto: {
+        basket_id: basket.id,
+        bucket: 'normal',
+        profile_name: profileName,
+        support: liveEntry.support,
+        max_entry_price: entryCeiling,
+        resistance: liveEntry.resistance,
+        current_price_before_order: currentPrice,
+        support_entry_capped: true
+      } }
     });
   } catch (auditError) {
     // A compra ja aconteceu na Binance. Mesmo sem conseguir gravar no banco,
@@ -1421,7 +1696,7 @@ async function handleProtectedSpotBuy(command) {
   const protection = await placeNextOfflineProtection({ basket: refreshedBasket, orders: ordersAfterSell, credential, apiKey, apiSecret, environment, filters, command });
   const refreshed = await refreshCredentialBalance(credential, apiKey, apiSecret, environment).catch(() => null);
 
-  dashboard.lastProtectedOrder = `${symbol} M1 BUY 10.00 -> SELL ${takeProfit?.sellPrice || '-'} | PROTECAO ${protection?.protectionPrice || '-'}`;
+  dashboard.lastProtectedOrder = `${symbol} SUPORTE BUY ${avgPrice || buyLimitPrice} -> SELL ${takeProfit?.sellPrice || '-'} | PROTECAO ${protection?.protectionPrice || '-'}`;
   dashboard.lastUsdt = refreshed?.free ?? Math.max(0, availableUsdt - quoteOrderQty);
   dashboard.lastSync = new Date().toLocaleString('pt-BR');
 
@@ -1432,7 +1707,11 @@ async function handleProtectedSpotBuy(command) {
     profileName,
     protectionGapPct: rules.protectionGapPct,
     maxConcurrentBaskets: rules.maxConcurrentBaskets,
-    quoteOrderQty,
+    quoteOrderQty: cummulativeQuoteQty,
+    requestedQuoteOrderQty: quoteOrderQty,
+    buyLimitPrice,
+    support: liveEntry.support,
+    maxEntryPrice: entryCeiling,
     buyOrderId: buy.payload?.orderId,
     executedQty,
     avgPrice,

@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { createTargetPreviewOrder, initialPaperState, runPaperDecision } from '../lib/paperBot.js';
-import { analyzeMarket, supportResistance } from '../lib/strategy.js';
+import { analyzeMarket } from '../lib/strategy.js';
 import { brl, usd, usdt, env, num } from '../lib/format.js';
 import { supabase, hasSupabase } from '../lib/supabase.js';
 import { Activity, BarChart3, Bot, Brain, CheckCircle2, CreditCard, Gauge, History, KeyRound, MonitorPlay, Pause, Play, RefreshCw, Settings, ShieldCheck, SlidersHorizontal, Sparkles, StopCircle, TrendingUp, Wallet } from 'lucide-react';
@@ -280,7 +280,19 @@ export default function ClientPanel({user}){
             timeframe,
             score:Number(analysis.score || 0),
             reason:`Auto Trading INVCRIPTO: ${analysis.reason || 'setup BUY confirmado'}`,
-            profileName:state.profileName || 'conservador'
+            profileName:state.profileName || 'conservador',
+            marketContext:{
+              support:Number(analysis.support || 0),
+              resistance:Number(analysis.resistance || 0),
+              plannedEntryPrice:Number(plan.entry || 0),
+              maxEntryPrice:Number(analysis.maxEntryPrice || plan.maxEntryPrice || 0),
+              maxEntryDistancePct:Number(analysis.maxEntryDistancePct || 0),
+              distanceToResistancePct:Number(analysis.distanceToResistancePct || 0),
+              requiredRoomPct:Number(analysis.requiredRoomPct || 0),
+              barsSinceSupportTouch:analysis.barsSinceSupportTouch,
+              supportSignal:Boolean(analysis.supportSignal),
+              setup:String(analysis.setup || '')
+            }
           })
         });
         const payload = await response.json().catch(()=>({}));
@@ -527,20 +539,29 @@ function TradingChart({candles,analysis,timeframe,symbol,orders=[]}){
   const endIndex = Math.max(0, all.length - normalizedOffset);
   const startIndex = Math.max(0, endIndex - visibleCount);
   const safeCandles = all.slice(startIndex,endIndex);
-  const sr = safeCandles.length ? supportResistance(safeCandles,48) : null;
-  const orderMarkers = (orders || [])
-    .filter(order=>order.symbol===symbol && Number(order.price || 0) > 0)
+  // O gráfico usa exatamente os mesmos níveis calculados pela estratégia.
+  const sr = analysis?.support && analysis?.resistance
+    ? { support:Number(analysis.support), resistance:Number(analysis.resistance) }
+    : null;
+  const relevantOrders = (orders || [])
+    .filter(order=>String(order.symbol || '').replace('/','').toUpperCase()===symbol && Number(order.price || 0) > 0)
     .filter(order=>{
       const side = String(order.side || '').toUpperCase();
       return side.includes('BUY') || side.includes('SELL');
-    })
-    .slice(0,12);
+    });
+  const openStatuses = new Set(['new','open','pending_new','partially_filled','queued','running']);
+  const orderMarkers = relevantOrders
+    .filter(order=>openStatuses.has(String(order.status || '').toLowerCase()) || String(order.side || '').toUpperCase()==='REAL_QUEUED')
+    .slice(0,10);
+  const filledBuyMarkers = relevantOrders
+    .filter(order=>String(order.side || '').toUpperCase().includes('BUY') && String(order.status || '').toLowerCase()==='filled')
+    .slice(0,8);
   const rawMax = safeCandles.length ? Math.max(...safeCandles.map(c=>c.high)) : 1;
   const rawMin = safeCandles.length ? Math.min(...safeCandles.map(c=>c.low)) : 0;
-  const plannedSupportEntry = analysis?.action === 'BUY' && analysis?.setup === 'SUPPORT_BOUNCE'
+  const plannedSupportEntry = analysis?.action === 'BUY' && String(analysis?.setup || '').includes('SUPPORT')
     ? Number(analysis?.orderPlan?.entry || 0)
     : 0;
-  const markerPrices = [...orderMarkers.map(order=>Number(order.price || 0)), ...(plannedSupportEntry > 0 ? [plannedSupportEntry] : [])];
+  const markerPrices = [...orderMarkers.map(order=>Number(order.price || 0)), ...filledBuyMarkers.map(order=>Number(order.price || 0)), ...(plannedSupportEntry > 0 ? [plannedSupportEntry] : [])];
   const max = Math.max(rawMax, ...markerPrices);
   const min = Math.min(rawMin, ...markerPrices);
   const range = Math.max(1, max-min);
@@ -611,7 +632,8 @@ function TradingChart({candles,analysis,timeframe,symbol,orders=[]}){
           const isSell = side.includes('SELL');
           const price = Number(order.price || 0);
           const yy = y(price);
-          const label = `${isSell ? 'VENDA' : 'COMPRA'} ${price.toFixed(2)}`;
+          const role=String(order.protectionRole || order.protection_role || '').toLowerCase();
+          const label = `${isSell ? 'VENDA ABERTA' : role.includes('protection') ? 'PROTEÇÃO ABERTA' : 'COMPRA ABERTA'} ${price.toFixed(2)}`;
           const labelWidth = Math.max(112, label.length * 8);
           const x = isSell ? width - labelWidth - 12 : 12;
           const markerY = Math.max(24, Math.min(368, yy + (index % 3) * 3));
@@ -619,6 +641,18 @@ function TradingChart({candles,analysis,timeframe,symbol,orders=[]}){
             <line x1="0" x2={width} y1={yy} y2={yy} className={isSell?'order-line sell':'order-line buy'}/>
             <rect x={x} y={markerY-15} width={labelWidth} height="26" rx="8" className={isSell?'order-tag sell':'order-tag buy'}/>
             <text x={x+10} y={markerY+3} className={isSell?'chart-label order sell':'chart-label order buy'}>{label}</text>
+          </g>
+        })}
+        {filledBuyMarkers.map((order,index)=>{
+          const price=Number(order.price || 0);
+          const orderTime=Math.floor(new Date(order.at || order.created_at || 0).getTime()/1000);
+          let candleIndex=safeCandles.findIndex(candle=>Number(candle.time || 0)>=orderTime);
+          if(candleIndex<0) candleIndex=safeCandles.length-1;
+          const x=(Math.max(0,candleIndex)+0.5)*width/safeCandles.length;
+          const yy=y(price);
+          return <g key={`${order.id || index}-filled-buy`}>
+            <circle cx={x} cy={yy} r="7" className="filled-buy-dot"/>
+            <text x={Math.min(width-185,x+10)} y={Math.max(24,yy-10)} className="chart-label order buy">COMPRA EXECUTADA {price.toFixed(2)}</text>
           </g>
         })}
         <polyline points={safeCandles.map((c,i)=>`${(i+0.5)*width/safeCandles.length},${y(c.close)}`).join(' ')} className="close-line" fill="none"/>
@@ -767,7 +801,19 @@ function TargetOrderPreview({state,symbol,timeframe,analysis,createTargetOrder,a
           targetPrice:Number(view.recoveryTarget || view.target1 || 0),
           score:Number(analysis?.score || 0),
           reason:analysis?.reason || 'Entrada protegida INVCRIPTO',
-          profileName:state.profileName || 'conservador'
+          profileName:state.profileName || 'conservador',
+          marketContext:{
+            support:Number(analysis?.support || 0),
+            resistance:Number(analysis?.resistance || 0),
+            plannedEntryPrice:Number(view.price || 0),
+            maxEntryPrice:Number(analysis?.maxEntryPrice || plan?.maxEntryPrice || 0),
+            maxEntryDistancePct:Number(analysis?.maxEntryDistancePct || 0),
+            distanceToResistancePct:Number(analysis?.distanceToResistancePct || 0),
+            requiredRoomPct:Number(analysis?.requiredRoomPct || 0),
+            barsSinceSupportTouch:analysis?.barsSinceSupportTouch,
+            supportSignal:Boolean(analysis?.supportSignal),
+            setup:String(analysis?.setup || '')
+          }
         })
       });
       const payload = await response.json().catch(()=>({}));
@@ -780,7 +826,7 @@ function TargetOrderPreview({state,symbol,timeframe,analysis,createTargetOrder,a
     }
   }
 
-  return <div className="info-card panel-glow"><h3>Ordem alvo 1</h3><div className="pair-row"><span className="badge ok">{view.status}</span><strong>{symbol.replace('USDT','/USDT')}</strong></div><p><span>Timeframe:</span><b>{String(view.timeframe || '15m').toUpperCase()}</b></p><p><span>Tipo:</span><b>{accountMode==='live'?'Compra mercado + venda limite Binance':'Compra limite paper'}</b></p><p><span>Entrada mão 1:</span><b>{view.price.toFixed(6)}</b></p><p><span>Quantidade estimada:</span><b>{num(view.qty,8)}</b></p><p><span>Valor mão 1:</span><b>{usd(view.valueUsd)}</b></p><p><span>Stop estrutural:</span><b>{view.stopLoss.toFixed(6)}</b></p><p><span>Alvo 1:</span><b>{view.target1.toFixed(6)}</b></p><p><span>Venda protegida:</span><b>{view.recoveryTarget?.toFixed?.(6) || '-'}</b></p><p><span>Risco / ganho alvo 1:</span><b>{usd(view.riskUsd)} / {usd(view.potentialProfitUsd)}</b></p><p><span>R/R:</span><b>{num(view.riskReward,2)}</b></p><p><span>Confiança:</span><b>{view.confidence}/100</b></p>{view.ladder?.length&&<div><h4>Proteções da cesta</h4>{view.ladder.map(hand=><p key={hand.level}><span>{hand.label} x{hand.multiplier}:</span><b>{hand.entry.toFixed(6)}</b></p>)}</div>}<button className="btn primary small" type="button" onClick={createTargetOrder}>Salvar prévia alvo 1</button>{accountMode==='live'&&<button className="btn danger small" type="button" onClick={sendProtectedOrder} disabled={sending || state.active}>{sending?'Enviando...':state.active?'Envio automático ativo':'Enviar compra agora (manual)'}</button>}{message&&<div className="alert">{message}</div>}</div>
+  return <div className="info-card panel-glow"><h3>Ordem alvo 1</h3><div className="pair-row"><span className="badge ok">{view.status}</span><strong>{symbol.replace('USDT','/USDT')}</strong></div><p><span>Timeframe:</span><b>{String(view.timeframe || '15m').toUpperCase()}</b></p><p><span>Tipo:</span><b>{accountMode==='live'?'Compra limitada ao suporte + venda limite Binance':'Compra limitada ao suporte no paper'}</b></p><p><span>Entrada mão 1:</span><b>{view.price.toFixed(6)}</b></p><p><span>Quantidade estimada:</span><b>{num(view.qty,8)}</b></p><p><span>Valor mão 1:</span><b>{usd(view.valueUsd)}</b></p><p><span>Stop estrutural:</span><b>{view.stopLoss.toFixed(6)}</b></p><p><span>Alvo 1:</span><b>{view.target1.toFixed(6)}</b></p><p><span>Venda protegida:</span><b>{view.recoveryTarget?.toFixed?.(6) || '-'}</b></p><p><span>Risco / ganho alvo 1:</span><b>{usd(view.riskUsd)} / {usd(view.potentialProfitUsd)}</b></p><p><span>R/R:</span><b>{num(view.riskReward,2)}</b></p><p><span>Confiança:</span><b>{view.confidence}/100</b></p>{view.ladder?.length&&<div><h4>Proteções da cesta</h4>{view.ladder.map(hand=><p key={hand.level}><span>{hand.label} x{hand.multiplier}:</span><b>{hand.entry.toFixed(6)}</b></p>)}</div>}<button className="btn primary small" type="button" onClick={createTargetOrder}>Salvar prévia alvo 1</button>{accountMode==='live'&&<button className="btn danger small" type="button" onClick={sendProtectedOrder} disabled={sending || state.active}>{sending?'Enviando...':state.active?'Envio automático ativo':'Enviar compra agora (manual)'}</button>}{message&&<div className="alert">{message}</div>}</div>
 }
 function RecommendedCard({recommended,symbol,analysis,setSymbol,operateRecommended}){
   const isCurrent = recommended.symbol === symbol;

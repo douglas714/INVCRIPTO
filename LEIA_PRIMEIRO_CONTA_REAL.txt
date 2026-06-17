@@ -1,0 +1,17 @@
+INVCRIPTO — CONTA REAL SPOT
+
+Esta versão foi construída para o fluxo de operação em conta real Binance Spot.
+As correções de entrada no suporte, bloqueio por resistência, cesta 80/20,
+proteções por modalidade, venda GTC, ordens OPO/OTO, leitura de saldo e
+reconciliação são executadas pelo conector real.
+
+O modo demo existente no painel é apenas auxiliar e não substitui a validação
+do fluxo real. O robô sempre inicia pausado e só envia ordens depois da
+liberação do usuário.
+
+Antes da publicação:
+1. Execute supabase/12_cestas_offline_binance.sql.
+2. Publique o projeto completo no Netlify.
+3. Instale o conector incluído em public/downloads/ENVCRIPTO_CONNECTOR_LOCAL.zip.
+4. Preserve o .env do seu conector; nenhuma credencial real está no pacote.
+5. Confirme na Binance que saque está desativado e apenas leitura + Spot Trading estão habilitados.

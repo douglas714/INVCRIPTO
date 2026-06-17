@@ -55,13 +55,10 @@ Cadastre as chaves reais no Netlify em `Site settings > Environment variables`.
 - Pagamentos em BRL devem converter para ENV pela cotação do dólar/USDT no momento da confirmação.
 - Gráfico nativo SVG corrigido com candles visíveis, sem dependência externa.
 
-## Atualização V1.3 — entradas em suporte
+## Atualização V1.4 — suporte em toda a cesta
 
-A estratégia agora prioriza rejeições e recuperações confirmadas no suporte, inclusive velas de queda esticadas seguidas por reação compradora. Entradas próximas da resistência são bloqueadas quando não existe espaço suficiente para o alvo líquido, taxas, slippage e margem de volatilidade. O layout geral permanece inalterado.
-
-Validação rápida:
-
-```bash
-npm run test:strategy
-npm run build
-```
+- Entrada real limitada à zona de suporte; não compra acima do teto calculado.
+- Proteções usam o percentual do perfil somente como distância mínima e procuram suporte abaixo.
+- Reposicionamento automático de proteção antiga para suporte mais baixo.
+- Mesmos níveis de suporte e resistência no gráfico e no motor.
+- Bloqueio por resistência e janela de confirmação de vela esticada no suporte.

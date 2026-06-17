@@ -36,9 +36,35 @@ export async function handler(event) {
   const score = Number(body.score || 0);
   const reason = String(body.reason || 'Entrada protegida INVCRIPTO').slice(0, 500);
   const requestedProfileName = String(body.profileName || '').trim().toLowerCase();
+  const rawMarketContext = body.marketContext && typeof body.marketContext === 'object' ? body.marketContext : {};
+  const marketContext = {
+    support: Number(rawMarketContext.support || 0),
+    resistance: Number(rawMarketContext.resistance || 0),
+    plannedEntryPrice: Number(rawMarketContext.plannedEntryPrice || 0),
+    maxEntryPrice: Number(rawMarketContext.maxEntryPrice || 0),
+    maxEntryDistancePct: Number(rawMarketContext.maxEntryDistancePct || 0),
+    distanceToResistancePct: Number(rawMarketContext.distanceToResistancePct || 0),
+    requiredRoomPct: Number(rawMarketContext.requiredRoomPct || 0),
+    barsSinceSupportTouch: rawMarketContext.barsSinceSupportTouch === null || rawMarketContext.barsSinceSupportTouch === undefined
+      ? null
+      : Number(rawMarketContext.barsSinceSupportTouch),
+    supportSignal: Boolean(rawMarketContext.supportSignal),
+    setup: String(rawMarketContext.setup || '').slice(0, 80)
+  };
 
   if (!allowedSymbols.has(symbol)) return json(400, { error: 'Par nao permitido para operacao real.' });
   if (environment === 'live' && score < 78) return json(400, { error: 'Score insuficiente para conta real.' });
+  if (environment === 'live') {
+    if (!marketContext.supportSignal || marketContext.support <= 0 || marketContext.maxEntryPrice <= 0) {
+      return json(400, { error: 'Entrada real bloqueada: falta confirmacao recente na zona de suporte.' });
+    }
+    if (marketContext.plannedEntryPrice > marketContext.maxEntryPrice * 1.0005) {
+      return json(400, { error: 'Entrada real bloqueada: preco planejado acima da zona maxima do suporte.' });
+    }
+    if (marketContext.distanceToResistancePct < marketContext.requiredRoomPct) {
+      return json(400, { error: 'Entrada real bloqueada: resistencia muito proxima para garantir o alvo liquido.' });
+    }
+  }
 
   const supabase = createClient(supabaseUrl, serviceKey, { auth: { persistSession: false } });
   const token = (event.headers.authorization || event.headers.Authorization || '').replace(/^Bearer\s+/i, '');
@@ -171,6 +197,7 @@ export async function handler(event) {
         score,
         reason,
         profileName,
+        marketContext,
         targetNetPct: 0.5,
         normalReservePct: 80,
         emergencyReservePct: 20
@@ -192,6 +219,7 @@ export async function handler(event) {
     quoteOrderQty,
     targetPrice,
     profileName,
+    marketContext,
     maxConcurrentBaskets,
     message: 'Ordem protegida enviada ao conector local. A compra e a venda serao criadas pela Binance via conector.'
   });

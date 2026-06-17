@@ -6,13 +6,20 @@
     "lint": "echo \"lint placeholder\""
   },
   "dependencies": {
-    "@vitejs/plugin-react": "latest",
-    "vite": "latest",
-    "react": "latest",
-    "react-dom": "latest",
-    "@supabase/supabase-js": "latest",
-    "lightweight-charts": "latest",
-    "lucide-react": "latest"
+    "@supabase/supabase-js": "2.45.4",
+    "@vitejs/plugin-react": "4.3.4",
+    "vite": "5.4.11",
+    "react": "18.2.0",
+    "react-dom": "18.2.0",
+    "lucide-react": "0.468.0"
   },
-  "devDependencies": {}
+  "devDependencies": {},
+  "name": "invcripto-ia",
+  "version": "1.0.5",
+  "type": "module",
+  "private": true,
+  "engines": {
+    "node": "20.x",
+    "npm": ">=10"
+  }
 }

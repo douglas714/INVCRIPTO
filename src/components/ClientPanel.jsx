@@ -7,6 +7,7 @@ import { Activity, BarChart3, Bot, Brain, CheckCircle2, CreditCard, Gauge, Histo
 
 const allowedSymbols = ['BTCUSDT','ETHUSDT','BNBUSDT','SOLUSDT','XRPUSDT','ADAUSDT','AVAXUSDT','DOGEUSDT','LINKUSDT','DOTUSDT','LTCUSDT','TRXUSDT'];
 const MIN_REAL_ORDER_USDT = 10;
+const mtfIntervals = Object.freeze({ '1m':260, '5m':320, '15m':320, '1h':300, '4h':260 });
 const operationProfiles = Object.freeze({
   conservador: Object.freeze({ label:'Conservador', gap:'1,00%', pairs:'1 moeda', timeframe:'5m', detail:'Proteções mais espaçadas e confirmação principal no M5.' }),
   moderado: Object.freeze({ label:'Moderado', gap:'0,50%', pairs:'1 moeda', timeframe:'5m', detail:'Equilíbrio entre frequência, proteção e preservação da banca.' }),
@@ -35,6 +36,27 @@ function normalizeClosedKlines(data){
   if(!rows.length) return rows;
   const last = rows.at(-1);
   return last?.closeTime && last.closeTime > Date.now() ? rows.slice(0,-1) : rows;
+}
+
+async function loadMultiTimeframeKlines(symbol){
+  const response=await fetch(`/.netlify/functions/binance-mtf?symbol=${symbol}`).catch(()=>null);
+  const payload=response ? await response.json().catch(()=>({})) : {};
+  if(response?.ok && payload?.ok) return payload.klines || {};
+
+  const entries=await Promise.all(Object.entries(mtfIntervals).map(async ([interval,limit])=>{
+    const urls=[
+      `https://api.binance.com/api/v3/klines?symbol=${symbol}&interval=${interval}&limit=${limit}`,
+      `https://data-api.binance.vision/api/v3/klines?symbol=${symbol}&interval=${interval}&limit=${limit}`
+    ];
+    for(const url of urls){
+      const direct=await fetch(url,{headers:{accept:'application/json'}}).catch(()=>null);
+      if(!direct?.ok) continue;
+      const rows=await direct.json().catch(()=>[]);
+      if(Array.isArray(rows) && rows.length) return [interval,rows];
+    }
+    return [interval,[]];
+  }));
+  return Object.fromEntries(entries);
 }
 
 function fallbackCandles(symbol, timeframe, count=320){
@@ -232,10 +254,8 @@ export default function ClientPanel({user}){
     setMultiTimeframeData({});
     async function loadMultiTimeframe(){
       try{
-        const response=await fetch(`/.netlify/functions/binance-mtf?symbol=${symbol}`);
-        const payload=await response.json().catch(()=>({}));
-        if(!response.ok || !payload?.ok) throw new Error(payload?.error || 'Falha na leitura multitemporal');
-        const normalized=Object.fromEntries(['1m','5m','15m','1h','4h'].map(tf=>[tf,normalizeClosedKlines(payload.klines?.[tf] || [])]));
+        const klines=await loadMultiTimeframeKlines(symbol);
+        const normalized=Object.fromEntries(Object.keys(mtfIntervals).map(tf=>[tf,normalizeClosedKlines(klines?.[tf] || [])]));
         const complete=['1m','5m','15m','1h','4h'].every(tf=>normalized[tf].length>=60);
         if(!closed){
           setMultiTimeframeData(normalized);
@@ -259,10 +279,8 @@ export default function ClientPanel({user}){
         if(closed) return;
         const rows=await Promise.all(batch.map(async radarSymbol=>{
           try{
-            const response=await fetch(`/.netlify/functions/binance-mtf?symbol=${radarSymbol}`);
-            const payload=await response.json().catch(()=>({}));
-            if(!response.ok || !payload?.ok) return [radarSymbol,null];
-            const tfData=Object.fromEntries(['1m','5m','15m','1h','4h'].map(tf=>[tf,normalizeClosedKlines(payload.klines?.[tf] || [])]));
+            const klines=await loadMultiTimeframeKlines(radarSymbol);
+            const tfData=Object.fromEntries(Object.keys(mtfIntervals).map(tf=>[tf,normalizeClosedKlines(klines?.[tf] || [])]));
             return [radarSymbol,analyzeMarketMultiTimeframe(tfData,{profileName:state.profileName || 'conservador',symbol:radarSymbol})];
           }catch{return [radarSymbol,null]}
         }));
@@ -1251,5 +1269,4 @@ function buildRadar(radarAnalyses,selectedAnalysis,selectedSymbol){
     return actionPriority || b.score-a.score;
   });
 }
-
 

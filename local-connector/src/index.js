@@ -1,5 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import crypto from 'node:crypto';
 import { fetchWithRetry, compactError, isNetworkError, sleep } from './resilient-http.js';
 import { accountReadiness } from './account-readiness.js';
@@ -20,25 +21,49 @@ import {
   multiTimeframeEntryContext
 } from './basket-policy.js';
 
-const APP_VERSION = '1.6.0-real-resilient';
-const APP_BUILD = '2026-06-18';
+const APP_VERSION = '1.6.4-real-spot-readiness-fixed';
+const APP_BUILD = '2026-06-18-spot-readiness-fixed';
+
+const CURRENT_FILE = fileURLToPath(import.meta.url);
+const SRC_DIR = path.dirname(CURRENT_FILE);
+const PROJECT_ROOT = path.resolve(SRC_DIR, '..');
+let loadedEnvPath = '';
 
 process.stdout?.on?.('error', error => {
   if (error?.code === 'EPIPE') process.exit(0);
 });
 
-function loadLocalEnv() {
-  if (!fs.existsSync('.env')) return;
-  const lines = fs.readFileSync('.env', 'utf8').split(/\r?\n/);
+function parseEnvFile(envPath) {
+  if (!envPath || !fs.existsSync(envPath)) return false;
+  const lines = fs.readFileSync(envPath, 'utf8').replace(/^\uFEFF/, '').split(/\r?\n/);
   for (const line of lines) {
-    const trimmed = line.trim();
+    const trimmed = line.trim().replace(/^\uFEFF/, '');
     if (!trimmed || trimmed.startsWith('#')) continue;
     const idx = trimmed.indexOf('=');
     if (idx <= 0) continue;
-    const key = trimmed.slice(0, idx).trim();
-    const value = trimmed.slice(idx + 1).trim();
-    if (!process.env[key]) process.env[key] = value;
+    const key = trimmed.slice(0, idx).trim().replace(/^\uFEFF/, '');
+    let value = trimmed.slice(idx + 1).trim();
+    if ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'"))) {
+      value = value.slice(1, -1);
+    }
+    if (!process.env[key] && value) process.env[key] = value;
   }
+  loadedEnvPath = envPath;
+  return true;
+}
+
+function loadLocalEnv() {
+  const candidates = [
+    process.env.INVCRIPTO_ENV_FILE,
+    path.join(PROJECT_ROOT, 'connector.env'),
+    path.join(PROJECT_ROOT, '.env'),
+    path.resolve(process.cwd(), 'connector.env'),
+    path.resolve(process.cwd(), '.env')
+  ].filter(Boolean);
+  for (const candidate of [...new Set(candidates.map(item => path.resolve(item)))]) {
+    if (parseEnvFile(candidate)) return candidate;
+  }
+  return '';
 }
 
 loadLocalEnv();
@@ -49,7 +74,7 @@ if (String(process.env.CONNECTOR_ALLOW_INSECURE_TLS || '').toLowerCase() === 'tr
 
 const cfg = {
   supabaseUrl: process.env.SUPABASE_URL || '',
-  supabaseKey: process.env.SUPABASE_SERVICE_ROLE_KEY || '',
+  supabaseKey: process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_SECRET_KEY || '',
   encryptionKey: process.env.APP_ENCRYPTION_KEY || '',
   nodeKey: process.env.CONNECTOR_NODE_KEY || 'pc-douglas-principal',
   nodeName: process.env.CONNECTOR_NAME || 'INVCRIPTO Connector Local',
@@ -69,7 +94,10 @@ function validateConfig() {
   if (!cfg.supabaseKey) missing.push('SUPABASE_SERVICE_ROLE_KEY');
   if (!cfg.encryptionKey) missing.push('APP_ENCRYPTION_KEY');
   if (cfg.encryptionKey && cfg.encryptionKey.length < 24) missing.push('APP_ENCRYPTION_KEY precisa ter no mínimo 24 caracteres');
-  if (missing.length) throw new Error(`Configuração incompleta: ${missing.join(', ')}`);
+  if (missing.length) {
+    const searched = [process.env.INVCRIPTO_ENV_FILE, path.join(PROJECT_ROOT, 'connector.env'), path.join(PROJECT_ROOT, '.env')].filter(Boolean).join(' | ');
+    throw new Error(`Configuração incompleta: ${missing.join(', ')}. Arquivo carregado: ${loadedEnvPath || 'nenhum'}. Procurado em: ${searched}`);
+  }
 }
 
 validateConfig();
@@ -241,7 +269,8 @@ function renderDashboard() {
   console.log(' INVCRIPTO CONNECTOR LOCAL');
   console.log('============================================================');
   console.log(` Versao      : ${APP_VERSION} (${APP_BUILD})`);
-  console.log(` Pasta       : ${process.cwd()}`);
+  console.log(` Pasta       : ${PROJECT_ROOT}`);
+  console.log(` Config      : ${loadedEnvPath || process.env.INVCRIPTO_ENV_FILE || '-'}`);
   console.log(` Status       : ${dashboard.status}`);
   console.log(` Node         : ${cfg.nodeKey}`);
   console.log(` IP publico   : ${dashboard.publicIp || '-'}`);
@@ -1078,6 +1107,8 @@ async function syncOperationalCredentials(force = false) {
   }
   let synced = 0;
   for (const credential of latest) {
+    const credentialStatus = String(credential.status || '').toLowerCase();
+    if (!['active', 'review_required'].includes(credentialStatus)) continue;
     const environment = credential.environment === 'testnet' ? 'testnet' : 'live';
     try {
       const apiKey = decryptSecret(credential.api_key_encrypted);

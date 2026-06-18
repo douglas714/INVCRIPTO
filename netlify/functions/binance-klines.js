@@ -1,3 +1,11 @@
+const publicBaseUrls = Object.freeze([
+  'https://api.binance.com',
+  'https://data-api.binance.vision',
+  'https://api1.binance.com',
+  'https://api2.binance.com',
+  'https://api3.binance.com'
+]);
+
 export async function handler(event) {
   const symbol = event.queryStringParameters?.symbol || 'BTCUSDT';
   const interval = event.queryStringParameters?.interval || '1m';
@@ -10,12 +18,20 @@ export async function handler(event) {
   if (!allowedIntervals.includes(interval)) return { statusCode: 400, headers, body: JSON.stringify({error:'interval not allowed'}) };
 
   try {
-    const baseUrl = process.env.BINANCE_SPOT_BASE_URL || 'https://api.binance.com';
-    const url = `${baseUrl}/api/v3/klines?symbol=${symbol}&interval=${interval}&limit=${limit}`;
-    const res = await fetch(url);
-    const body = await res.text();
-    if (!res.ok) return { statusCode: res.status, headers, body: JSON.stringify({ error:'binance unavailable', status:res.status, detail:body.slice(0,300) }) };
-    return { statusCode: 200, headers, body };
+    const baseUrls = [...new Set([process.env.BINANCE_SPOT_BASE_URL,...publicBaseUrls].filter(Boolean))];
+    const failures = [];
+    for (const baseUrl of baseUrls) {
+      const url = `${baseUrl}/api/v3/klines?symbol=${symbol}&interval=${interval}&limit=${limit}`;
+      try {
+        const res = await fetch(url);
+        const body = await res.text();
+        if (res.ok) return { statusCode: 200, headers, body };
+        failures.push(`${new URL(baseUrl).host}: HTTP ${res.status}`);
+      } catch (error) {
+        failures.push(`${new URL(baseUrl).host}: ${String(error?.message || error).slice(0,80)}`);
+      }
+    }
+    return { statusCode: 502, headers, body: JSON.stringify({ error:'binance unavailable', detail:failures.join('; ') }) };
   } catch (error) {
     return { statusCode: 502, headers, body: JSON.stringify({ error:'binance request failed', detail:String(error?.message || error) }) };
   }

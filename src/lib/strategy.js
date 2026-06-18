@@ -259,20 +259,26 @@ export function analyzeMarket(candles) {
   const i = rows.length - 1;
   const structure = marketStructure(rows, { lookback: 160, currentPrice: last.close });
   const support = structure.support;
-  const resistance = structure.resistance;
   const majorStructure = marketStructure(rows, { lookback: 260, currentPrice: last.close });
-  const majorResistance = Math.max(resistance, majorStructure.resistance || resistance);
+  const preliminaryResistance = Math.max(structure.resistance || 0, majorStructure.resistance || structure.resistance || 0);
   const breakoutStructure = marketStructure(rows.slice(0, -2), {
     lookback: 160,
     currentPrice: Number(rows.at(-3)?.close || last.close)
   });
-  const breakoutResistance = Number(breakoutStructure.resistance || resistance);
+  const breakoutResistance = Number(breakoutStructure.resistance || preliminaryResistance);
   const atrValue = atr14[i] || structure.atr || Math.max(1e-9, last.close * 0.003);
   const atrPct = (atrValue / Math.max(1e-9, last.close)) * 100;
   const touchTolerancePct = clamp(atrPct * 0.55, 0.12, 0.45);
   const maxEntryDistancePct = clamp(atrPct * 2.2, 0.38, 0.95);
   const maxEntryPrice = support * (1 + maxEntryDistancePct / 100);
   const requiredRoomPct = clamp(0.78 + atrPct * 0.40, 0.90, 1.60);
+  const resistance = pickTrendAlignedResistance(
+    [...(structure.resistances || []), ...(majorStructure.resistances || [])],
+    last.close,
+    requiredRoomPct,
+    preliminaryResistance
+  );
+  const majorResistance = Math.max(resistance, preliminaryResistance);
 
   const shortTrend = ema9[i] > ema21[i];
   const longTrend = ema21[i] > ema50[i] && last.close > ema50[i];
@@ -579,6 +585,31 @@ function clusterStructuralLevels(candidates, tolerance) {
   return clusters.map(item => ({ ...item, sources: [...item.sources] }));
 }
 
+function sourcePriority(source) {
+  const value = String(source || '');
+  if (value.startsWith('4h')) return 3;
+  if (value.startsWith('1h')) return 2;
+  if (value.startsWith('15m')) return 1;
+  return 0;
+}
+
+function pickTrendAlignedResistance(levels = [], currentPrice = 0, requiredRoomPct = 0, fallback = 0) {
+  const valid = (levels || []).filter(item => Number(item?.level || 0) > Number(currentPrice || 0));
+  if (!valid.length) return Number(fallback || 0);
+
+  const structural = valid.filter(item => (item.sources || []).some(source => sourcePriority(source) > 0));
+  const roomReady = structural.filter(item => Number(item.distancePct || 0) >= Number(requiredRoomPct || 0));
+  const pool = roomReady.length ? roomReady : structural.length ? structural : valid;
+  const ranked = [...pool].sort((a, b) => {
+    const aPriority = Math.max(...(a.sources || []).map(sourcePriority), 0);
+    const bPriority = Math.max(...(b.sources || []).map(sourcePriority), 0);
+    if (aPriority !== bPriority) return bPriority - aPriority;
+    if (a.distancePct !== b.distancePct) return a.distancePct - b.distancePct;
+    return Number(b.weight || 0) - Number(a.weight || 0);
+  });
+  return Number(ranked[0]?.level || fallback || 0);
+}
+
 export function multiTimeframeStructure(timeframes = {}, currentPrice = 0) {
   const price = Math.max(0, Number(currentPrice || timeframes?.['1m']?.at?.(-1)?.close || timeframes?.['5m']?.at?.(-1)?.close || 0));
   const sourceRules = [
@@ -674,7 +705,6 @@ export function analyzeMarketMultiTimeframe(timeframes = {}, options = {}) {
   const currentPrice = Number(rowsByTf['1m'].at(-1)?.close || rowsByTf['5m'].at(-1)?.close || 0);
   const structure = multiTimeframeStructure(rowsByTf, currentPrice);
   const support = structure.support;
-  const resistance = structure.resistance;
   const h4 = snapshots['4h'];
   const h1 = snapshots['1h'];
   const m15 = snapshots['15m'];
@@ -703,8 +733,9 @@ export function analyzeMarketMultiTimeframe(timeframes = {}, options = {}) {
   const supportTolerance = Math.max(structure.tolerance, Number(m5.atr14 || 0) * 0.38, currentPrice * 0.0012);
   const maxEntryPrice = support > 0 ? support * (1 + maxEntryDistancePct / 100) : 0;
   const distanceFromSupportPct = support > 0 ? ((currentPrice / support) - 1) * 100 : 999;
-  const distanceToResistancePct = resistance > currentPrice ? ((resistance / currentPrice) - 1) * 100 : 0;
   const requiredRoomPct = clamp(rules.roomFloorPct + Number(m5.atrPct || 0) * 0.18, rules.roomFloorPct, 1.45);
+  const resistance = pickTrendAlignedResistance(structure.resistances || [], currentPrice, requiredRoomPct, structure.resistance);
+  const distanceToResistancePct = resistance > currentPrice ? ((resistance / currentPrice) - 1) * 100 : 0;
   const nearSupport = support > 0 && currentPrice >= support * 0.997 && currentPrice <= maxEntryPrice;
 
   const m5Reaction = recentReaction(rowsByTf['5m'], support, supportTolerance, rules.m5Window);

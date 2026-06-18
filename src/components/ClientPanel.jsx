@@ -661,15 +661,32 @@ function TradingChart({candles,analysis,timeframe,symbol,orders=[]}){
   const filledBuyMarkers = relevantOrders
     .filter(order=>String(order.side || '').toUpperCase().includes('BUY') && String(order.status || '').toLowerCase()==='filled')
     .slice(0,8);
-  const rawMax = safeCandles.length ? Math.max(...safeCandles.map(c=>c.high)) : 1;
-  const rawMin = safeCandles.length ? Math.min(...safeCandles.map(c=>c.low)) : 0;
   const plannedSupportEntry = analysis?.action === 'BUY' && String(analysis?.setup || '').includes('SUPPORT')
     ? Number(analysis?.orderPlan?.entry || 0)
     : 0;
   const markerPrices = [...orderMarkers.map(order=>Number(order.price || 0)), ...filledBuyMarkers.map(order=>Number(order.price || 0)), ...(plannedSupportEntry > 0 ? [plannedSupportEntry] : [])];
-  const max = Math.max(rawMax, ...markerPrices);
-  const min = Math.min(rawMin, ...markerPrices);
-  const range = Math.max(1, max-min);
+  const highSamples = [...safeCandles.map(c=>Number(c.high || 0)), ...markerPrices.filter(price=>price > 0)];
+  const lowSamples = [...safeCandles.map(c=>Number(c.low || 0)), ...markerPrices.filter(price=>price > 0)];
+  const pickPercentile = (values, pct) => {
+    const sorted = values.filter(Number.isFinite).sort((a,b)=>a-b);
+    if(!sorted.length) return 0;
+    const index = Math.min(sorted.length - 1, Math.max(0, Math.round((sorted.length - 1) * pct)));
+    return sorted[index];
+  };
+  const pLow = pickPercentile(lowSamples, 0.08);
+  const pHigh = pickPercentile(highSamples, 0.92);
+  const rawMax = pHigh || (safeCandles.length ? Math.max(...safeCandles.map(c=>c.high)) : 1);
+  const rawMin = pLow || (safeCandles.length ? Math.min(...safeCandles.map(c=>c.low)) : 0);
+  const center = (rawMax + rawMin) / 2 || Number(analysis?.price || safeCandles.at(-1)?.close || 1);
+  const minSpan = Math.max(
+    Number(analysis?.atr14 || 0) * 4,
+    Math.max(center * 0.012, center * 0.008),
+    0.0001
+  );
+  const halfSpan = Math.max((rawMax - rawMin) / 2, minSpan / 2);
+  const max = center + halfSpan;
+  const min = Math.max(0, center - halfSpan);
+  const range = Math.max(1e-9, max-min);
   const width = 1200;
   const height = 430;
   const chartH = 330;
@@ -1269,4 +1286,3 @@ function buildRadar(radarAnalyses,selectedAnalysis,selectedSymbol){
     return actionPriority || b.score-a.score;
   });
 }
-

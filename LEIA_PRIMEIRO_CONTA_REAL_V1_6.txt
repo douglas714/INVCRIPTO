@@ -1,0 +1,19 @@
+INVCRIPTO V1.6 — CONTA REAL RESILIENTE
+
+1. Publique o ZIP completo no Netlify.
+2. Baixe/substitua o conector por public/downloads/ENVCRIPTO_CONNECTOR_LOCAL.zip.
+3. Preserve o arquivo .env da instalação anterior.
+4. Execute ATUALIZAR_E_EXECUTAR_V1_6.bat.
+5. Confirme na tela: Versao 1.6.0-real-resilient e Conta real LIBERADA.
+6. A API Spot nao informa a permissao de saque da chave. O falso alerta foi removido.
+7. Confira manualmente na Binance que saque permanece desativado e Spot Trading habilitado.
+8. O robô abre pausado; use o botão do painel para iniciar operações reais.
+
+CORREÇÕES
+- Retry e timeout para Supabase/Binance.
+- Backoff automático em falha de internet.
+- Sincronização do relógio da Binance.
+- Último sync atualizado após ciclo completo.
+- Reconciliação de ordens com resposta incerta, evitando compra duplicada.
+- Identificação da versão e pasta do conector em execução.
+- Log persistente: invcripto-connector.log.

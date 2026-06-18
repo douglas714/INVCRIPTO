@@ -88,10 +88,12 @@ export async function handler(event) {
   }
 
   const canTrade = Boolean(body.canTrade);
-  const canWithdraw = Boolean(body.canWithdraw);
+  // O endpoint Spot /api/v3/account nao informa a permissao de saque da chave API.
+  // Nao use account.canWithdraw para bloquear trading real.
+  const canWithdraw = false;
   const permissions = Array.isArray(body.permissions) ? body.permissions : [];
   const hasSpot = permissions.length ? permissions.includes('SPOT') || permissions.some(item => String(item).startsWith('TRD_GRP_')) : true;
-  const status = canTrade && hasSpot && !canWithdraw ? 'active' : 'review_required';
+  const status = canTrade && hasSpot ? 'active' : 'review_required';
   const usdtFree = Number(body.usdtFree || 0);
   const usdtLocked = Number(body.usdtLocked || 0);
 
@@ -117,7 +119,9 @@ export async function handler(event) {
     canWithdraw,
     hasSpot,
     credentialStatus: status,
-    productionReady: status === 'active',
+    productionReady: environment === 'live' && status === 'active',
+    withdrawPermissionVerified: false,
+    withdrawPermissionStatus: 'manual_check_required',
     usdtFree,
     usdtLocked
   };

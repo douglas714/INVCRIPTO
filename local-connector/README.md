@@ -1,4 +1,4 @@
-# INVCRIPTO Connector Local 1.1
+# INVCRIPTO Connector Local 1.6
 
 O conector mantém o painel no Netlify e executa ordens Spot usando a conexão e o IP do computador do usuário.
 
@@ -42,3 +42,12 @@ O conector usa apenas recursos nativos do Node.js e não precisa instalar depend
 ## V1.5 — Confirmação multitemporal
 
 O conector agora revalida M1, M5, M15, H1 e H4 imediatamente antes de cada entrada real. As proteções usam suportes estruturais e podem ser pausadas em baixa forte. Preserve seu `.env` ao substituir o conector.
+
+## V1.6 — Conta real resiliente
+
+- Corrige o falso alerta de saque: `canWithdraw` do endpoint de conta não é tratado como permissão da chave API.
+- Libera conta real quando leitura da conta, permissão SPOT e trading estão válidos.
+- Mantém a recomendação de conferir manualmente, na Binance, que saque está desativado.
+- Adiciona timeout, tentativas automáticas, backoff, sincronização de horário e reconciliação de resposta incerta.
+- Atualiza `Último sync` em todo ciclo concluído e mostra versão/pasta em execução.
+- Gera `invcripto-connector.log` para diagnóstico persistente.

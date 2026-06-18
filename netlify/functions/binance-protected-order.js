@@ -101,7 +101,7 @@ export async function handler(event) {
 
   const { data: credential, error: credentialError } = await supabase
     .from('binance_api_credentials')
-    .select('id,can_trade,status,real_usdt_free')
+    .select('id,can_trade,can_withdraw,status,real_usdt_free,last_test_at')
     .eq('user_id', userId)
     .eq('environment', environment)
     .order('updated_at', { ascending: false })
@@ -110,8 +110,31 @@ export async function handler(event) {
 
   if (credentialError) return json(400, { error: credentialError.message });
   if (!credential) return json(404, { error: 'Nenhuma API Binance salva para este ambiente.' });
-  if (!credential.can_trade) return json(400, { error: 'API Binance salva esta sem permissao de trading.' });
+  if (!credential.can_trade) return json(400, { error: 'API Binance salva esta sem permissao Spot Trading.' });
+  if (environment === 'live' && credential.status !== 'active') {
+    return json(409, { error: `Conta real bloqueada: status da API ${credential.status || 'nao validado'}. Teste novamente a chave e confirme Spot Trading.` });
+  }
+  const lastTestMs = Date.parse(credential.last_test_at || 0);
+  if (environment === 'live' && (!Number.isFinite(lastTestMs) || Date.now() - lastTestMs > 90_000)) {
+    return json(409, { error: 'Conta real aguardando sincronizacao recente do conector local. Inicie o conector V1.6 e aguarde o status Conta real LIBERADA.' });
+  }
   if (Number(credential.real_usdt_free || 0) < INITIAL_ENTRY_USDT) return json(400, { error: `Saldo minimo de ${INITIAL_ENTRY_USDT.toFixed(2)} USDT necessario para a entrada inicial.` });
+
+  if (environment === 'live') {
+    const { data: connector } = await supabase
+      .from('connector_nodes')
+      .select('node_key,status,app_version,last_seen_at')
+      .order('last_seen_at', { ascending: false })
+      .limit(1)
+      .maybeSingle();
+    const seenMs = Date.parse(connector?.last_seen_at || 0);
+    if (!connector || connector.status !== 'online' || !Number.isFinite(seenMs) || Date.now() - seenMs > 45_000) {
+      return json(409, { error: 'Conector local offline ou sem sincronizacao recente. Nenhuma ordem real foi criada.' });
+    }
+    if (!String(connector.app_version || '').startsWith('1.6.')) {
+      return json(409, { error: `Conector desatualizado (${connector.app_version || 'sem versao'}). Instale e execute o conector V1.6 antes de operar.` });
+    }
+  }
 
   const { data: bot } = await supabase
     .from('bot_instances')

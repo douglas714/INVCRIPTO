@@ -158,6 +158,21 @@ export default function ClientPanel({user}){
           binanceUsdtBalance:Number(payload.usdtFree || 0),
           binanceUsdtLocked:Number(payload.usdtLocked || 0),
           binanceCanTrade:Boolean(payload.canTrade),
+          binanceCanWithdraw:false,
+          binanceProductionReady:Boolean(payload.productionReady),
+          connectorOnline:Boolean(payload.connectorOnline),
+          connectorVersion:payload.connectorVersion || null,
+          connectorVersionOk:Boolean(payload.connectorVersionOk),
+          lastBinanceValidationAt:payload.lastTestAt || null,
+          lastAutoRealError:payload.connectorVersion && !payload.connectorVersionOk
+              ? `Conector desatualizado (${payload.connectorVersion}). Instale o V1.6.`
+              : payload.connectorOnline === false
+                ? 'Conector local offline ou sem sincronização recente.'
+                : payload.credentialStatus && payload.credentialStatus !== 'active'
+                  ? `Conta real aguardando validação segura da API (${payload.credentialStatus}).`
+                  : payload.productionReady
+                    ? ''
+                    : s.lastAutoRealError,
           accountMode:'live'
         }));
         setAccountMode('live');
@@ -301,7 +316,7 @@ export default function ClientPanel({user}){
     if(!hasSupabase || !state.active || accountMode !== 'live' || !marketDataReal || !mtfDataReal) return;
     if(!analysis?.dataComplete || !analysis?.mtfConfirmed || analysis?.riskOff) return;
     if(!analysis?.orderPlan || analysis.action !== 'BUY' || Number(analysis.score || 0) < Number(analysis.minScore || 78)) return;
-    if(!state.apiConnected || !state.binanceCanTrade || Number(state.envBalance || 0) <= 0) return;
+    if(!state.apiConnected || !state.binanceProductionReady || !state.binanceCanTrade || state.binanceCanWithdraw || state.binanceCredentialStatus !== 'active' || Number(state.envBalance || 0) <= 0) return;
     const plan = analysis.orderPlan;
     const liveBalance = Number(state.binanceUsdtBalance || 0);
     const quoteOrderQty = liveBalance >= MIN_REAL_ORDER_USDT ? 10 : 0;
@@ -426,7 +441,7 @@ export default function ClientPanel({user}){
     }
     queueAutoOrder();
     return()=>{cancelled=true};
-  },[state.active,accountMode,analysis,symbol,timeframe,state.apiConnected,state.binanceCanTrade,state.envBalance,state.binanceUsdtBalance,state.orders,state.profileName,user?.id,marketDataReal,mtfDataReal]);
+  },[state.active,accountMode,analysis,symbol,timeframe,state.apiConnected,state.binanceProductionReady,state.binanceCanTrade,state.binanceCanWithdraw,state.binanceCredentialStatus,state.envBalance,state.binanceUsdtBalance,state.orders,state.profileName,user?.id,marketDataReal,mtfDataReal]);
 
   async function changeOperationProfile(nextProfile){
     if(state.active) return;

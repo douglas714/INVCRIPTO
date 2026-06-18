@@ -43,6 +43,9 @@ if "%APP_ENCRYPTION_KEY%"=="" (
   echo CONNECTOR_INTERVAL_MS=5000
   echo BINANCE_SPOT_BASE_URL=https://api.binance.com
   echo BINANCE_TESTNET_BASE_URL=https://testnet.binance.vision
+  echo CONNECTOR_REQUEST_TIMEOUT_MS=12000
+  echo CONNECTOR_MAX_BACKOFF_MS=60000
+  echo CONNECTOR_CREDENTIAL_SYNC_MS=30000
 ) > .env
 
 echo.

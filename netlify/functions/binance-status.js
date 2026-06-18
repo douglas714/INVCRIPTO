@@ -52,13 +52,32 @@ export async function handler(event) {
     .select('balance_inv')
     .eq('user_id', manualUserId)
     .maybeSingle();
+  const { data: connector } = await supabase
+    .from('connector_nodes')
+    .select('node_key,status,app_version,last_seen_at,metadata')
+    .order('last_seen_at', { ascending: false })
+    .limit(1)
+    .maybeSingle();
+  const connectorSeenMs = Date.parse(connector?.last_seen_at || 0);
+  const connectorOnline = Boolean(connector && connector.status === 'online' && Number.isFinite(connectorSeenMs) && Date.now() - connectorSeenMs <= 45_000);
+  const connectorVersionOk = String(connector?.app_version || '').startsWith('1.6.');
 
   if (!credential) return json(200, {
     ok: true,
     connected: false,
     environment,
-    envBalance: Number(wallet?.balance_inv || 0)
+    envBalance: Number(wallet?.balance_inv || 0),
+    connectorOnline,
+    connectorVersion: connector?.app_version || null,
+    connectorVersionOk
   });
+
+  const lastTestMs = Date.parse(credential.last_test_at || 0);
+  const credentialFresh = Number.isFinite(lastTestMs) && Date.now() - lastTestMs <= 90_000;
+  const productionReady = Boolean(
+    environment === 'live' && credential.status === 'active' && credential.can_trade &&
+    credentialFresh && connectorOnline && connectorVersionOk
+  );
 
   return json(200, {
     ok: true,
@@ -68,9 +87,16 @@ export async function handler(event) {
     apiKeyMasked: credential.api_key_masked,
     credentialStatus: credential.status,
     canTrade: Boolean(credential.can_trade),
-    canWithdraw: Boolean(credential.can_withdraw),
+    canWithdraw: false,
+    withdrawPermissionVerified: false,
+    withdrawPermissionStatus: 'manual_check_required',
     usdtFree: Number(credential.real_usdt_free || 0),
     usdtLocked: Number(credential.real_usdt_locked || 0),
-    lastTestAt: credential.last_test_at
+    lastTestAt: credential.last_test_at,
+    credentialFresh,
+    connectorOnline,
+    connectorVersion: connector?.app_version || null,
+    connectorVersionOk,
+    productionReady
   });
 }

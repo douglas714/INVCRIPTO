@@ -70,10 +70,12 @@ async function saveCredential({ supabase, userId, apiKey, apiSecret, environment
   const balances = Array.isArray(account?.payload?.balances) ? account.payload.balances : [];
   const usdtBalance = balances.find(balance => balance.asset === 'USDT');
   const canTrade = Boolean(account?.payload?.canTrade);
-  const canWithdraw = Boolean(account?.payload?.canWithdraw);
+  // account.canWithdraw descreve a conta, nao a permissao de saque da chave API.
+  const accountCanWithdraw = Boolean(account?.payload?.canWithdraw);
+  const canWithdraw = false;
   const permissions = Array.isArray(account?.payload?.permissions) ? account.payload.permissions : [];
   const hasSpot = account?.ok ? (permissions.length ? permissions.includes('SPOT') : true) : false;
-  const credentialStatus = forcedStatus || (canTrade && hasSpot && !canWithdraw ? 'active' : 'review_required');
+  const credentialStatus = forcedStatus || (canTrade && hasSpot ? 'active' : 'review_required');
 
   const credentialRow = {
     user_id: userId,
@@ -109,7 +111,7 @@ async function saveCredential({ supabase, userId, apiKey, apiSecret, environment
   }
 
   if (error) throw new Error(error.message);
-  return { id: data?.id, canTrade, canWithdraw, hasSpot, credentialStatus, usdtBalance };
+  return { id: data?.id, canTrade, canWithdraw, accountCanWithdraw, hasSpot, credentialStatus, usdtBalance };
 }
 
 async function queueConnectorValidation({ supabase, userId, environment, credentialId, reason }) {
@@ -239,18 +241,18 @@ export async function handler(event) {
     apiKeyMasked: maskKey(apiKey),
     connectorQueued: false,
     credentialStatus: saved.credentialStatus,
-    productionReady: saved.credentialStatus === 'active',
+    productionReady: environment === 'live' && saved.credentialStatus === 'active',
     canTrade: saved.canTrade,
     canWithdraw: saved.canWithdraw,
     hasSpot: saved.hasSpot,
     usdtFree: Number(saved.usdtBalance?.free || 0),
     usdtLocked: Number(saved.usdtBalance?.locked || 0),
-    warning: saved.canWithdraw
-      ? 'Chave salva, mas marcada para revisão: desative permissão de saque antes de operar.'
-      : !saved.canTrade
-        ? 'Chave salva, mas marcada para revisão: Spot Trading não está habilitado.'
-        : !saved.hasSpot
-          ? 'Chave salva, mas marcada para revisão: permissão SPOT não identificada.'
-          : null
+    withdrawPermissionVerified: false,
+    withdrawPermissionStatus: 'manual_check_required',
+    warning: !saved.canTrade
+      ? 'Chave salva, mas marcada para revisão: Spot Trading não está habilitado.'
+      : !saved.hasSpot
+        ? 'Chave salva, mas marcada para revisão: permissão SPOT não identificada.'
+        : null
   });
 }

@@ -66,3 +66,11 @@ Cadastre as chaves reais no Netlify em `Site settings > Environment variables`.
 ## Atualização V1.5 — Estratégia MTF-R
 
 A conta real agora exige confirmação de H4, H1, M15, M5 e M1. O radar analisa cada ativo individualmente, a entrada é limitada ao suporte estrutural e as proteções procuram suportes H1/M15 ou H4/H1 antes de serem posicionadas. Consulte `LEIA_PRIMEIRO_ESTRATEGIA_MTF_V1_5.txt`.
+
+## Atualização V1.6 — Conta real resiliente
+
+- Corrigido falso bloqueio de saque causado por interpretação incorreta de `account.canWithdraw`.
+- Validação real baseada em leitura autenticada, permissão SPOT e `canTrade`.
+- Conector com retry, timeout, backoff, sincronização de relógio Binance e reconciliação por `clientOrderId`.
+- Status real exige conector V1.6 online, credencial atualizada e sincronização recente.
+- O painel continua abrindo pausado; após liberar o Auto Trading, as ordens são enviadas ao fluxo Binance Spot real.

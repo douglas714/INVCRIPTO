@@ -7,7 +7,7 @@ cd /d "%~dp0"
 
 echo.
 echo ==============================================
-echo  INVCRIPTO CONNECTOR LOCAL - AUTO START
+echo  INVCRIPTO CONNECTOR V1.6 - CONTA REAL
 echo ==============================================
 echo.
 
@@ -75,16 +75,22 @@ if exist ".env" (
     echo CONNECTOR_INTERVAL_MS=5000
     echo BINANCE_SPOT_BASE_URL=https://api.binance.com
     echo BINANCE_TESTNET_BASE_URL=https://testnet.binance.vision
+    echo CONNECTOR_REQUEST_TIMEOUT_MS=12000
+    echo CONNECTOR_MAX_BACKOFF_MS=60000
+    echo CONNECTOR_CREDENTIAL_SYNC_MS=30000
   ) > ".env"
 
   echo.
   echo .env criado. As APIs Binance continuam sendo salvas pelo painel do site.
 )
 
-echo Conector sem dependencias externas. Nenhum npm install necessario.
+echo Conector V1.6 sem dependencias externas. Nenhum npm install necessario.
+
+powershell -NoProfile -ExecutionPolicy Bypass -Command "Get-CimInstance Win32_Process -Filter \"Name='node.exe'\" ^| Where-Object { $_.CommandLine -match 'src[\\/]index\.js' } ^| ForEach-Object { try { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue } catch {} }" 2^>nul
 
 echo.
-echo Iniciando conector local...
+echo Iniciando conector local V1.6...
+echo A tela deve mostrar Versao 1.6.0-real-resilient.
 echo Deixe esta janela aberta para atualizar saldo e executar comandos Binance.
 echo.
 node src\index.js

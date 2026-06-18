@@ -1,11 +1,11 @@
 {
   "name": "invcripto-local-connector",
-  "version": "1.5.0",
+  "version": "1.6.0",
   "type": "module",
   "private": true,
   "scripts": {
     "start": "node src/index.js",
-    "test": "node src/basket-policy.test.mjs"
+    "test": "node src/basket-policy.test.mjs && node src/resilient-http.test.mjs && node src/account-readiness.test.mjs"
   },
   "engines": {
     "node": ">=20"

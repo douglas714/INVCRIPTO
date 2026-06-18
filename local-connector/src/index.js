@@ -1,5 +1,8 @@
 import fs from 'node:fs';
+import path from 'node:path';
 import crypto from 'node:crypto';
+import { fetchWithRetry, compactError, isNetworkError, sleep } from './resilient-http.js';
+import { accountReadiness } from './account-readiness.js';
 import {
   INITIAL_ENTRY_USDT,
   TARGET_NET_PCT,
@@ -16,6 +19,9 @@ import {
   supportAwareProtectionPriceMtf,
   multiTimeframeEntryContext
 } from './basket-policy.js';
+
+const APP_VERSION = '1.6.0-real-resilient';
+const APP_BUILD = '2026-06-18';
 
 process.stdout?.on?.('error', error => {
   if (error?.code === 'EPIPE') process.exit(0);
@@ -48,6 +54,9 @@ const cfg = {
   nodeKey: process.env.CONNECTOR_NODE_KEY || 'pc-douglas-principal',
   nodeName: process.env.CONNECTOR_NAME || 'INVCRIPTO Connector Local',
   intervalMs: Number(process.env.CONNECTOR_INTERVAL_MS || 5000),
+  requestTimeoutMs: Number(process.env.CONNECTOR_REQUEST_TIMEOUT_MS || 12000),
+  maxBackoffMs: Number(process.env.CONNECTOR_MAX_BACKOFF_MS || 60000),
+  credentialSyncMs: Number(process.env.CONNECTOR_CREDENTIAL_SYNC_MS || 30000),
   spotUrl: process.env.BINANCE_SPOT_BASE_URL || 'https://api.binance.com',
   testnetUrl: process.env.BINANCE_TESTNET_BASE_URL || 'https://testnet.binance.vision'
 };
@@ -66,6 +75,16 @@ function validateConfig() {
 validateConfig();
 
 const restBaseUrl = `${cfg.supabaseUrl.replace(/\/$/, '')}/rest/v1`;
+const localLogFile = path.resolve(process.cwd(), 'invcripto-connector.log');
+const binanceClock = { live: { offset: 0, syncedAt: 0 }, testnet: { offset: 0, syncedAt: 0 } };
+let cachedPublicIp = { value: '-', at: 0 };
+let lastCredentialSweepAt = 0;
+
+function appendLocalLog(level, event, message, data = {}) {
+  try {
+    fs.appendFileSync(localLogFile, `${new Date().toISOString()} ${String(level).toUpperCase()} ${event} ${message} ${JSON.stringify(data)}\n`, 'utf8');
+  } catch {}
+}
 
 function restHeaders(extra = {}) {
   return {
@@ -76,24 +95,36 @@ function restHeaders(extra = {}) {
   };
 }
 
-async function restRequest(path, options = {}) {
-  const response = await fetch(`${restBaseUrl}${path}`, {
-    method: options.method || 'GET',
-    headers: restHeaders(options.headers),
-    body: options.body === undefined ? undefined : JSON.stringify(options.body)
-  });
-  const text = await response.text();
-  let payload = null;
-  if (text) {
-    try { payload = JSON.parse(text); }
-    catch { payload = { raw: text }; }
+async function restRequest(pathname, options = {}) {
+  const method = String(options.method || 'GET').toUpperCase();
+  const url = `${restBaseUrl}${pathname}`;
+  const attempts = options.attempts ?? (method === 'GET' ? 4 : ['PATCH', 'DELETE', 'PUT'].includes(method) ? 3 : options.idempotent ? 3 : 1);
+  try {
+    const response = await fetchWithRetry(url, {
+      method,
+      headers: restHeaders(options.headers),
+      body: options.body === undefined ? undefined : JSON.stringify(options.body)
+    }, {
+      attempts,
+      timeoutMs: cfg.requestTimeoutMs,
+      retryUnsafe: Boolean(options.idempotent),
+      label: `Supabase ${method} ${pathname}`
+    });
+    const text = await response.text();
+    let payload = null;
+    if (text) {
+      try { payload = JSON.parse(text); }
+      catch { payload = { raw: text }; }
+    }
+    if (!response.ok) {
+      return { data: null, error: { message: payload?.message || payload?.error || text || `HTTP ${response.status}`, status: response.status }, count: null };
+    }
+    const countHeader = response.headers.get('content-range');
+    const count = countHeader?.includes('/') ? Number(countHeader.split('/').pop()) : null;
+    return { data: payload, error: null, count };
+  } catch (error) {
+    return { data: null, error: { message: compactError(error), network: isNetworkError(error) }, count: null };
   }
-  if (!response.ok) {
-    return { data: null, error: { message: payload?.message || payload?.error || text || `HTTP ${response.status}` }, count: null };
-  }
-  const countHeader = response.headers.get('content-range');
-  const count = countHeader?.includes('/') ? Number(countHeader.split('/').pop()) : null;
-  return { data: payload, error: null, count };
 }
 
 function eqFilter(column, value) {
@@ -169,7 +200,8 @@ async function upsertRow(table, row, onConflict) {
   return restRequest(`/${table}${qs}`, {
     method: 'POST',
     headers: { Prefer: 'resolution=merge-duplicates,return=minimal' },
-    body: row
+    body: row,
+    idempotent: true
   });
 }
 
@@ -182,14 +214,19 @@ const dashboard = {
   pending: 0,
   processed: 0,
   errors: 0,
+  warnings: 0,
+  consecutiveFailures: 0,
   lastCommand: 'Nenhum',
   lastMessage: 'Inicializando conector',
   lastUsdt: null,
   canTrade: null,
-  canWithdraw: null,
+  canWithdraw: false,
+  withdrawPermissionStatus: 'nao_verificavel_via_spot_api',
   credentialStatus: null,
+  productionReady: false,
   lastProtectedOrder: null,
   lastSync: null,
+  lastFullCycle: null,
   events: []
 };
 
@@ -203,6 +240,8 @@ function renderDashboard() {
   console.log('============================================================');
   console.log(' INVCRIPTO CONNECTOR LOCAL');
   console.log('============================================================');
+  console.log(` Versao      : ${APP_VERSION} (${APP_BUILD})`);
+  console.log(` Pasta       : ${process.cwd()}`);
   console.log(` Status       : ${dashboard.status}`);
   console.log(` Node         : ${cfg.nodeKey}`);
   console.log(` IP publico   : ${dashboard.publicIp || '-'}`);
@@ -212,15 +251,18 @@ function renderDashboard() {
   console.log(` Fila pendente: ${dashboard.pending}`);
   console.log(` Processados  : ${dashboard.processed}`);
   console.log(` Erros        : ${dashboard.errors}`);
+  console.log(` Avisos       : ${dashboard.warnings}`);
   console.log(` Ultimo cmd   : ${dashboard.lastCommand}`);
   console.log(` Ultima msg   : ${dashboard.lastMessage}`);
   console.log('------------------------------------------------------------');
   console.log(` Saldo USDT   : ${money(dashboard.lastUsdt)}`);
   console.log(` Trading      : ${dashboard.canTrade === null ? '-' : dashboard.canTrade ? 'habilitado' : 'somente leitura'}`);
-  console.log(` Saque        : ${dashboard.canWithdraw === null ? '-' : dashboard.canWithdraw ? 'habilitado (revise)' : 'desativado'}`);
+  console.log(' Saque API    : conferir manualmente na Binance (nao exposto pela API Spot)');
   console.log(` API status   : ${dashboard.credentialStatus || '-'}`);
+  console.log(` Conta real   : ${dashboard.productionReady ? 'LIBERADA' : 'BLOQUEADA/AGUARDANDO'}`);
   console.log(` Ordem real   : ${dashboard.lastProtectedOrder || '-'}`);
   console.log(` Ultimo sync  : ${dashboard.lastSync || '-'}`);
+  console.log(` Ciclo completo: ${dashboard.lastFullCycle || '-'}`);
   console.log('------------------------------------------------------------');
   console.log(' Eventos recentes');
   if (!dashboard.events.length) {
@@ -264,20 +306,28 @@ function binanceBase(environment) {
 }
 
 async function publicIp() {
+  if (cachedPublicIp.value && cachedPublicIp.value !== '-' && Date.now() - cachedPublicIp.at < 10 * 60 * 1000) {
+    return cachedPublicIp.value;
+  }
   const services = ['https://api.ipify.org?format=json', 'https://ifconfig.me/all.json'];
   for (const url of services) {
     try {
-      const res = await fetch(url);
+      const res = await fetchWithRetry(url, {}, { attempts: 2, timeoutMs: 3500, label: `IP publico ${url}` });
       if (!res.ok) continue;
       const data = await res.json().catch(() => null);
-      if (data?.ip) return data.ip;
-      if (data?.ip_addr) return data.ip_addr;
+      const value = data?.ip || data?.ip_addr || null;
+      if (value) {
+        cachedPublicIp = { value, at: Date.now() };
+        return value;
+      }
     } catch {}
   }
-  return null;
+  return cachedPublicIp.value || '-';
 }
 
 async function log(level, event, message, data = {}, command = null) {
+  appendLocalLog(level, event, message, data);
+  if (String(level).toLowerCase() === 'warn') dashboard.warnings += 1;
   try {
     await insertRows('connector_logs', {
       node_key: cfg.nodeKey,
@@ -286,7 +336,7 @@ async function log(level, event, message, data = {}, command = null) {
       level,
       event,
       message,
-      data
+      data: { ...data, app_version: APP_VERSION }
     });
   } catch {}
   dashboard.lastMessage = message;
@@ -295,21 +345,31 @@ async function log(level, event, message, data = {}, command = null) {
 }
 
 async function heartbeat(status = 'online', metadata = {}) {
-  const ip = await publicIp().catch(() => null);
-  dashboard.status = status;
-  dashboard.publicIp = ip;
+  const ip = await publicIp().catch(() => cachedPublicIp.value || '-');
+  dashboard.publicIp = ip || '-';
   dashboard.lastHeartbeat = new Date().toLocaleString('pt-BR');
   const row = {
     node_key: cfg.nodeKey,
     name: cfg.nodeName,
     status,
-    public_ip: ip,
-    app_version: '1.2.0-support-aware-baskets',
+    public_ip: dashboard.publicIp,
+    app_version: APP_VERSION,
     last_seen_at: new Date().toISOString(),
-    metadata
+    metadata: {
+      ...metadata,
+      build: APP_BUILD,
+      cwd: process.cwd(),
+      last_sync: dashboard.lastSync,
+      production_ready: dashboard.productionReady,
+      can_trade: dashboard.canTrade,
+      can_withdraw: false,
+      withdraw_permission_status: dashboard.withdrawPermissionStatus,
+      credential_status: dashboard.credentialStatus,
+      consecutive_failures: dashboard.consecutiveFailures
+    }
   };
   const { error } = await upsertRow('connector_nodes', row, 'node_key');
-  if (error) console.error('Falha heartbeat:', error.message);
+  if (error) appendLocalLog('warn', 'heartbeat_error', error.message);
 }
 
 async function getCredential(userId, environment) {
@@ -322,15 +382,86 @@ async function getCredential(userId, environment) {
   return data;
 }
 
-async function signedAccount({ apiKey, apiSecret, environment }) {
-  const query = `timestamp=${Date.now()}&recvWindow=5000`;
-  const signature = sign(query, apiSecret);
-  const url = `${binanceBase(environment)}/api/v3/account?${query}&signature=${signature}`;
-  const response = await fetch(url, { headers: { 'X-MBX-APIKEY': apiKey } });
+async function parseJsonResponse(response) {
   const text = await response.text();
   let payload;
-  try { payload = JSON.parse(text); } catch { payload = { raw: text }; }
+  try { payload = text ? JSON.parse(text) : {}; }
+  catch { payload = { raw: text }; }
   return { ok: response.ok, status: response.status, payload };
+}
+
+async function syncBinanceClock(environment, force = false) {
+  const env = environment === 'testnet' ? 'testnet' : 'live';
+  const state = binanceClock[env];
+  if (!force && Date.now() - state.syncedAt < 5 * 60 * 1000) return state.offset;
+  const started = Date.now();
+  const response = await fetchWithRetry(`${binanceBase(env)}/api/v3/time`, {}, {
+    attempts: 4,
+    timeoutMs: 8000,
+    label: `Binance ${env} server time`
+  });
+  const parsed = await parseJsonResponse(response);
+  if (!parsed.ok || !Number(parsed.payload?.serverTime)) {
+    throw new Error(`Falha ao sincronizar horario Binance ${env}: ${JSON.stringify(parsed.payload)}`);
+  }
+  const midpoint = started + Math.floor((Date.now() - started) / 2);
+  state.offset = Number(parsed.payload.serverTime) - midpoint;
+  state.syncedAt = Date.now();
+  return state.offset;
+}
+
+function binanceTimestamp(environment) {
+  const env = environment === 'testnet' ? 'testnet' : 'live';
+  return Date.now() + Number(binanceClock[env]?.offset || 0);
+}
+
+function binanceUnknownExecution(result) {
+  const code = Number(result?.payload?.code);
+  return Boolean(result?.uncertain || code === -1006 || code === -1007 || [502, 503, 504].includes(Number(result?.status)));
+}
+
+async function signedApiRequest({ apiKey, apiSecret, environment, endpoint, method = 'GET', params = {}, attempts, retryUnsafe = false }) {
+  const env = environment === 'testnet' ? 'testnet' : 'live';
+  await syncBinanceClock(env).catch(() => 0);
+
+  async function execute(forceClock = false) {
+    if (forceClock) await syncBinanceClock(env, true);
+    const query = new URLSearchParams({
+      ...params,
+      timestamp: String(binanceTimestamp(env)),
+      recvWindow: '10000'
+    }).toString();
+    const signature = sign(query, apiSecret);
+    const url = `${binanceBase(env)}${endpoint}?${query}&signature=${signature}`;
+    try {
+      const response = await fetchWithRetry(url, {
+        method,
+        headers: { 'X-MBX-APIKEY': apiKey }
+      }, {
+        attempts: attempts ?? (String(method).toUpperCase() === 'GET' ? 4 : 1),
+        timeoutMs: 15000,
+        retryUnsafe,
+        label: `Binance ${method} ${endpoint}`
+      });
+      return await parseJsonResponse(response);
+    } catch (error) {
+      return {
+        ok: false,
+        status: 0,
+        uncertain: ['POST', 'PUT', 'DELETE'].includes(String(method).toUpperCase()),
+        networkError: true,
+        payload: { code: 'NETWORK_ERROR', msg: compactError(error) }
+      };
+    }
+  }
+
+  let result = await execute(false);
+  if (Number(result?.payload?.code) === -1021) result = await execute(true);
+  return result;
+}
+
+async function signedAccount({ apiKey, apiSecret, environment }) {
+  return signedApiRequest({ apiKey, apiSecret, environment, endpoint: '/api/v3/account', params: { omitZeroBalances: 'false' }, attempts: 4 });
 }
 
 async function freeAssetBalanceWithRetry({ apiKey, apiSecret, environment, asset, minimum = 0, attempts = 5 }) {
@@ -338,12 +469,18 @@ async function freeAssetBalanceWithRetry({ apiKey, apiSecret, environment, asset
   for (let attempt = 1; attempt <= attempts; attempt += 1) {
     const account = await signedAccount({ apiKey, apiSecret, environment });
     lastAccount = account;
-    if (!account.ok) break;
+    if (!account.ok) {
+      if (attempt < attempts && (account.networkError || Number(account.payload?.code) < -1000)) {
+        await sleep(Math.min(2500, attempt * 350));
+        continue;
+      }
+      break;
+    }
     const balance = (account.payload?.balances || []).find(item => item.asset === asset) || { free: '0', locked: '0' };
     const free = Math.max(0, Number(balance.free || 0));
     const locked = Math.max(0, Number(balance.locked || 0));
     if (free >= Number(minimum || 0) || attempt === attempts) return { ok: true, free, locked, account };
-    await new Promise(resolve => setTimeout(resolve, attempt * 200));
+    await sleep(attempt * 250);
   }
   return { ok: false, free: 0, locked: 0, account: lastAccount };
 }
@@ -371,10 +508,14 @@ function formatDecimal(value, step) {
 }
 
 async function exchangeInfo(symbol, environment) {
-  const response = await fetch(`${binanceBase(environment)}/api/v3/exchangeInfo?symbol=${encodeURIComponent(symbol)}`);
-  const payload = await response.json().catch(() => ({}));
-  if (!response.ok) throw new Error(`Falha exchangeInfo ${symbol}: ${JSON.stringify(payload)}`);
-  const info = payload?.symbols?.[0];
+  const response = await fetchWithRetry(`${binanceBase(environment)}/api/v3/exchangeInfo?symbol=${encodeURIComponent(symbol)}`, {}, {
+    attempts: 4,
+    timeoutMs: cfg.requestTimeoutMs,
+    label: `Binance exchangeInfo ${symbol}`
+  });
+  const parsed = await parseJsonResponse(response);
+  if (!parsed.ok) throw new Error(`Falha exchangeInfo ${symbol}: ${JSON.stringify(parsed.payload)}`);
+  const info = parsed.payload?.symbols?.[0];
   if (!info) throw new Error(`Par ${symbol} não encontrado na Binance.`);
   const filters = Object.fromEntries((info.filters || []).map(filter => [filter.filterType, filter]));
   return {
@@ -390,156 +531,113 @@ async function exchangeInfo(symbol, environment) {
   };
 }
 
-async function signedOrder({ apiKey, apiSecret, environment, params }) {
-  const query = new URLSearchParams({
-    ...params,
-    timestamp: String(Date.now()),
-    recvWindow: '5000'
-  }).toString();
-  const signature = sign(query, apiSecret);
-  const url = `${binanceBase(environment)}/api/v3/order?${query}&signature=${signature}`;
-  const response = await fetch(url, {
-    method: 'POST',
-    headers: { 'X-MBX-APIKEY': apiKey }
-  });
-  const text = await response.text();
-  let payload;
-  try { payload = JSON.parse(text); } catch { payload = { raw: text }; }
-  return { ok: response.ok, status: response.status, payload };
+async function signedGetOrder({ apiKey, apiSecret, environment, symbol, orderId, origClientOrderId }) {
+  const params = { symbol };
+  if (orderId !== undefined && orderId !== null && orderId !== '') params.orderId = String(orderId);
+  else if (origClientOrderId) params.origClientOrderId = String(origClientOrderId);
+  else throw new Error('Consulta de ordem exige orderId ou origClientOrderId.');
+  return signedApiRequest({ apiKey, apiSecret, environment, endpoint: '/api/v3/order', params, attempts: 4 });
 }
 
-async function signedGetOrder({ apiKey, apiSecret, environment, symbol, orderId }) {
-  const query = new URLSearchParams({
-    symbol,
-    orderId: String(orderId),
-    timestamp: String(Date.now()),
-    recvWindow: '5000'
-  }).toString();
-  const signature = sign(query, apiSecret);
-  const url = `${binanceBase(environment)}/api/v3/order?${query}&signature=${signature}`;
-  const response = await fetch(url, { headers: { 'X-MBX-APIKEY': apiKey } });
-  const text = await response.text();
-  let payload;
-  try { payload = JSON.parse(text); } catch { payload = { raw: text }; }
-  return { ok: response.ok, status: response.status, payload };
+async function recoverOrderByClientId({ apiKey, apiSecret, environment, symbol, clientOrderId, attempts = 5 }) {
+  if (!clientOrderId) return null;
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    await sleep(attempt === 1 ? 350 : Math.min(2500, attempt * 500));
+    const found = await signedGetOrder({ apiKey, apiSecret, environment, symbol, origClientOrderId: clientOrderId });
+    if (found.ok) return { ...found, recovered: true };
+    if (Number(found.payload?.code) !== -2013 && !found.networkError) return found;
+  }
+  return null;
+}
+
+async function signedOrder({ apiKey, apiSecret, environment, params }) {
+  const result = await signedApiRequest({ apiKey, apiSecret, environment, endpoint: '/api/v3/order', method: 'POST', params, attempts: 1 });
+  if (!binanceUnknownExecution(result)) return result;
+  const recovered = await recoverOrderByClientId({
+    apiKey,
+    apiSecret,
+    environment,
+    symbol: params.symbol,
+    clientOrderId: params.newClientOrderId,
+    attempts: 6
+  });
+  if (recovered?.ok) return recovered;
+  return { ...result, uncertain: true, payload: { ...result.payload, reconciliationRequired: true, clientOrderId: params.newClientOrderId } };
 }
 
 async function signedCancelOrder({ apiKey, apiSecret, environment, symbol, orderId }) {
-  const query = new URLSearchParams({
-    symbol,
-    orderId: String(orderId),
-    timestamp: String(Date.now()),
-    recvWindow: '5000'
-  }).toString();
-  const signature = sign(query, apiSecret);
-  const url = `${binanceBase(environment)}/api/v3/order?${query}&signature=${signature}`;
-  const response = await fetch(url, {
+  return signedApiRequest({
+    apiKey,
+    apiSecret,
+    environment,
+    endpoint: '/api/v3/order',
     method: 'DELETE',
-    headers: { 'X-MBX-APIKEY': apiKey }
+    params: { symbol, orderId: String(orderId) },
+    attempts: 3,
+    retryUnsafe: true
   });
-  const text = await response.text();
-  let payload;
-  try { payload = JSON.parse(text); } catch { payload = { raw: text }; }
-  return { ok: response.ok, status: response.status, payload };
 }
 
 async function signedCancelOrderList({ apiKey, apiSecret, environment, symbol, orderListId }) {
-  const query = new URLSearchParams({
-    symbol,
-    orderListId: String(orderListId),
-    timestamp: String(Date.now()),
-    recvWindow: '5000'
-  }).toString();
-  const signature = sign(query, apiSecret);
-  const url = `${binanceBase(environment)}/api/v3/orderList?${query}&signature=${signature}`;
-  const response = await fetch(url, {
+  return signedApiRequest({
+    apiKey,
+    apiSecret,
+    environment,
+    endpoint: '/api/v3/orderList',
     method: 'DELETE',
-    headers: { 'X-MBX-APIKEY': apiKey }
+    params: { symbol, orderListId: String(orderListId) },
+    attempts: 3,
+    retryUnsafe: true
   });
-  const text = await response.text();
-  let payload;
-  try { payload = JSON.parse(text); } catch { payload = { raw: text }; }
-  return { ok: response.ok, status: response.status, payload };
 }
 
 async function signedOpenOrders({ apiKey, apiSecret, environment, symbol }) {
-  const params = { timestamp: String(Date.now()), recvWindow: '5000' };
+  const params = {};
   if (symbol) params.symbol = symbol;
-  const query = new URLSearchParams(params).toString();
-  const signature = sign(query, apiSecret);
-  const url = `${binanceBase(environment)}/api/v3/openOrders?${query}&signature=${signature}`;
-  const response = await fetch(url, { headers: { 'X-MBX-APIKEY': apiKey } });
-  const text = await response.text();
-  let payload;
-  try { payload = JSON.parse(text); } catch { payload = { raw: text }; }
-  return { ok: response.ok, status: response.status, payload };
+  return signedApiRequest({ apiKey, apiSecret, environment, endpoint: '/api/v3/openOrders', params, attempts: 4 });
 }
 
 async function signedMyTrades({ apiKey, apiSecret, environment, symbol, limit = 100 }) {
-  const query = new URLSearchParams({
-    symbol,
-    limit: String(limit),
-    timestamp: String(Date.now()),
-    recvWindow: '5000'
-  }).toString();
-  const signature = sign(query, apiSecret);
-  const url = `${binanceBase(environment)}/api/v3/myTrades?${query}&signature=${signature}`;
-  const response = await fetch(url, { headers: { 'X-MBX-APIKEY': apiKey } });
-  const text = await response.text();
-  let payload;
-  try { payload = JSON.parse(text); } catch { payload = { raw: text }; }
-  return { ok: response.ok, status: response.status, payload };
+  return signedApiRequest({ apiKey, apiSecret, environment, endpoint: '/api/v3/myTrades', params: { symbol, limit: String(limit) }, attempts: 4 });
 }
 
 async function signedCommissionRates({ apiKey, apiSecret, environment, symbol }) {
-  const query = new URLSearchParams({
-    symbol,
-    timestamp: String(Date.now()),
-    recvWindow: '5000'
-  }).toString();
-  const signature = sign(query, apiSecret);
-  const url = `${binanceBase(environment)}/api/v3/account/commission?${query}&signature=${signature}`;
-  const response = await fetch(url, { headers: { 'X-MBX-APIKEY': apiKey } });
-  const text = await response.text();
-  let payload;
-  try { payload = JSON.parse(text); } catch { payload = { raw: text }; }
-  return { ok: response.ok, status: response.status, payload };
+  return signedApiRequest({ apiKey, apiSecret, environment, endpoint: '/api/v3/account/commission', params: { symbol }, attempts: 4 });
+}
+
+async function signedGetOrderList({ apiKey, apiSecret, environment, orderListId, origClientOrderId }) {
+  const params = {};
+  if (orderListId !== undefined && orderListId !== null && orderListId !== '') params.orderListId = String(orderListId);
+  else if (origClientOrderId) params.origClientOrderId = String(origClientOrderId);
+  else throw new Error('Consulta de lista exige orderListId ou origClientOrderId.');
+  return signedApiRequest({ apiKey, apiSecret, environment, endpoint: '/api/v3/orderList', params, attempts: 4 });
+}
+
+async function recoverOrderListByClientId({ apiKey, apiSecret, environment, clientOrderId, attempts = 5 }) {
+  if (!clientOrderId) return null;
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    await sleep(attempt === 1 ? 350 : Math.min(2500, attempt * 500));
+    const found = await signedGetOrderList({ apiKey, apiSecret, environment, origClientOrderId: clientOrderId });
+    if (found.ok) return { ...found, recovered: true };
+    if (Number(found.payload?.code) !== -2026 && Number(found.payload?.code) !== -2013 && !found.networkError) return found;
+  }
+  return null;
+}
+
+async function signedOrderList({ apiKey, apiSecret, environment, endpoint, params }) {
+  const result = await signedApiRequest({ apiKey, apiSecret, environment, endpoint, method: 'POST', params, attempts: 1 });
+  if (!binanceUnknownExecution(result)) return result;
+  const recovered = await recoverOrderListByClientId({ apiKey, apiSecret, environment, clientOrderId: params.listClientOrderId, attempts: 6 });
+  if (recovered?.ok) return recovered;
+  return { ...result, uncertain: true, payload: { ...result.payload, reconciliationRequired: true, listClientOrderId: params.listClientOrderId } };
 }
 
 async function signedOpoOrderList({ apiKey, apiSecret, environment, params }) {
-  const query = new URLSearchParams({
-    ...params,
-    timestamp: String(Date.now()),
-    recvWindow: '5000'
-  }).toString();
-  const signature = sign(query, apiSecret);
-  const url = `${binanceBase(environment)}/api/v3/orderList/opo?${query}&signature=${signature}`;
-  const response = await fetch(url, {
-    method: 'POST',
-    headers: { 'X-MBX-APIKEY': apiKey }
-  });
-  const text = await response.text();
-  let payload;
-  try { payload = JSON.parse(text); } catch { payload = { raw: text }; }
-  return { ok: response.ok, status: response.status, payload };
+  return signedOrderList({ apiKey, apiSecret, environment, endpoint: '/api/v3/orderList/opo', params });
 }
 
 async function signedOtoOrderList({ apiKey, apiSecret, environment, params }) {
-  const query = new URLSearchParams({
-    ...params,
-    timestamp: String(Date.now()),
-    recvWindow: '5000'
-  }).toString();
-  const signature = sign(query, apiSecret);
-  const url = `${binanceBase(environment)}/api/v3/orderList/oto?${query}&signature=${signature}`;
-  const response = await fetch(url, {
-    method: 'POST',
-    headers: { 'X-MBX-APIKEY': apiKey }
-  });
-  const text = await response.text();
-  let payload;
-  try { payload = JSON.parse(text); } catch { payload = { raw: text }; }
-  return { ok: response.ok, status: response.status, payload };
+  return signedOrderList({ apiKey, apiSecret, environment, endpoint: '/api/v3/orderList/oto', params });
 }
 
 async function currentFreeBalance({ apiKey, apiSecret, environment, asset }) {
@@ -550,15 +648,29 @@ async function currentFreeBalance({ apiKey, apiSecret, environment, asset }) {
 }
 
 async function ticker(symbol) {
-  const response = await fetch(`${cfg.spotUrl}/api/v3/ticker/24hr?symbol=${encodeURIComponent(symbol)}`);
-  const payload = await response.json().catch(() => ({}));
-  return { ok: response.ok, status: response.status, payload };
+  try {
+    const response = await fetchWithRetry(`${cfg.spotUrl}/api/v3/ticker/24hr?symbol=${encodeURIComponent(symbol)}`, {}, {
+      attempts: 4,
+      timeoutMs: cfg.requestTimeoutMs,
+      label: `Binance ticker ${symbol}`
+    });
+    return parseJsonResponse(response);
+  } catch (error) {
+    return { ok: false, status: 0, networkError: true, payload: { code: 'NETWORK_ERROR', msg: compactError(error) } };
+  }
 }
 
 async function klines(symbol, interval = '15m', limit = 320) {
-  const response = await fetch(`${cfg.spotUrl}/api/v3/klines?symbol=${encodeURIComponent(symbol)}&interval=${encodeURIComponent(interval)}&limit=${Number(limit || 320)}`);
-  const payload = await response.json().catch(() => []);
-  return { ok: response.ok, status: response.status, payload };
+  try {
+    const response = await fetchWithRetry(`${cfg.spotUrl}/api/v3/klines?symbol=${encodeURIComponent(symbol)}&interval=${encodeURIComponent(interval)}&limit=${Number(limit || 320)}`, {}, {
+      attempts: 4,
+      timeoutMs: cfg.requestTimeoutMs,
+      label: `Binance klines ${symbol}/${interval}`
+    });
+    return parseJsonResponse(response);
+  } catch (error) {
+    return { ok: false, status: 0, networkError: true, payload: { code: 'NETWORK_ERROR', msg: compactError(error) } };
+  }
 }
 
 async function closedMarketCandles(symbol, interval = '5m', limit = 320) {
@@ -921,6 +1033,67 @@ async function placeEmergencyStandaloneSell({ basket, executedQty, costQuote, ap
   return { orderId: sell.payload?.orderId, clientOrderId, quantity: safeQty, price: target };
 }
 
+async function persistCredentialHealth(credential, accountPayload, environment) {
+  const ready = accountReadiness(accountPayload, environment);
+  const now = new Date();
+  const { error } = await updateRows('binance_api_credentials', {
+    can_read: true,
+    can_trade: ready.canTrade,
+    can_withdraw: false,
+    status: ready.credentialStatus,
+    last_test_at: now.toISOString(),
+    real_usdt_free: ready.usdtFree,
+    real_usdt_locked: ready.usdtLocked
+  }, [eqFilter('id', credential.id)]);
+  if (error) throw new Error(`Falha ao atualizar status da API: ${error.message}`);
+
+  if (environment === 'live') {
+    dashboard.lastUsdt = ready.usdtFree;
+    dashboard.canTrade = ready.canTrade;
+    dashboard.canWithdraw = false;
+    dashboard.withdrawPermissionStatus = ready.withdrawPermissionStatus;
+    dashboard.credentialStatus = ready.credentialStatus;
+    dashboard.productionReady = ready.productionReady;
+    dashboard.lastSync = now.toLocaleString('pt-BR');
+  }
+  return ready;
+}
+
+async function syncOperationalCredentials(force = false) {
+  if (!force && Date.now() - lastCredentialSweepAt < cfg.credentialSyncMs) return { skipped: true };
+  lastCredentialSweepAt = Date.now();
+  const { data, error } = await selectRows('binance_api_credentials', {
+    select: '*',
+    order: 'updated_at.desc',
+    limit: 50
+  });
+  if (error) throw new Error(`Falha ao carregar credenciais: ${error.message}`);
+  const seen = new Set();
+  const latest = [];
+  for (const credential of data || []) {
+    const key = `${credential.user_id}:${credential.environment}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    latest.push(credential);
+  }
+  let synced = 0;
+  for (const credential of latest) {
+    const environment = credential.environment === 'testnet' ? 'testnet' : 'live';
+    try {
+      const apiKey = decryptSecret(credential.api_key_encrypted);
+      const apiSecret = decryptSecret(credential.api_secret_encrypted);
+      const account = await signedAccount({ apiKey, apiSecret, environment });
+      if (!account.ok) throw new Error(`Binance account ${environment}: ${JSON.stringify(account.payload)}`);
+      await persistCredentialHealth(credential, account.payload, environment);
+      synced += 1;
+    } catch (error) {
+      appendLocalLog('warn', 'credential_sync_error', compactError(error), { credentialId: credential.id, environment });
+      dashboard.warnings += 1;
+    }
+  }
+  return { synced };
+}
+
 async function handleValidateApi(command) {
   const environment = command.payload?.environment === 'testnet' ? 'testnet' : 'live';
   const credential = await getCredential(command.user_id, environment);
@@ -932,48 +1105,15 @@ async function handleValidateApi(command) {
     throw new Error(`Binance rejeitou consulta: ${JSON.stringify(account.payload)}`);
   }
 
-  const balances = Array.isArray(account.payload?.balances) ? account.payload.balances : [];
-  const usdt = balances.find(item => item.asset === 'USDT') || { free: '0', locked: '0' };
-  const canTrade = Boolean(account.payload?.canTrade);
-  const canWithdraw = Boolean(account.payload?.canWithdraw);
-  const permissions = Array.isArray(account.payload?.permissions) ? account.payload.permissions : [];
-  const hasSpot = permissions.length ? permissions.includes('SPOT') : true;
-  const credentialStatus = canTrade && hasSpot && !canWithdraw ? 'active' : 'review_required';
-
-  await updateRows('binance_api_credentials', {
-      can_read: true,
-      can_trade: canTrade,
-      can_withdraw: canWithdraw,
-      status: credentialStatus,
-      last_test_at: new Date().toISOString(),
-      real_usdt_free: Number(usdt.free || 0),
-      real_usdt_locked: Number(usdt.locked || 0)
-    }, [eqFilter('id', credential.id)]);
-
-  return {
-    environment,
-    canTrade,
-    canWithdraw,
-    hasSpot,
-    credentialStatus,
-    productionReady: credentialStatus === 'active',
-    usdtFree: Number(usdt.free || 0),
-    usdtLocked: Number(usdt.locked || 0)
-  };
+  const ready = await persistCredentialHealth(credential, account.payload, environment);
+  return { environment, ...ready };
 }
 
 async function refreshCredentialBalance(credential, apiKey, apiSecret, environment) {
   const account = await signedAccount({ apiKey, apiSecret, environment });
-  if (!account.ok) return null;
-  const usdt = (account.payload?.balances || []).find(item => item.asset === 'USDT') || { free: '0', locked: '0' };
-  await updateRows('binance_api_credentials', {
-    real_usdt_free: Number(usdt.free || 0),
-    real_usdt_locked: Number(usdt.locked || 0),
-    last_test_at: new Date().toISOString()
-  }, [eqFilter('id', credential.id)]);
-  dashboard.lastUsdt = Number(usdt.free || 0);
-  dashboard.lastSync = new Date().toLocaleString('pt-BR');
-  return { free: Number(usdt.free || 0), locked: Number(usdt.locked || 0) };
+  if (!account.ok) throw new Error(`Falha ao atualizar conta Binance: ${JSON.stringify(account.payload)}`);
+  const ready = await persistCredentialHealth(credential, account.payload, environment);
+  return { free: ready.usdtFree, locked: ready.usdtLocked, ...ready };
 }
 
 function basketBucketUsage(orders) {
@@ -1465,7 +1605,11 @@ async function handleProtectedSpotBuy(command) {
   const apiSecret = decryptSecret(credential.api_secret_encrypted);
   const account = await signedAccount({ apiKey, apiSecret, environment });
   if (!account.ok) throw new Error(`Binance rejeitou conta: ${JSON.stringify(account.payload)}`);
-  if (!account.payload?.canTrade) throw new Error('API Binance esta sem permissao de trading.');
+  const readiness = await persistCredentialHealth(credential, account.payload, environment);
+  if (!readiness.canTrade || !readiness.hasSpot) throw new Error('API Binance está sem permissão Spot Trading.');
+  if (environment === 'live' && !readiness.productionReady) {
+    throw new Error(`OPERAÇÃO REAL BLOQUEADA: status da API ${readiness.credentialStatus}. Teste e valide novamente a chave Binance.`);
+  }
 
   const filters = await exchangeInfo(symbol, environment);
   if (filters.status !== 'TRADING') throw new Error(`Par ${symbol} nao esta liberado para trading.`);
@@ -1585,6 +1729,19 @@ async function handleProtectedSpotBuy(command) {
 
   const compactId = command.id.replaceAll('-', '');
   const buyClientOrderId = `INVBUY_${compactId.slice(0, 24)}`;
+  basket = {
+    ...basket,
+    metadata: {
+      ...(basket.metadata || {}),
+      pending_entry_client_order_id: buyClientOrderId,
+      pending_entry_created_at: new Date().toISOString(),
+      pending_entry_price: buyLimitPrice,
+      pending_entry_quantity: buyQuantity,
+      pending_entry_timeframe: timeframe,
+      pending_entry_reason: reason
+    }
+  };
+  await updateRows('real_baskets', { metadata: basket.metadata }, [eqFilter('id', basket.id)]);
   const buy = await signedOrder({
     apiKey,
     apiSecret,
@@ -1601,17 +1758,45 @@ async function handleProtectedSpotBuy(command) {
     }
   });
   const buyStatus = String(buy.payload?.status || '').toUpperCase();
+  if (buy.uncertain) {
+    basket = {
+      ...basket,
+      metadata: {
+        ...(basket.metadata || {}),
+        entry_status_unknown: true,
+        entry_unknown_payload: buy.payload,
+        entry_unknown_at: new Date().toISOString()
+      }
+    };
+    await updateRows('real_baskets', { status: 'active', metadata: basket.metadata }, [eqFilter('id', basket.id)]).catch(() => null);
+    await log('warn', 'entry_status_unknown', `A Binance não confirmou a entrada ${buyClientOrderId}; o conector vai reconciliar pelo clientOrderId antes de qualquer nova ordem.`, {
+      basketId: basket.id,
+      symbol,
+      clientOrderId: buyClientOrderId
+    }, command);
+    return {
+      environment,
+      symbol,
+      skipped: true,
+      reason: 'entry_status_unknown_reconciling',
+      basketId: basket.id,
+      clientOrderId: buyClientOrderId,
+      message: 'Resposta da Binance ficou inconclusiva. O conector está consultando a ordem pelo identificador único e não enviará compra duplicada.'
+    };
+  }
   if (!buy.ok || buyStatus !== 'FILLED') {
+    const closedMetadata = {
+      ...(basket.metadata || {}),
+      pending_entry_client_order_id: null,
+      entry_not_filled: true,
+      buy_error: buy.payload,
+      buyLimitPrice,
+      currentPrice
+    };
     await updateRows('real_baskets', {
       status: 'closed',
       closed_at: new Date().toISOString(),
-      metadata: {
-        ...(basket.metadata || {}),
-        entry_not_filled: true,
-        buy_error: buy.payload,
-        buyLimitPrice,
-        currentPrice
-      }
+      metadata: closedMetadata
     }, [eqFilter('id', basket.id)]).catch(() => null);
     return {
       environment,
@@ -1685,6 +1870,12 @@ async function handleProtectedSpotBuy(command) {
 
   basket = {
     ...basket,
+    metadata: {
+      ...(basket.metadata || {}),
+      pending_entry_client_order_id: null,
+      entry_status_unknown: false,
+      entry_confirmed_at: new Date().toISOString()
+    },
     last_buy_price: avgPrice,
     last_buy_quote: cummulativeQuoteQty,
     normal_used_usdt: cummulativeQuoteQty,
@@ -1695,6 +1886,7 @@ async function handleProtectedSpotBuy(command) {
     recovery_level: 1
   };
   await updateRows('real_baskets', {
+    metadata: basket.metadata,
     last_buy_price: avgPrice,
     last_buy_quote: cummulativeQuoteQty,
     normal_used_usdt: cummulativeQuoteQty,
@@ -2013,6 +2205,126 @@ async function adoptLegacyBotBaskets() {
   }
 }
 
+async function reconcilePendingEntryOrder({ basket, credential, apiKey, apiSecret, environment, filters }) {
+  const clientOrderId = String(basket.metadata?.pending_entry_client_order_id || '').trim();
+  if (!clientOrderId) return basket;
+  const remote = await signedGetOrder({
+    apiKey,
+    apiSecret,
+    environment,
+    symbol: basket.symbol,
+    origClientOrderId: clientOrderId
+  });
+  if (!remote.ok) {
+    const code = Number(remote.payload?.code);
+    const createdAt = Date.parse(basket.metadata?.pending_entry_created_at || basket.opened_at || 0);
+    const ageMs = Number.isFinite(createdAt) ? Date.now() - createdAt : 0;
+    if (code === -2013 && ageMs > 2 * 60 * 1000) {
+      const metadata = {
+        ...(basket.metadata || {}),
+        pending_entry_client_order_id: null,
+        entry_status_unknown: false,
+        entry_not_found_after_reconciliation: true,
+        entry_reconciled_at: new Date().toISOString()
+      };
+      await updateRows('real_baskets', {
+        status: 'closed',
+        closed_at: new Date().toISOString(),
+        metadata
+      }, [eqFilter('id', basket.id)]);
+      await log('warn', 'pending_entry_not_found', `A entrada ${clientOrderId} não existe na Binance; a cesta ${basket.symbol} foi fechada sem nova compra.`, {
+        basketId: basket.id,
+        clientOrderId
+      }, { user_id: basket.user_id });
+      return { ...basket, status: 'closed', metadata };
+    }
+    if (remote.networkError || code === -1006 || code === -1007 || code === -1021) return basket;
+    throw new Error(`Falha ao reconciliar entrada ${clientOrderId}: ${JSON.stringify(remote.payload)}`);
+  }
+
+  const status = String(remote.payload?.status || '').toUpperCase();
+  if (['CANCELED', 'CANCELLED', 'EXPIRED', 'REJECTED'].includes(status)) {
+    const metadata = {
+      ...(basket.metadata || {}),
+      pending_entry_client_order_id: null,
+      entry_status_unknown: false,
+      entry_terminal_status: status,
+      entry_reconciled_at: new Date().toISOString()
+    };
+    await updateRows('real_baskets', {
+      status: 'closed',
+      closed_at: new Date().toISOString(),
+      metadata
+    }, [eqFilter('id', basket.id)]);
+    return { ...basket, status: 'closed', metadata };
+  }
+  if (status !== 'FILLED') return basket;
+
+  const existing = await basketOrders(basket.id);
+  if (!existing.some(order => String(order.client_order_id || '') === clientOrderId)) {
+    const executedQty = Number(remote.payload?.executedQty || 0);
+    const quote = Number(remote.payload?.cummulativeQuoteQty || 0);
+    const avgPrice = executedQty > 0 ? quote / executedQty : Number(remote.payload?.price || basket.metadata?.pending_entry_price || 0);
+    await insertBasketOrder({
+      user_id: basket.user_id,
+      environment,
+      symbol: basket.symbol,
+      basket_id: basket.id,
+      profile_name: basket.profile_name,
+      side: 'BUY',
+      order_type: String(remote.payload?.type || 'LIMIT'),
+      status: 'filled',
+      protection_role: 'entry',
+      timeframe: String(basket.metadata?.pending_entry_timeframe || '5m'),
+      client_order_id: clientOrderId,
+      binance_order_id: String(remote.payload?.orderId || ''),
+      quote_order_qty: quote,
+      quantity: executedQty,
+      price: avgPrice,
+      executed_qty: executedQty,
+      cummulative_quote_qty: quote,
+      reason: String(basket.metadata?.pending_entry_reason || 'Entrada reconciliada pelo clientOrderId'),
+      raw_response: {
+        ...remote.payload,
+        invcripto: {
+          basket_id: basket.id,
+          bucket: 'normal',
+          profile_name: basket.profile_name,
+          reconciled_after_unknown_response: true
+        }
+      }
+    });
+  }
+
+  const orders = await basketOrders(basket.id);
+  const summary = summarizeBasketOrders(orders);
+  const metadata = {
+    ...(basket.metadata || {}),
+    pending_entry_client_order_id: null,
+    entry_status_unknown: false,
+    entry_recovered_by_client_order_id: true,
+    entry_reconciled_at: new Date().toISOString()
+  };
+  const values = {
+    metadata,
+    last_buy_price: summary.lastBuyPrice,
+    last_buy_quote: summary.lastBuyQuote,
+    normal_used_usdt: summary.buyQuote,
+    total_buy_quote: summary.buyQuote,
+    total_bought_qty: summary.boughtQty,
+    open_qty: summary.openQty,
+    avg_price: summary.avgBuyPrice,
+    recovery_level: Math.max(1, summary.recoveryLevel)
+  };
+  await updateRows('real_baskets', values, [eqFilter('id', basket.id)]);
+  await log('info', 'pending_entry_recovered', `Entrada ${clientOrderId} confirmada e cesta ${basket.symbol} reconstruída.`, {
+    basketId: basket.id,
+    orderId: remote.payload?.orderId,
+    openQty: summary.openQty
+  }, { user_id: basket.user_id });
+  return { ...basket, ...values };
+}
+
 async function reconcilePersistentBaskets() {
   const { data: baskets, error } = await selectRows('real_baskets', {
     select: '*',
@@ -2029,6 +2341,8 @@ async function reconcilePersistentBaskets() {
       const apiKey = decryptSecret(credential.api_key_encrypted);
       const apiSecret = decryptSecret(credential.api_secret_encrypted);
       const filters = await exchangeInfo(basket.symbol, environment);
+      basket = await reconcilePendingEntryOrder({ basket, credential, apiKey, apiSecret, environment, filters });
+      if (String(basket.status || 'active').toLowerCase() !== 'active') continue;
       let orders = await basketOrders(basket.id);
       if (!orders.length && basket.metadata?.manual_reconciliation_required) {
         const recoveredMetadata = await recoverBasketOrdersFromMetadata({ basket, apiKey, apiSecret, environment });
@@ -2190,6 +2504,20 @@ async function claimNextCommand() {
   return updated;
 }
 
+async function runPhase(name, fn, { critical = false } = {}) {
+  try {
+    const value = await fn();
+    return { ok: true, value };
+  } catch (error) {
+    const message = compactError(error);
+    dashboard.warnings += 1;
+    appendLocalLog('warn', `${name}_error`, message);
+    pushEvent('warn', `${name}_error`, message);
+    if (critical) throw error;
+    return { ok: false, error };
+  }
+}
+
 async function processLoop() {
   if (dashboard.loopRunning) return;
   dashboard.loopRunning = true;
@@ -2197,86 +2525,112 @@ async function processLoop() {
   renderDashboard();
 
   try {
-  await heartbeat('online', { pid: process.pid });
-  await adoptLegacyBotBaskets();
-  await reconcilePersistentBaskets();
-  await monitorProtectedSells();
-  const command = await claimNextCommand();
-  if (!command) {
-    dashboard.lastCommand = 'Aguardando comandos';
-    dashboard.lastMessage = 'Conector online, sem comandos pendentes';
-    dashboard.status = 'Online';
-    renderDashboard();
-    return;
-  }
+    await runPhase('heartbeat', () => heartbeat('online', { pid: process.pid, phase: 'cycle_start' }));
+    await runPhase('credential_sync', () => syncOperationalCredentials(false), { critical: true });
+    await runPhase('legacy_basket_adoption', () => adoptLegacyBotBaskets());
+    await runPhase('basket_reconciliation', () => reconcilePersistentBaskets(), { critical: true });
+    await runPhase('protected_sell_monitor', () => monitorProtectedSells(), { critical: true });
 
-  dashboard.status = 'Processando comando';
-  dashboard.lastCommand = command.command_type;
-  dashboard.lastMessage = `Processando ${command.command_type}`;
-  renderDashboard();
-  await log('info', 'command_started', `Processando ${command.command_type}`, {}, command);
-  try {
-    const result = await executeCommand(command);
-    dashboard.processed += 1;
-    dashboard.lastCommand = command.command_type;
-    dashboard.lastMessage = `Comando ${command.command_type} finalizado`;
-    if (Object.prototype.hasOwnProperty.call(result || {}, 'usdtFree')) {
-      dashboard.lastUsdt = Number(result.usdtFree || 0);
-      dashboard.canTrade = Boolean(result.canTrade);
-      dashboard.canWithdraw = Boolean(result.canWithdraw);
-      dashboard.credentialStatus = result.credentialStatus || null;
-      dashboard.lastSync = new Date().toLocaleString('pt-BR');
+    const commandResult = await runPhase('command_claim', () => claimNextCommand(), { critical: true });
+    const command = commandResult.value;
+    if (!command) {
+      const now = new Date().toLocaleString('pt-BR');
+      dashboard.lastCommand = 'Aguardando comandos';
+      dashboard.lastSync = now;
+      dashboard.lastFullCycle = now;
+      dashboard.consecutiveFailures = 0;
+      if (dashboard.productionReady) {
+        dashboard.status = 'Online - Conta real liberada';
+        dashboard.lastMessage = 'Conector online, saldo e ordens reconciliados, sem comandos pendentes';
+      } else {
+        dashboard.status = 'Online - aguardando API válida';
+        dashboard.lastMessage = 'Conector online. Valide leitura + Spot Trading; confirme manualmente que saque permanece desativado na Binance.';
+      }
+      await heartbeat('online', { pid: process.pid, phase: 'cycle_complete' }).catch(() => null);
+      renderDashboard();
+      return;
     }
-    await updateRows('connector_commands', {
+
+    dashboard.status = 'Processando comando';
+    dashboard.lastCommand = command.command_type;
+    dashboard.lastMessage = `Processando ${command.command_type}`;
+    renderDashboard();
+    await log('info', 'command_started', `Processando ${command.command_type}`, {}, command);
+    try {
+      const result = await executeCommand(command);
+      dashboard.processed += 1;
+      dashboard.lastCommand = command.command_type;
+      dashboard.lastMessage = `Comando ${command.command_type} finalizado`;
+      if (Object.prototype.hasOwnProperty.call(result || {}, 'usdtFree')) {
+        dashboard.lastUsdt = Number(result.usdtFree || 0);
+        dashboard.canTrade = Boolean(result.canTrade);
+        dashboard.canWithdraw = false;
+        dashboard.withdrawPermissionStatus = result.withdrawPermissionStatus || 'manual_check_required';
+        dashboard.credentialStatus = result.credentialStatus || null;
+        dashboard.productionReady = Boolean(result.productionReady);
+      }
+      const updated = await updateRows('connector_commands', {
         status: 'done',
         result,
         completed_at: new Date().toISOString(),
         error_message: null
       }, [eqFilter('id', command.id)]);
-    await log('info', 'command_done', `Comando ${command.command_type} finalizado`, { result }, command);
-  } catch (error) {
-    dashboard.errors += 1;
-    dashboard.lastCommand = command.command_type;
-    dashboard.lastMessage = String(error?.message || error);
-    await updateRows('connector_commands', {
+      if (updated.error) throw new Error(`Comando executado, mas falhou ao registrar conclusão: ${updated.error.message}`);
+      await log('info', 'command_done', `Comando ${command.command_type} finalizado`, { result }, command);
+    } catch (error) {
+      dashboard.errors += 1;
+      dashboard.lastCommand = command.command_type;
+      dashboard.lastMessage = compactError(error);
+      const update = await updateRows('connector_commands', {
         status: 'error',
-        error_message: String(error?.message || error),
+        error_message: dashboard.lastMessage,
         completed_at: new Date().toISOString()
       }, [eqFilter('id', command.id)]);
-    await log('error', 'command_error', String(error?.message || error), {}, command);
-  }
-  dashboard.status = 'Online';
-  renderDashboard();
+      if (update.error) appendLocalLog('error', 'command_status_update_error', update.error.message, { commandId: command.id });
+      await log('error', 'command_error', dashboard.lastMessage, {}, command);
+    }
+
+    const now = new Date().toLocaleString('pt-BR');
+    dashboard.lastSync = now;
+    dashboard.lastFullCycle = now;
+    dashboard.consecutiveFailures = 0;
+    dashboard.status = dashboard.productionReady
+      ? 'Online - Conta real liberada'
+      : 'Online - aguardando API válida';
+    await heartbeat('online', { pid: process.pid, phase: 'cycle_complete' }).catch(() => null);
+    renderDashboard();
   } finally {
     dashboard.loopRunning = false;
   }
 }
 
+async function scheduledLoop() {
+  let delayMs = cfg.intervalMs;
+  try {
+    await processLoop();
+    dashboard.consecutiveFailures = 0;
+  } catch (error) {
+    dashboard.errors += 1;
+    dashboard.consecutiveFailures += 1;
+    dashboard.status = 'Reconectando';
+    dashboard.lastMessage = compactError(error);
+    appendLocalLog('error', 'loop_error', dashboard.lastMessage, { consecutiveFailures: dashboard.consecutiveFailures });
+    pushEvent('error', 'loop_error', dashboard.lastMessage);
+    delayMs = Math.min(cfg.maxBackoffMs, cfg.intervalMs * (2 ** Math.min(5, dashboard.consecutiveFailures)));
+    renderDashboard();
+    await heartbeat('degraded', { error: dashboard.lastMessage, retry_in_ms: delayMs }).catch(() => null);
+  }
+  setTimeout(scheduledLoop, delayMs);
+}
+
 async function main() {
   renderDashboard();
-  await log('info', 'connector_started', 'Conector local iniciado');
-  await heartbeat('online');
+  appendLocalLog('info', 'connector_started', `Conector ${APP_VERSION} iniciado`, { cwd: process.cwd() });
+  await syncBinanceClock('live', true).catch(error => appendLocalLog('warn', 'binance_clock_startup_error', compactError(error)));
+  await log('info', 'connector_started', `Conector local ${APP_VERSION} iniciado em ${process.cwd()}`);
+  await heartbeat('online', { pid: process.pid, phase: 'startup' });
   renderDashboard();
-
-  processLoop().catch(async error => {
-    dashboard.errors += 1;
-    dashboard.status = 'Erro';
-    dashboard.lastMessage = String(error?.message || error);
-    pushEvent('error', 'loop_error', dashboard.lastMessage);
-    renderDashboard();
-    await heartbeat('error', { error: String(error?.message || error) }).catch(() => null);
-  });
-
-  setInterval(() => {
-    processLoop().catch(async error => {
-      dashboard.errors += 1;
-      dashboard.status = 'Erro';
-      dashboard.lastMessage = String(error?.message || error);
-      pushEvent('error', 'loop_error', dashboard.lastMessage);
-      renderDashboard();
-      await heartbeat('error', { error: String(error?.message || error) }).catch(() => null);
-    });
-  }, cfg.intervalMs);
+  scheduledLoop();
 }
 
 process.on('SIGINT', async () => {

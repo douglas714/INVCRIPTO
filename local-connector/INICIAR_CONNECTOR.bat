@@ -1,21 +1,16 @@
 @echo off
 chcp 65001 >nul
-title INVCRIPTO Connector Local
+setlocal EnableExtensions
+title INVCRIPTO Connector V1.6
+cd /d "%~dp0"
 
-echo.
-echo ==============================================
-echo  INVCRIPTO CONNECTOR LOCAL
-echo ==============================================
-echo.
-
-if not exist .env (
+if not exist ".env" (
   echo Arquivo .env nao encontrado.
-  echo Rode INSTALAR_E_EXECUTAR_CONNECTOR.bat primeiro.
+  echo Execute ATUALIZAR_E_EXECUTAR_V1_6.bat ou CONFIGURAR_CONNECTOR.bat.
   pause
   exit /b 1
 )
 
-echo Conector sem dependencias externas. Nenhum npm install necessario.
-
+powershell -NoProfile -ExecutionPolicy Bypass -Command "Get-CimInstance Win32_Process -Filter \"Name='node.exe'\" ^| Where-Object { $_.CommandLine -match 'src[\\/]index\.js' } ^| ForEach-Object { try { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue } catch {} }" 2>nul
 node src\index.js
 pause

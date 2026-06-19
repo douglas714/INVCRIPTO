@@ -1,8 +1,8 @@
 export const PROFILE_RULES = Object.freeze({
-  conservador: Object.freeze({ name: 'conservador', protectionGapPct: 1.0, maxConcurrentBaskets: 1, timeframe: '5m', handGrowthFactor: 1.20, minScore: 84, roomFloorPct: 1.05 }),
-  moderado: Object.freeze({ name: 'moderado', protectionGapPct: 0.5, maxConcurrentBaskets: 1, timeframe: '5m', handGrowthFactor: 1.25, minScore: 80, roomFloorPct: 0.95 }),
-  arrojado: Object.freeze({ name: 'arrojado', protectionGapPct: 0.3, maxConcurrentBaskets: 1, timeframe: '1m', handGrowthFactor: 1.30, minScore: 76, roomFloorPct: 0.88 }),
-  alavancagem: Object.freeze({ name: 'alavancagem', protectionGapPct: 0.15, maxConcurrentBaskets: 5, timeframe: '1m', handGrowthFactor: 1.35, minScore: 74, roomFloorPct: 0.82 })
+  conservador: Object.freeze({ name: 'conservador', protectionGapPct: 1.0, maxConcurrentBaskets: 1, timeframe: '5m', handGrowthFactor: 1.20, minScore: 78, roomFloorPct: 0.92 }),
+  moderado: Object.freeze({ name: 'moderado', protectionGapPct: 0.5, maxConcurrentBaskets: 1, timeframe: '5m', handGrowthFactor: 1.25, minScore: 74, roomFloorPct: 0.84 }),
+  arrojado: Object.freeze({ name: 'arrojado', protectionGapPct: 0.3, maxConcurrentBaskets: 1, timeframe: '1m', handGrowthFactor: 1.30, minScore: 68, roomFloorPct: 0.72 }),
+  alavancagem: Object.freeze({ name: 'alavancagem', protectionGapPct: 0.15, maxConcurrentBaskets: 5, timeframe: '1m', handGrowthFactor: 1.35, minScore: 64, roomFloorPct: 0.66 })
 });
 
 export const INITIAL_ENTRY_USDT = 10;
@@ -592,11 +592,11 @@ export function multiTimeframeEntryContext(timeframes = {}, options = {}) {
     : profileName === 'moderado'
       ? !riskOff && !h4.bearish && (h1.bullish || (!h1.bearish && m15.bullish))
       : !riskOff && !m15.severeBear && (h1.bullish || (!h1.bearish && m15.bullish));
-  const maxDistanceByProfile = { conservador: 0.55, moderado: 0.65, arrojado: 0.75, alavancagem: 0.85 }[profileName];
-  const maxEntryDistancePct = clamp(Math.max(0.24, (m5.atr14 / Math.max(1e-12, m5.close)) * 100 * 0.9), 0.24, maxDistanceByProfile);
+  const maxDistanceByProfile = { conservador: 0.70, moderado: 0.85, arrojado: 1.05, alavancagem: 1.20 }[profileName];
+  const maxEntryDistancePct = clamp(Math.max(0.30, (m5.atr14 / Math.max(1e-12, m5.close)) * 100 * 1.05), 0.30, maxDistanceByProfile);
   const supportTolerance = Math.max(structure.tolerance, m5.atr14 * 0.38, currentPrice * 0.0012);
   const maxEntryPrice = structure.support * (1 + maxEntryDistancePct / 100);
-  const requiredRoomPct = clamp(Number(profile.roomFloorPct || 0.95) + (m5.atr14 / Math.max(1e-12, m5.close)) * 100 * 0.18, Number(profile.roomFloorPct || 0.95), 1.45);
+  const requiredRoomPct = clamp(Number(profile.roomFloorPct || 0.95) + (m5.atr14 / Math.max(1e-12, m5.close)) * 100 * 0.15, Number(profile.roomFloorPct || 0.95), 1.25);
   const resistance = pickTrendAlignedResistance(structure.resistances || [], currentPrice, requiredRoomPct, structure.resistance);
   const distanceToResistancePct = resistance > currentPrice ? ((resistance / currentPrice) - 1) * 100 : 0;
   const nearSupport = structure.support > 0 && currentPrice >= structure.support * 0.997 && currentPrice <= maxEntryPrice;

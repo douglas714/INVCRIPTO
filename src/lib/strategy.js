@@ -462,10 +462,10 @@ export function analyzeMarket(candles) {
 // ---------------------------------------------------------------------------
 
 export const MTF_PROFILE_RULES = Object.freeze({
-  conservador: Object.freeze({ minScore: 84, maxEntryDistancePct: 0.55, roomFloorPct: 1.05, allowH4Neutral: false, m5Window: 4 }),
-  moderado: Object.freeze({ minScore: 80, maxEntryDistancePct: 0.65, roomFloorPct: 0.95, allowH4Neutral: true, m5Window: 5 }),
-  arrojado: Object.freeze({ minScore: 76, maxEntryDistancePct: 0.75, roomFloorPct: 0.88, allowH4Neutral: true, m5Window: 6 }),
-  alavancagem: Object.freeze({ minScore: 74, maxEntryDistancePct: 0.85, roomFloorPct: 0.82, allowH4Neutral: true, m5Window: 7 })
+  conservador: Object.freeze({ minScore: 78, maxEntryDistancePct: 0.70, roomFloorPct: 0.92, allowH4Neutral: false, m5Window: 4 }),
+  moderado: Object.freeze({ minScore: 74, maxEntryDistancePct: 0.85, roomFloorPct: 0.84, allowH4Neutral: true, m5Window: 5 }),
+  arrojado: Object.freeze({ minScore: 68, maxEntryDistancePct: 1.05, roomFloorPct: 0.72, allowH4Neutral: true, m5Window: 6 }),
+  alavancagem: Object.freeze({ minScore: 64, maxEntryDistancePct: 1.20, roomFloorPct: 0.66, allowH4Neutral: true, m5Window: 7 })
 });
 
 function normalizeProfile(value) {
@@ -726,14 +726,14 @@ export function analyzeMarketMultiTimeframe(timeframes = {}, options = {}) {
         : 'LATERAL / NEUTRO';
 
   const maxEntryDistancePct = clamp(
-    Math.max(0.24, Number(m5.atrPct || 0) * 0.9),
-    0.24,
+    Math.max(0.30, Number(m5.atrPct || 0) * 1.05),
+    0.30,
     rules.maxEntryDistancePct
   );
   const supportTolerance = Math.max(structure.tolerance, Number(m5.atr14 || 0) * 0.38, currentPrice * 0.0012);
   const maxEntryPrice = support > 0 ? support * (1 + maxEntryDistancePct / 100) : 0;
   const distanceFromSupportPct = support > 0 ? ((currentPrice / support) - 1) * 100 : 999;
-  const requiredRoomPct = clamp(rules.roomFloorPct + Number(m5.atrPct || 0) * 0.18, rules.roomFloorPct, 1.45);
+  const requiredRoomPct = clamp(rules.roomFloorPct + Number(m5.atrPct || 0) * 0.15, rules.roomFloorPct, 1.25);
   const resistance = pickTrendAlignedResistance(structure.resistances || [], currentPrice, requiredRoomPct, structure.resistance);
   const distanceToResistancePct = resistance > currentPrice ? ((resistance / currentPrice) - 1) * 100 : 0;
   const nearSupport = support > 0 && currentPrice >= support * 0.997 && currentPrice <= maxEntryPrice;

@@ -843,7 +843,7 @@ function TradingControl({state,setState,symbol,setSymbol,analysis,recommended,op
     <div className="recommend-line"><strong>{recommended.symbol?.replace('USDT','/USDT')}</strong><span>{recommended.score}/100</span></div>
     <label>Conta de operação</label>
     <div className="mode-buttons"><button className={accountMode==='demo'?'active':''} type="button" onClick={()=>setAccountMode('demo')} disabled={locked}>Demo</button><button className={accountMode==='live'?'active':''} type="button" onClick={()=>setAccountMode('live')} disabled={locked}>Real Spot</button></div>
-    <small className="sync">{locked?'Robô ativo: estratégia travada. Em conta real, oportunidades com score >= 78 enviam compra + venda automaticamente.':accountMode==='demo'?'Conta demo não consome ENV.':'Conta real consome ENV somente sobre lucro realizado.'}</small>
+    <small className="sync">{locked?'Robô ativo: estratégia travada. Em conta real, oportunidades com score >= minScore enviam compra + venda automaticamente.':accountMode==='demo'?'Conta demo não consome ENV.':'Conta real consome ENV somente sobre lucro realizado.'}</small>
     {accountMode === 'live' && state.lastAutoRealStatus && <div className="alert compact">{state.lastAutoRealStatus}</div>}
     {accountMode === 'live' && state.lastAutoRealError && <div className="alert danger compact">{state.lastAutoRealError}</div>}
     <div className="auto-trading-box"><div><strong>Auto Trading</strong><small>{locked?'Robô em execução':'Inicia sempre pausado'}</small></div><button className={state.active?'switch on':'switch'} onClick={()=>setState(s=>({...s,active:!s.active}))} aria-label="Alternar Auto Trading"/></div>
